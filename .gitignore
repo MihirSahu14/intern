@@ -45,3 +45,8 @@ next-env.d.ts
 
 # convex auth key material — never commit
 .auth-keys.json
+
+.vercel
+
+# local transcript export — 1.3MB, not source
+session.md
