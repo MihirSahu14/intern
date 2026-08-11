@@ -821,19 +821,21 @@ function Header({
           />
           {connected ? "stream" : "reconnecting"}
         </span>
+        {/*
+          Reads `system.mode`, not `system.reachable`. Those stopped being the
+          same thing when interns gained a second way to think: Scout being
+          down no longer means the work is simulated, and the badge saying SIM
+          over a real Gemini run is the most misleading thing on the screen.
+        */}
         <span
           className={`border px-1.5 ${
-            system.reachable
+            system.mode === "live"
               ? "border-ok/40 text-ok"
               : "border-warn/40 text-warn"
           }`}
-          title={
-            system.reachable
-              ? `brain online at ${system.scoutUrl}`
-              : `brain unreachable at ${system.scoutUrl} — running simulated`
-          }
+          title={system.note ?? `brain online at ${system.scoutUrl}`}
         >
-          {system.reachable ? "LIVE" : "SIM"}
+          {system.mode === "live" ? "LIVE" : "SIM"}
         </span>
         <span className="tabular-nums">{clock}</span>
         <button

@@ -370,6 +370,11 @@ export async function probe(force = false): Promise<SystemState> {
       reachable,
       checkedAt: Date.now(),
       contexts,
+      runner: reachable
+        ? scout.SCOUT_URL.replace(/^https?:\/\//, "")
+        : gemini.available()
+          ? gemini.MODEL
+          : "seeded script",
       note: reachable
         ? undefined
         : gemini.available()

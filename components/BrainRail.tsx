@@ -58,14 +58,18 @@ export default function BrainRail({
   return (
     <aside className="flex min-h-0 w-[236px] shrink-0 flex-col border-r border-line bg-panel">
       <Section title="brain">
+        {/* `mode`, not `reachable` — Gemini counts as thinking too. */}
         <Row k="mode">
-          <span className={system.reachable ? "text-ok" : "text-warn"}>
-            {system.reachable ? "LIVE" : "SIM"}
+          <span className={system.mode === "live" ? "text-ok" : "text-warn"}>
+            {system.mode === "live" ? "LIVE" : "SIM"}
           </span>
         </Row>
         <Row k="brain">
-          <span className="truncate text-dim" title={system.scoutUrl}>
-            {system.scoutUrl.replace(/^https?:\/\//, "")}
+          <span
+            className="truncate text-dim"
+            title={system.reachable ? system.scoutUrl : (system.note ?? "")}
+          >
+            {system.runner ?? system.scoutUrl.replace(/^https?:\/\//, "")}
           </span>
         </Row>
         <Row k="nodes">

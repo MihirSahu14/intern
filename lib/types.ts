@@ -399,6 +399,13 @@ export type SystemState = {
   checkedAt: number;
   contexts: ContextStatus[];
   note?: string;
+  /**
+   * What is actually doing the thinking, for display. Scout's URL alone stopped
+   * answering that question once Gemini could run an intern — in a deployment
+   * with no Scout it reads `localhost:8000`, which is both wrong and the first
+   * thing anyone asks about.
+   */
+  runner?: string;
 };
 
 // ---------------------------------------------------------------------------
