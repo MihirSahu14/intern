@@ -384,12 +384,30 @@ export async function probe(force = false): Promise<SystemState> {
     store.lastProbe = Date.now();
     emit({ type: "system", system: store.system });
 
-    if (reachable && prev.mode !== "live") {
+    // These transitions are about Scout specifically, so they compare
+    // `reachable` against `prev.reachable` — not `prev.mode`.
+    //
+    // Once Gemini could also make mode "live", `prev.mode === "live"` was true
+    // on every probe while Scout stayed down, so the second branch fired every
+    // fifteen seconds: it logged "lost brain … falling back to SIM" on repeat
+    // under a badge correctly reading LIVE, and reseeded the graph each time,
+    // discarding anything that had been filed into it.
+    if (reachable && !prev.reachable) {
       log(null, "ok", `brain online at ${scout.SCOUT_URL} · switching to LIVE`);
       await refreshGraph();
-    } else if (!reachable && prev.mode === "live") {
-      log(null, "warn", `lost brain at ${scout.SCOUT_URL} · falling back to SIM`);
-      setBase(seedGraph());
+    } else if (!reachable && prev.reachable) {
+      if (gemini.available()) {
+        // Not a fallback to SIM — interns keep thinking. The graph is left
+        // alone because it comes from the brain, not from Scout.
+        log(
+          null,
+          "warn",
+          `lost brain at ${scout.SCOUT_URL} · interns continuing on ${gemini.describe()}`,
+        );
+      } else {
+        log(null, "warn", `lost brain at ${scout.SCOUT_URL} · falling back to SIM`);
+        setBase(seedGraph());
+      }
     }
   })();
 
