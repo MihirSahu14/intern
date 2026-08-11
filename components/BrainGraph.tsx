@@ -38,6 +38,8 @@ type Body = {
   vx: number;
   vy: number;
   r: number;
+  /** 0..1 — how connected this node is relative to the busiest one. */
+  imp: number;
   node: GraphNode;
   fixed: boolean;
 };
@@ -91,7 +93,25 @@ type Live = {
   active: Set<string>;
 };
 
-const radiusOf = (n: GraphNode) => 3.2 + Math.sqrt(n.weight ?? 3) * 1.9;
+/**
+ * Size is connectivity, not the `weight` field.
+ *
+ * `weight` is optional and most nodes arrive without one, so sizing by it put
+ * almost every node at the same radius and the graph read as an undifferentiated
+ * mesh — you could not tell a hub from a leaf. Degree is always known and is the
+ * thing a reader actually wants: how much of the brain hangs off this.
+ *
+ * `weight` still contributes where it exists, as a nudge rather than the driver.
+ * Square root keeps a 40-link hub from dwarfing the canvas while still making it
+ * unmistakably larger than a 2-link leaf — roughly 3px to 21px across.
+ */
+const MAX_R = 21;
+const radiusOf = (n: GraphNode, degree: number) =>
+  Math.min(MAX_R, 2.6 + Math.sqrt(degree + (n.weight ?? 0) * 0.6) * 2.9);
+
+/** Relative standing, for opacity, label priority and edge strength. */
+const impOf = (degree: number, maxDegree: number) =>
+  maxDegree <= 0 ? 0 : Math.min(1, Math.sqrt(degree) / Math.sqrt(maxDegree));
 
 export default function BrainGraph({
   graph,
@@ -179,12 +199,22 @@ export default function BrainGraph({
     const next = new Set(graph.nodes.map((n) => n.id));
     for (const id of map.keys()) if (!next.has(id)) map.delete(id);
 
+    // One pass for the busiest node, so importance is relative to this brain
+    // rather than to an absolute that goes wrong at both small and large sizes.
+    let maxDegree = 0;
+    for (const n of graph.nodes) {
+      const d = adjacency.get(n.id)?.size ?? 0;
+      if (d > maxDegree) maxDegree = d;
+    }
+
     let added = false;
     graph.nodes.forEach((n, i) => {
+      const degree = adjacency.get(n.id)?.size ?? 0;
       const existing = map.get(n.id);
       if (existing) {
         existing.node = n;
-        existing.r = radiusOf(n);
+        existing.r = radiusOf(n, degree);
+        existing.imp = impOf(degree, maxDegree);
         return;
       }
       added = true;
@@ -201,7 +231,8 @@ export default function BrainGraph({
         y: (anchor?.y ?? 0) + Math.sin(angle) * (anchor ? 22 : spread),
         vx: 0,
         vy: 0,
-        r: radiusOf(n),
+        r: radiusOf(n, degree),
+        imp: impOf(degree, maxDegree),
         node: n,
         fixed: false,
       });
@@ -429,7 +460,6 @@ export default function BrainGraph({
         at.set(b.id, RIM_KINDS.has(b.node.kind) ? pinToBorder(x, y, w, h) : { x, y });
       }
 
-      ctx.lineWidth = Math.max(0.5, 0.7 * k);
       for (const e of g.edges) {
         const p = bodies.current.get(e.source);
         const q = bodies.current.get(e.target);
@@ -439,9 +469,13 @@ export default function BrainGraph({
         const pp = at.get(p.id)!;
         const qq = at.get(q.id)!;
         const lit = sel && (p.id === sel || q.id === sel);
+        // An edge is only as loud as the busier thing it connects, so the
+        // spine of the graph reads first and the fringe settles behind it.
+        const strength = Math.max(p.imp, q.imp);
+        ctx.lineWidth = Math.max(0.4, (0.4 + strength * 0.9) * k);
         ctx.strokeStyle = lit
           ? "rgba(78,201,165,0.5)"
-          : `rgba(255,255,255,${0.09 * f})`;
+          : `rgba(255,255,255,${(0.04 + 0.11 * strength) * f})`;
         ctx.beginPath();
         ctx.moveTo(pp.x, pp.y);
         ctx.lineTo(qq.x, qq.y);
@@ -470,6 +504,16 @@ export default function BrainGraph({
           ctx.stroke();
         }
 
+        // Hubs carry a faint halo. It is what stops a busy graph reading flat:
+        // depth has to come from somewhere, and size alone plateaus once the
+        // biggest nodes hit the cap.
+        if (b.imp > 0.5 && !rim) {
+          ctx.beginPath();
+          ctx.arc(x, y, r + 4 + b.imp * 5, 0, Math.PI * 2);
+          ctx.fillStyle = withAlpha(color, 0.06 * b.imp * f);
+          ctx.fill();
+        }
+
         ctx.beginPath();
         if (rim) {
           // A person is a diamond. Different shape as well as different place,
@@ -483,14 +527,23 @@ export default function BrainGraph({
         } else {
           ctx.arc(x, y, r, 0, Math.PI * 2);
         }
-        ctx.fillStyle = withAlpha(color, b.id === sel ? 1 : 0.16 + 0.5 * f);
+        // Opacity and rim weight track importance for the same reason size
+        // does — a leaf should recede, not just be smaller.
+        ctx.fillStyle = withAlpha(
+          color,
+          b.id === sel ? 1 : (0.1 + 0.55 * b.imp) * f,
+        );
         ctx.fill();
-        ctx.lineWidth = b.id === sel || b.id === hoverId.current ? 1.4 : 0.9;
-        ctx.strokeStyle = withAlpha(color, b.id === sel ? 1 : 0.55 * f);
+        ctx.lineWidth =
+          b.id === sel || b.id === hoverId.current ? 1.5 : 0.6 + b.imp * 0.9;
+        ctx.strokeStyle = withAlpha(
+          color,
+          b.id === sel ? 1 : (0.3 + 0.55 * b.imp) * f,
+        );
         ctx.stroke();
 
         const important =
-          (b.node.weight ?? 3) >= 5 ||
+          b.imp >= 0.5 ||
           b.id === sel ||
           b.id === hoverId.current ||
           neighbours?.has(b.id) ||
@@ -507,9 +560,8 @@ export default function BrainGraph({
       labelled.sort((a, b) => {
         const rank = (n: Body) =>
           n.id === sel ? 3 : n.id === hoverId.current ? 2 : 0;
-        return (
-          rank(b) - rank(a) || (b.node.weight ?? 0) - (a.node.weight ?? 0)
-        );
+        // When labels collide the busier node keeps its name.
+        return rank(b) - rank(a) || b.imp - a.imp;
       });
       const taken: [number, number, number, number][] = [];
       for (const b of labelled) {
