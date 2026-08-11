@@ -1,0 +1,18 @@
+{
+  "_comment": "PARKED — not active. This was in the working tree uncommitted, and is the two-service shape: Next.js plus Scout as a Python service on Vercel. It is kept because it represents real intent, not because it works today: the scout service needs a Postgres with pgvector and an LLM key, neither of which is configured, and interns now run on Gemini inside the Next process instead. To go back, copy this over vercel.json, drop the _comment, and provision the database first.",
+  "services": {
+    "web": {
+      "root": ".",
+      "framework": "nextjs",
+      "buildCommand": "npm ci && npm run build"
+    },
+    "scout": {
+      "root": "scout",
+      "entrypoint": "app.main:app"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/scout(/.*)?", "destination": { "type": "service", "service": "scout" } },
+    { "source": "/(.*)", "destination": { "type": "service", "service": "web" } }
+  ]
+}
