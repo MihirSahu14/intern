@@ -1,4 +1,5 @@
 import Link from "next/link";
+import LandingGraph from "@/components/LandingGraph";
 
 /**
  * The public face. The cockpit lives behind sign-in at `/app`.
@@ -63,8 +64,17 @@ export default function Landing() {
           </div>
         </header>
 
+        {/* ---- the brain ----------------------------------------------- */}
+        <section className="enter mt-14 border border-line bg-panel" aria-label="Example company brain">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
+            <span className="label">the brain · hover a node</span>
+            <span className="text-faint">size = how much hangs off it</span>
+          </div>
+          <LandingGraph />
+        </section>
+
         {/* ---- terminal ------------------------------------------------ */}
-        <section className="enter mt-14 border border-line bg-panel" aria-label="Example intern run">
+        <section className="enter mt-6 border border-line bg-panel" aria-label="Example intern run">
           <div className="flex items-center gap-2 border-b border-line px-4 py-2">
             <span className="size-2 rounded-full bg-ok pulse-slow" />
             <span className="label">live · one intern</span>

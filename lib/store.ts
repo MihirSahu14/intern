@@ -26,6 +26,7 @@ import type {
 } from "./types";
 import { outgoing } from "./types";
 import { parseActionBlock } from "./action-block";
+import * as gemini from "./gemini";
 import * as scout from "./scout";
 import {
   planSim,
@@ -357,7 +358,11 @@ export async function probe(force = false): Promise<SystemState> {
     let contexts: ContextStatus[] = [];
     if (reachable) contexts = await scout.contexts();
 
-    const mode: Mode = reachable ? "live" : "sim";
+    // LIVE means an intern will actually think, which is true of Gemini as
+    // much as of Scout. Reporting SIM purely because Scout is down would have
+    // labelled every real run as simulated.
+    const thinking = reachable || gemini.available();
+    const mode: Mode = thinking ? "live" : "sim";
     const prev = store.system;
     store.system = {
       mode,
@@ -367,7 +372,9 @@ export async function probe(force = false): Promise<SystemState> {
       contexts,
       note: reachable
         ? undefined
-        : `brain unreachable at ${scout.SCOUT_URL} — running simulated`,
+        : gemini.available()
+          ? `scout unreachable — interns running on ${gemini.describe()}`
+          : `no brain at ${scout.SCOUT_URL} and no GEMINI_API_KEY — running simulated`,
     };
     store.lastProbe = Date.now();
     emit({ type: "system", system: store.system });
@@ -503,15 +510,19 @@ async function run(intern: Intern) {
 
   intern.status = "running";
   intern.startedAt = Date.now();
-  intern.mode = store.system.reachable ? "live" : "sim";
+  // Scout first where it exists — it has tools Gemini here does not. Gemini
+  // second, which is every deployment right now. The script only when there is
+  // genuinely nothing that can think, and it says SIM when that happens.
+  const runner = store.system.reachable
+    ? runLive
+    : gemini.available()
+      ? runGemini
+      : runSim;
+  intern.mode = runner === runSim ? "sim" : "live";
   touch(intern);
 
   try {
-    if (intern.mode === "live") {
-      await runLive(intern, ctl.signal);
-    } else {
-      await runSim(intern, ctl.signal);
-    }
+    await runner(intern, ctl.signal);
     if (intern.status === "running") {
       intern.status = "done";
       intern.endedAt = Date.now();
@@ -781,6 +792,168 @@ async function runLive(intern: Intern, signal: AbortSignal) {
       touch(intern);
     }
   }
+  if (intern.artifacts.length) await refreshGraph();
+}
+
+/**
+ * The brief for a Scout-less intern.
+ *
+ * Deliberately not `BRIEF`: that one promises `update_knowledge`, `update_crm`
+ * and `query_voice`, which are Scout's tools. Handing a model tool names it
+ * cannot call is how you get a confident report claiming it filed things it
+ * never filed. This one gives it a way to file — a fenced block, parsed the
+ * same way the action and question blocks already are — and is honest that
+ * it cannot browse.
+ */
+const GEMINI_BRIEF = (intern: Intern, learned: string) =>
+  `You are an intern working a task for the team.
+
+TASK: ${intern.task}
+${learned}
+You have no browser and no tools. Work from what the brain gave you above and
+what you already know. Do not invent people, systems, dates or numbers — if a
+detail matters and you do not have it, ask rather than filling it in.
+
+Write a short report of what you concluded. Plain prose, no headings.
+
+For anything durable worth keeping, add a fenced block per fact — at most three:
+
+\`\`\`fact
+{"title":"one line, the claim itself","body":"the detail behind it","kind":"note"}
+\`\`\`
+
+kind is one of: note, decision, preference, correction.
+
+If the task implies something should go OUT to a person — an email, a Slack
+message — do not claim you sent it. You have no send tool. Draft it as exactly
+one fenced block and a human approves it:
+
+\`\`\`action
+{"kind":"email","to":["someone@example.com"],"subject":"…","body":"…",
+ "rationale":"why this should go out","sources":["what you based it on"]}
+\`\`\`
+
+For Slack the channel id goes in "to" and there is no subject. Always "to" —
+never "channel".
+
+If something the task left out cannot be resolved from what you were given, do
+NOT pick the likely one. Stop and ask, with exactly one fenced block:
+
+\`\`\`question
+{"question":"the one thing you need answered","context":"what you were doing and what you already tried"}
+\`\`\`
+
+A wrong guess quietly poisons everything downstream; a question costs someone
+ten seconds. At most one per run, and only when genuinely blocked.`;
+
+/** Fenced ```fact blocks, in order, ignoring ones that aren't valid JSON. */
+function parseFactBlocks(
+  report: string,
+): { title: string; body: string; kind?: Fact["kind"] }[] {
+  const out: { title: string; body: string; kind?: Fact["kind"] }[] = [];
+  const re = /```fact\s*\n([\s\S]*?)```/g;
+  for (const m of report.matchAll(re)) {
+    try {
+      const parsed = JSON.parse(m[1].trim()) as {
+        title?: string;
+        body?: string;
+        kind?: Fact["kind"];
+      };
+      if (parsed.title?.trim()) {
+        out.push({
+          title: parsed.title.trim(),
+          body: (parsed.body ?? "").trim(),
+          kind: parsed.kind,
+        });
+      }
+    } catch {
+      /* a malformed block is dropped rather than failing the run */
+    }
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+/**
+ * A real intern run without Scout: one streamed Gemini call, then the same
+ * parse-and-file the live path does.
+ */
+async function runGemini(intern: Intern, signal: AbortSignal) {
+  const learned = recalled(intern);
+  if (learned.facts.length) {
+    log(
+      intern.id,
+      "sys",
+      `recalled ${learned.facts.length} fact${learned.facts.length === 1 ? "" : "s"} from the brain · ${learned.facts
+        .map((f) => f.id)
+        .join(" ")}`,
+    );
+  }
+  log(intern.id, "sys", `thinking · ${gemini.describe()}`);
+
+  let report = "";
+  let pending = "";
+  for await (const chunk of gemini.stream(GEMINI_BRIEF(intern, learned.text), {
+    signal,
+  })) {
+    if (!chunk.text) continue;
+    report += chunk.text;
+    pending += chunk.text;
+    // Same cadence as the live path — flush on sentence-ish boundaries so the
+    // terminal reads as a stream of thought rather than one wall at the end.
+    if (pending.length > 160 || /[.\n]$/.test(pending)) {
+      const line = pending.trim();
+      if (line) log(intern.id, "out", line);
+      pending = "";
+    }
+  }
+  const tail = pending.trim();
+  if (tail) log(intern.id, "out", tail);
+
+  report = report.trim();
+  if (!report) throw new Error("gemini returned an empty report");
+  intern.summary = report.slice(0, 600);
+  touch(intern);
+
+  // A question outranks everything else: an intern that asked and also filed
+  // built that on the assumption it just said it could not make.
+  const asked = parseQuestion(report, intern);
+  if (asked) {
+    park(intern, asked);
+    return;
+  }
+
+  for (const f of parseFactBlocks(report)) {
+    try {
+      const { fact } = await capture({
+        title: f.title,
+        body: f.body,
+        kind: f.kind ?? "note",
+        sourceId: "intern",
+        externalId: `${intern.id}:${f.title.slice(0, 60)}`,
+        actor: intern.id,
+        ownerId: intern.ownerId ?? "",
+      });
+      intern.artifacts.push({ kind: "note", label: fact.title, ref: fact.id });
+      log(intern.id, "ok", `filed ${fact.id} · ${fact.title}`);
+    } catch (err) {
+      log(
+        intern.id,
+        "warn",
+        `could not file "${f.title}" · ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  const proposed = parseProposedAction(report, intern);
+  if (proposed) {
+    intern.artifacts.push({
+      kind: "answer",
+      label: `proposed ${proposed.kind}: ${proposed.draft.subject}`,
+      ref: proposed.id,
+    });
+  }
+  touch(intern);
   if (intern.artifacts.length) await refreshGraph();
 }
 
