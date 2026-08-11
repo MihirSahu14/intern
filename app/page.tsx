@@ -185,7 +185,7 @@ export default function Landing() {
 function Nav() {
   return (
     <nav className="flex items-center justify-between">
-      <span className="text-[19px] tracking-tight text-fg">
+      <span className="text-[30px] tracking-tight text-fg">
         intern<span className="text-accent">_</span>
       </span>
       <Link href="/app" className="text-dim transition-colors hover:text-fg">
