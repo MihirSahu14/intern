@@ -100,8 +100,12 @@ they are transactional. Days are UTC.
 - The cap uses actual spend, so runs already in flight can overshoot it (under
   $0.05). This is accepted.
 - Pure cap math lives in `lib/caps.ts` so it can be unit-tested.
-- Mihir also sets a Google Cloud budget alert as a backstop, since Google alerts
-  on budgets but does not stop spending.
+- **Launch runs on the Gemini free tier** (no billing linked, so nothing can be
+  charged). The binding limit is Google's per-minute and per-day quota, not
+  dollars. A Gemini 429 fails the run with "The free model is busy, try again in
+  a minute", and that run does not count toward the user's 5/day. The $ cap
+  still runs, so linking billing later needs no code change. Only when billing is
+  linked: set a Google Cloud budget alert as a backstop.
 
 **Sandbox**
 - Remove the Connect Slack/Google UI (`components/Cockpit.tsx` connect flow).
