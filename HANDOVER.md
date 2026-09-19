@@ -58,8 +58,8 @@ Cockpit flips SIM → LIVE by itself within 20s of Scout answering.
 **Deployment:** Convex `graceful-albatross-202` (team `mihirs1410`, project `intern`).
 Dashboard: https://dashboard.convex.dev/d/graceful-albatross-202
 
-**Accounts:** `mihirs1410@gmail.com` / `intern-demo-2026`. Andrew has his own.
-There is a junk `demo@intern.test` row — delete from the Convex dashboard.
+**Accounts:** GitHub sign-in only (since the public MVP). The old demo password
+was published in this file and is burned.
 
 **Secrets** live in two gitignored files, both already populated:
 - `.env.local` — Convex URLs, `SCOUT_API_URL`, `SLACK_BOT_TOKEN`, Google OAuth trio

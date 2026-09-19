@@ -50,3 +50,6 @@ next-env.d.ts
 
 # local transcript export — 1.3MB, not source
 session.md
+
+# convex snapshots — contain user data
+/backups/
