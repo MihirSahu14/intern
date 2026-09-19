@@ -9,6 +9,9 @@
  * with its own Postgres; when it is reachable it still wins, because it has
  * tools this does not. When it isn't — which is every deployment right now —
  * the intern runs here instead of falling back to a script.
+ *
+ * Runs from a Convex action now, not a free-tier browser session — the key
+ * lives in the deployment's env, not the client's.
  */
 
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -32,7 +35,7 @@ export const available = () => Boolean(key());
 
 export const describe = () => `${MODEL} · gemini`;
 
-type Chunk = { text?: string; done?: boolean };
+type Chunk = { text?: string; usage?: { in: number; out: number }; done?: boolean };
 
 /**
  * Stream a completion, yielding text as it arrives.
@@ -66,14 +69,14 @@ export async function* stream(
   if (!res.ok || !res.body) {
     // Surface Google's own message — "API key not valid" and "quota exceeded"
     // need very different reactions, and a bare status code hides which.
-    let detail = `${res.status}`;
+    let detail = "request failed";
     try {
       const body = (await res.json()) as { error?: { message?: string } };
       if (body.error?.message) detail = body.error.message;
     } catch {
       /* non-JSON error body — the status is all we get */
     }
-    throw new Error(`gemini: ${detail}`);
+    throw new Error(`gemini ${res.status}: ${detail}`);
   }
 
   const reader = res.body.getReader();
@@ -105,11 +108,21 @@ export async function* stream(
       try {
         const json = JSON.parse(payload) as {
           candidates?: { content?: { parts?: { text?: string }[] } }[];
+          usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
         };
         const text = json.candidates?.[0]?.content?.parts
           ?.map((p) => p.text ?? "")
           .join("");
         if (text) yield { text };
+        // Every frame carries running totals; the caller keeps the last one.
+        if (json.usageMetadata) {
+          yield {
+            usage: {
+              in: json.usageMetadata.promptTokenCount ?? 0,
+              out: json.usageMetadata.candidatesTokenCount ?? 0,
+            },
+          };
+        }
       } catch {
         /* a partial frame that split oddly — the next read completes it */
       }
