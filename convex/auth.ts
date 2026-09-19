@@ -1,17 +1,25 @@
-import { Password } from "@convex-dev/auth/providers/Password";
+import GitHub from "@auth/core/providers/github";
 import { convexAuth } from "@convex-dev/auth/server";
 
 /**
- * Email + password.
+ * GitHub only. One click, a real identity per person (so caps can't be dodged
+ * with throwaway emails), and no app review. Email is deliberately not stored:
+ * the brain is public and nothing here needs it.
  *
- * Passkeys would be nicer, but `@convex-dev/auth@0.0.94` doesn't ship a
- * Passkey provider — the built-ins are Password, Email, Phone, Anonymous and
- * ConvexCredentials. Password is also the least friction for the demo that
- * matters: two people signing in on two machines against one shared brain.
- *
- * To add Google later: `import Google from "@auth/core/providers/google"` and
- * put it in this array. Nothing else changes.
+ * Reads AUTH_GITHUB_ID / AUTH_GITHUB_SECRET from the deployment env.
  */
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
-  providers: [Password()],
+  providers: [
+    GitHub({
+      profile(p) {
+        return {
+          id: String(p.id),
+          name: p.name ?? p.login,
+          image: p.avatar_url,
+          handle: p.login,
+          githubId: String(p.id),
+        };
+      },
+    }),
+  ],
 });
