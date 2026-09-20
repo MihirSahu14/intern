@@ -7,9 +7,9 @@
  *   npm run eval
  *
  * About $0.10 per run on paid Gemini; free tier works but paces at 6s/brief.
- * Exits 1 if the action parse rate is under 90% — or if every attempt errored
- * out before producing anything to rate, so a Gemini outage can't look like a
- * pass.
+ * Exits 1 if the action parse rate is under 90%, if more than a quarter of the
+ * briefs errored, or if every attempt errored out before producing anything to
+ * rate — a Gemini outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
 import { PROMPT_VERSION, brief } from "../lib/brief.ts";
@@ -80,8 +80,11 @@ if (!attempted) {
 }
 
 const parseRate = usable / attempted;
+// A parse rate over what survived says nothing about what never ran: 8 of 12
+// action briefs erroring while 4 parse cleanly is a 100% pass otherwise.
+const outage = errored > CASES.length / 4;
 console.log(
   `\naction parse rate ${Math.round(parseRate * 100)}% (${usable}/${attempted}) · expectation match ${matched}/${CASES.length}` +
-    (errored ? ` · ${errored} errored` : ""),
+    (errored ? ` · ${errored} errored${outage ? " — more than a quarter, not a pass" : ""}` : ""),
 );
-process.exit(parseRate < 0.9 ? 1 : 0);
+process.exit(parseRate < 0.9 || outage ? 1 : 0);
