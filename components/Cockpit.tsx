@@ -40,6 +40,7 @@ export default function Cockpit({ me }: { me: Me }) {
 
   const spawnM = useMutation(api.interns.spawn);
   const cancelM = useMutation(api.interns.cancel);
+  const retryM = useMutation(api.interns.retry);
   const decideM = useMutation(api.outbox.decide);
   const answerM = useMutation(api.questions.answer);
   const dismissM = useMutation(api.questions.dismiss);
@@ -173,6 +174,17 @@ export default function Cockpit({ me }: { me: Me }) {
       }
     },
     [spawnM, echo],
+  );
+
+  const retry = useCallback(
+    async (id: string) => {
+      try {
+        await retryM({ internId: id as Id<"interns"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [retryM, echo],
   );
 
   const kill = useCallback(
@@ -424,7 +436,7 @@ export default function Cockpit({ me }: { me: Me }) {
             filter={filter}
             onFilter={setFilter}
             onKill={kill}
-            onRetry={spawn}
+            onRetry={retry}
             mineId={me.userId}
           />
         </aside>

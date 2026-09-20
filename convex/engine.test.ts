@@ -361,3 +361,42 @@ test("your own pending draft survives thirty newer ones from other people", asyn
   // Signed out, the global window is all there is.
   expect((await t.query(api.outbox.list, {})).map((r) => r._id)).not.toContain(mine);
 });
+
+test("retry re-runs the same intern instead of making a second one", async () => {
+  const { t, seedUser, asUser } = setup();
+  const as = asUser(await seedUser("a"));
+
+  const internId = await as.mutation(api.interns.spawn, { task: "draft a hello" });
+  await t.mutation(internal.interns.fail, {
+    internId,
+    error: "The free model is busy, try again in a minute.",
+    countsTowardCap: false,
+    tokensIn: 0,
+    tokensOut: 0,
+  });
+
+  await as.mutation(api.interns.retry, { internId });
+
+  const after = await t.run((ctx) => ctx.db.get("interns", internId));
+  expect(after?.status).toBe("queued");
+  expect(after?.error).toBeUndefined();
+  const all = await t.run((ctx) => ctx.db.query("interns").collect());
+  expect(all).toHaveLength(1);
+  // The failure and the retry both stay in this intern's own log.
+  const lines = await t.run((ctx) => ctx.db.query("logs").collect());
+  expect(lines.every((l) => l.internId === internId)).toBe(true);
+  expect(lines.some((l) => l.text === "running it again")).toBe(true);
+});
+
+test("only the owner can retry, and only a finished-badly brief", async () => {
+  const { t, seedUser, asUser } = setup();
+  const mine = asUser(await seedUser("a"));
+  const theirs = asUser(await seedUser("b"));
+
+  const internId = await mine.mutation(api.interns.spawn, { task: "draft a hello" });
+  // Still queued: there is nothing to retry yet.
+  await expect(mine.mutation(api.interns.retry, { internId })).rejects.toThrow(/failed or cancelled/);
+
+  await t.mutation(internal.interns.fail, { internId, error: "boom", countsTowardCap: true, tokensIn: 0, tokensOut: 0 });
+  await expect(theirs.mutation(api.interns.retry, { internId })).rejects.toThrow(/your own/);
+});
