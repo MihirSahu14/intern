@@ -10,7 +10,13 @@
 
 import type * as access from "../access.js";
 import type * as auth from "../auth.js";
+import type * as facts from "../facts.js";
 import type * as http from "../http.js";
+import type * as interns from "../interns.js";
+import type * as outbox from "../outbox.js";
+import type * as questions from "../questions.js";
+import type * as run from "../run.js";
+import type * as seed from "../seed.js";
 import type * as users from "../users.js";
 
 import type {
@@ -22,7 +28,13 @@ import type {
 declare const fullApi: ApiFromModules<{
   access: typeof access;
   auth: typeof auth;
+  facts: typeof facts;
   http: typeof http;
+  interns: typeof interns;
+  outbox: typeof outbox;
+  questions: typeof questions;
+  run: typeof run;
+  seed: typeof seed;
   users: typeof users;
 }>;
 
