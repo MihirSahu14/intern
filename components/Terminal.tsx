@@ -58,7 +58,7 @@ export default function Terminal({
   );
 
   return (
-    <section style={{ colorScheme: "dark" }} className="flex min-h-0 flex-col bg-term-panel">
+    <section style={{ colorScheme: "dark" }} className="flex min-h-0 flex-1 flex-col bg-term-panel">
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-term-line px-2">
         <span className="mr-2 text-[11px] tracking-[0.14em] uppercase text-term-dim">
           stream

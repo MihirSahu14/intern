@@ -4,14 +4,16 @@ import { KIND_VAR } from "./theme";
 import type { NodeKind } from "@/lib/types";
 
 /**
- * What the dots mean, in the corner of the canvas.
+ * What the dots mean.
  *
  * The rail already lists node kinds, but by their internal names — "action",
  * "contact" — which is the vocabulary of the schema, not of someone who
  * arrived thirty seconds ago. This says it in the words the product uses.
  *
  * Only the five kinds this app actually produces are listed: a legend for
- * nodes that never appear is furniture.
+ * nodes that never appear is furniture. In the cockpit this lives in the
+ * rail's layer list rather than over the canvas, where it covered the very
+ * nodes it was explaining.
  */
 const ENTRIES: { kind: NodeKind; label: string; gloss: string }[] = [
   { kind: "contact", label: "person", gloss: "signed in" },
@@ -23,6 +25,11 @@ const ENTRIES: { kind: NodeKind; label: string; gloss: string }[] = [
 
 export const KIND_LABEL: Partial<Record<NodeKind, string>> = Object.fromEntries(
   ENTRIES.map((e) => [e.kind, e.label]),
+);
+
+/** The same one-liners, for the rail that replaced the cockpit's overlay. */
+export const KIND_GLOSS: Partial<Record<NodeKind, string>> = Object.fromEntries(
+  ENTRIES.map((e) => [e.kind, e.gloss]),
 );
 
 const OVERLAY_CLASS =
