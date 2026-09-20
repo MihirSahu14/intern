@@ -286,7 +286,7 @@ export default function Cockpit({ me }: { me: Me }) {
         }
         case "capture":
           if (!arg) return echo("err", "usage: capture <what you know>");
-          void teach({ text: arg, kind: "note", tags: [], links: [] });
+          void teach({ text: arg, kind: "note" });
           return;
         case "spawn":
           if (!arg) return echo("err", "usage: spawn <task>");
@@ -407,7 +407,7 @@ export default function Cockpit({ me }: { me: Me }) {
         </main>
 
         <aside className="flex min-h-0 w-[268px] shrink-0 flex-col border-l border-line">
-          <Teach selected={selected} onTeach={teach} />
+          <Teach onTeach={teach} />
           <Questions
             questions={questions}
             onAnswer={answer}

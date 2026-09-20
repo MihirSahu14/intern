@@ -144,27 +144,6 @@ export default function Landing() {
           </p>
         </section>
 
-        {/* ---- trust ---------------------------------------------------- */}
-        <section className="mt-24">
-          <p className="label">trust, and graduating</p>
-          <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            Every surface carries its accepted-unedited rate — of the handovers
-            you actually decided on, how often you took the work as written. Not
-            &ldquo;did it succeed&rdquo;: editing a draft before sending it is
-            the intern getting it wrong, even though the email went out.
-          </p>
-          <div className="mt-6 grid gap-px border border-line bg-line sm:grid-cols-3">
-            <Stat value="8 / 9" label="slack · accepted unedited" tone="text-ok" />
-            <Stat value="4 @ 80%" label="proposes graduation" tone="text-fg" />
-            <Stat value="1" label="rejection revokes it" tone="text-warn" />
-          </div>
-          <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            A person confirms every graduation; nothing graduates on its own.
-            Earning trust is slow and losing it is immediate, because the cost is
-            asymmetric.
-          </p>
-        </section>
-
         {/* ---- close ---------------------------------------------------- */}
         <section className="mt-24 border border-line bg-panel p-8">
           <h2 className="text-fg">Point it at a brief and walk away.</h2>
@@ -213,15 +192,6 @@ function Panel({ title, body, accent }: { title: string; body: string; accent: s
     <div className="bg-panel p-5">
       <h3 className={accent}>{title}</h3>
       <p className="mt-3 leading-relaxed text-dim">{body}</p>
-    </div>
-  );
-}
-
-function Stat({ value, label, tone }: { value: string; label: string; tone: string }) {
-  return (
-    <div className="bg-panel p-5">
-      <div className={`text-[19px] tabular-nums ${tone}`}>{value}</div>
-      <div className="label mt-2">{label}</div>
     </div>
   );
 }
