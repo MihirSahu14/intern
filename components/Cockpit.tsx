@@ -12,6 +12,7 @@ import BrainRail from "./BrainRail";
 import CommandBar, { HELP } from "./CommandBar";
 import { NOTICE } from "./Consent";
 import Feed from "./Feed";
+import Legend from "./Legend";
 import InternRail from "./InternRail";
 import Outbox, { type Decision } from "./Outbox";
 import Questions from "./Questions";
@@ -370,6 +371,9 @@ export default function Cockpit({ me }: { me: Me }) {
               <div className="border border-line bg-panel/90 px-2 py-1 text-faint backdrop-blur">
                 {graph.nodes.length} nodes · {graph.edges.length} edges
               </div>
+            </div>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 p-3">
+              <Legend />
             </div>
           </div>
 
