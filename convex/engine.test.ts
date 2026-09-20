@@ -327,3 +327,37 @@ test("a day that overflows the read window refuses further facts", async () => {
     asUser(userId).mutation(api.facts.teach, { title: "one more", body: "b", kind: "note" }),
   ).rejects.toThrow(/too many facts/);
 });
+
+test("your own pending draft survives thirty newer ones from other people", async () => {
+  const { t, seedUser, asUser } = setup();
+  const owner = await seedUser("owner");
+  const other = await seedUser("other");
+
+  const mkAction = (ownerId: Id<"users">, title: string) =>
+    t.run(async (ctx) => {
+      const internId = await ctx.db.insert("interns", { ownerId, task: "t", status: "done", countsTowardCap: true });
+      return await ctx.db.insert("actions", {
+        ownerId,
+        internId,
+        kind: "email" as const,
+        status: "pending" as const,
+        title,
+        draft: { to: ["x@example.com"], subject: title, body: "b" },
+        rationale: "because",
+        sources: [],
+        recalledCorrection: false,
+      });
+    });
+
+  const mine = await mkAction(owner, "mine");
+  for (let i = 0; i < 31; i++) await mkAction(other, `theirs ${i}`);
+
+  // The global window alone buries it, and the cockpit filters to the viewer,
+  // so it would vanish from the only UI that can approve or reject it.
+  const rows = await asUser(owner).query(api.outbox.list, {});
+  expect(rows.map((r) => r._id)).toContain(mine);
+  expect(await asUser(owner).mutation(api.outbox.decide, { actionId: mine, decision: "approve" })).toBe(null);
+
+  // Signed out, the global window is all there is.
+  expect((await t.query(api.outbox.list, {})).map((r) => r._id)).not.toContain(mine);
+});
