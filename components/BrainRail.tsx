@@ -1,6 +1,7 @@
 "use client";
 
 import { KIND_COLOR, KIND_ORDER } from "./BrainGraph";
+import { KIND_LABEL } from "./Legend";
 import type { Graph, GraphNode, NodeKind } from "@/lib/types";
 
 export default function BrainRail({
@@ -52,7 +53,7 @@ export default function BrainRail({
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
                 style={{ background: KIND_COLOR[k] }}
               />
-              <span className="text-dim">{k}</span>
+              <span className="text-dim">{KIND_LABEL[k] ?? k}</span>
               <span className="ml-auto text-faint tabular-nums">
                 {counts.get(k)}
               </span>

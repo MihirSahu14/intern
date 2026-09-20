@@ -21,6 +21,10 @@ const ENTRIES: { kind: NodeKind; label: string; gloss: string }[] = [
   { kind: "source", label: "source", gloss: "where a fact came from" },
 ];
 
+export const KIND_LABEL: Partial<Record<NodeKind, string>> = Object.fromEntries(
+  ENTRIES.map((e) => [e.kind, e.label]),
+);
+
 export default function Legend() {
   return (
     <div className="pointer-events-none flex flex-wrap items-center gap-x-3 gap-y-1 border border-line bg-panel/90 px-2 py-1 backdrop-blur">

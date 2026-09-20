@@ -455,8 +455,19 @@ function Header({ me, interns, onDeleteMine }: { me: Me; interns: Intern[]; onDe
       <span className="text-faint">community brain</span>
       <div className="ml-auto flex items-center gap-4 text-faint">
         <span>{working} working</span>
-        <a href="/stats" className="hover:text-fg">stats</a>
-        <button type="button" onClick={onDeleteMine} className="hover:text-err">delete my stuff</button>
+        <a
+          href="/stats"
+          className="border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"
+        >
+          stats
+        </a>
+        <button
+          type="button"
+          onClick={onDeleteMine}
+          className="border border-line px-1.5 py-0.5 transition-colors hover:border-err/50 hover:text-err"
+        >
+          delete my stuff
+        </button>
         <span className="flex items-center gap-1.5">
           {me.image ? (
             // eslint-disable-next-line @next/next/no-img-element
