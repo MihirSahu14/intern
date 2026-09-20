@@ -1,159 +1,94 @@
 # Intern — setup manifest
 
-Every credential this project needs, where it lives, and what it unlocks.
+Every credential this project needs and where it lives. There are only two
+places, and the split is simple: **the browser needs the Convex URLs, the
+Convex functions need everything else.**
 
-Status as of the last update below. Re-check any time with:
+| Store | Read by | Committed? |
+|---|---|---|
+| `.env.local` | `next dev` / `next build` and the Convex CLI | no (gitignored) |
+| Convex deployment env (`npx convex env set`) | the Convex functions themselves | n/a, lives in the cloud |
 
-```sh
-curl -s localhost:3000/api/connectors | python3 -m json.tool   # what can send
-npx convex env list                                            # deployment vars (prints VALUES — careful)
-```
+Putting a value in the wrong one fails silently, so: if a function in `convex/`
+reads it, it goes on the deployment.
 
 ---
 
-## Where configuration lives
+## `.env.local`
 
-There are **four** places, and putting a value in the wrong one fails silently.
+Three values, all written by `npx convex dev`. See `.env.local.example`.
 
-| File / store | Read by | Committed? |
+```
+CONVEX_DEPLOYMENT
+NEXT_PUBLIC_CONVEX_URL
+NEXT_PUBLIC_CONVEX_SITE_URL
+```
+
+## Convex deployment env
+
+```sh
+npx convex env list          # prints VALUES — careful
+npx convex env set KEY value
+```
+
+| Key | Unlocks | Set by |
 |---|---|---|
-| `.env.local` | the Next.js cockpit — connectors, Scout URL, Convex client | no (gitignored) |
-| `scout/.env` | the Python brain — model, read-side providers | no (gitignored) |
-| Convex deployment env (`npx convex env set`) | Convex functions — OAuth callback, token refresh | n/a, lives in the cloud |
-| Google Cloud / Slack consoles | the OAuth clients themselves | n/a |
+| `GEMINI_API_KEY` | interns thinking at all — without it every run fails | you, from AI Studio |
+| `GEMINI_MODEL` | optional override; defaults to `gemini-flash-latest` | you |
+| `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` | GitHub sign-in, the only way in | a GitHub OAuth App |
+| `SITE_URL` | where the OAuth callback returns to | you |
+| `JWKS` / `JWT_PRIVATE_KEY` | session tokens | `npx @convex-dev/auth`, once |
 
-Rule of thumb: **sending** is configured in `.env.local`, **reading** in `scout/.env`, and **per-user OAuth** on the Convex deployment.
-
-### Three different Google credentials
-
-They are not interchangeable, and this is the easiest thing in the project to get wrong.
-
-| Credential | What it is | For |
-|---|---|---|
-| `GOOGLE_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN` | OAuth client + a user's grant | sending mail and creating events **as a person** |
-| `GOOGLE_API_KEY` | an AI Studio key | the Gemini model Scout runs on |
-| `GOOGLE_SERVICE_ACCOUNT_FILE` | a service account JSON | Scout **reading** Drive as itself |
-
-A service account cannot send mail as you; an API key cannot do either.
+The GitHub OAuth App's **Authorization callback URL** is
+`<NEXT_PUBLIC_CONVEX_SITE_URL>/api/auth/callback/github`. Nothing else is
+registered with any third party: there are no Google, Slack or webhook
+credentials any more, because there is no outbound path — approvals are a
+sandbox and nothing is ever sent.
 
 ---
 
-## Current state
+## Admin
 
-### ✅ Working
-
-| What | Where | Notes |
-|---|---|---|
-| `SCOUT_API_URL` / `SCOUT_AGENT_ID` | `.env.local` | defaults are fine |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | `.env.local` | Desktop-app OAuth client |
-| `GOOGLE_REFRESH_TOKEN` | `.env.local` | verified valid — `gmail.send` + `calendar.events` |
-| `CONVEX_DEPLOYMENT` | `.env.local` | `dev:graceful-albatross-202` (shared, Mihir's) |
-| `NEXT_PUBLIC_CONVEX_URL` / `_SITE_URL` | `.env.local` | written by `convex dev` |
-| `JWKS` / `JWT_PRIVATE_KEY` / `SITE_URL` | Convex deployment | written by `@convex-dev/auth` |
-
-Connectors: **email ✅ · calendar ✅ · slack ❌**
-
-### ❌ Not set yet
-
-| What | Where | Unlocks | Effort |
-|---|---|---|---|
-| `OUTBOX_DRY_RUN=0` | `.env.local` | actually sending — currently every send is simulated | 10 s |
-| `OUTBOX_TEST_RECIPIENT` | `.env.local` | routes every simulated draft to your own inbox | 10 s |
-| `SLACK_BOT_TOKEN` | `.env.local` | the Slack connector | 5 min |
-| `GOOGLE_API_KEY` | `scout/.env` (file doesn't exist yet) | LIVE mode — real agent runs instead of scripted | 15 min |
-| `SLACK_BOT_TOKEN` | `scout/.env` | Scout reading your Slack | same token as above |
-| `SLACK_SIGNING_SECRET` | `scout/.env` | Scout as a Slack bot you can talk to | +10 min, needs ngrok |
-| `PARALLEL_API_KEY` | `scout/.env` | better web search; falls back to a keyless MCP without it | optional |
-| `GOOGLE_SERVICE_ACCOUNT_FILE` | `scout/.env` | Scout reading Drive — **different credential type** to the trio above | optional |
-| `GOOGLE_CLIENT_ID` / `_SECRET` | Convex deployment | per-user Google OAuth | blocked |
-| `SLACK_CLIENT_ID` / `_SECRET` | Convex deployment | per-user Slack OAuth | blocked |
-
----
-
-## Ordered next steps
-
-### 1 · Send for real (2 min)
-
-```sh
-# .env.local
-OUTBOX_TEST_RECIPIENT=andrewwang123118@gmail.com
-OUTBOX_DRY_RUN=0
-```
-
-Restart, `spawn email josh thanking him for the rlm paper`, approve in the rail.
-
-> With `OUTBOX_DRY_RUN=0` **every approval sends.** The approve button dropping the "(dry run)" label is the only cue.
-
-### 2 · Slack connector (5 min)
-
-api.slack.com/apps → Create New App → From scratch → **OAuth & Permissions** → Bot Token Scopes:
+There is no admin UI. Use the Convex dashboard's function runner:
 
 ```
-chat:write          sending
-chat:write.public   posting to channels the bot isn't in
-channels:history    Scout reading public channels
-groups:history      private channels
-users:read          resolving names
+users:ban            {"handle": "someone"}      bans and purges everything they added
+users:purge          {"userId": "..."}          purge alone
 ```
 
-Install to Workspace → copy the **Bot User OAuth Token** (`xoxb-…`) → `SLACK_BOT_TOKEN` in `.env.local`.
-
-The bot must be `/invite`d to private channels. Slack message *search* needs a **user** token (`search:read` isn't a bot scope) — history and threads work without it.
-
-### 3 · Scout LIVE (15 min)
-
-Scout runs on **Gemini** (`gemini-flash-latest`, pinned to the alias), so it wants
-`GOOGLE_API_KEY` from AI Studio. Note `scout/example.env` still says
-`OPENAI_API_KEY` — it wasn't updated when the model changed, so ignore that line.
-
-```sh
-cp scout/example.env scout/.env      # add GOOGLE_API_KEY (+ SLACK_BOT_TOKEN from step 2)
-cd scout && docker compose up -d --build
-```
-
-Header flips SIM → LIVE.
-
-### 4 · Per-user OAuth — blocked
-
-In order:
-
-1. **Client auth wiring** — `components/ConvexClientProvider.tsx` uses a plain `ConvexProvider`, which never sends auth tokens, so `getAuthUserId` is null in the browser and nobody can sign in.
-2. `npx convex env set GOOGLE_CLIENT_ID …` etc. on the deployment.
-3. A **Web application** Google client (not Desktop) with redirect `https://graceful-albatross-202.convex.site/oauth/callback`.
-4. A Slack app redirect at the same URL — per-user Slack needs `user_scope`, a different install flow from step 2.
-5. Connectors read per-user tokens keyed off `actions.decidedBy`; a Connect button in the rail.
-
-Steps 1–4 of the backend are already built: `convex/connections.ts`, `convex/http.ts`, `convex/tokens.ts`, `convex/providers.ts`.
+Dashboard: https://dashboard.convex.dev/d/graceful-albatross-202
 
 ---
 
 ## Known hazards
 
-**Shared dev deployment.** `graceful-albatross-202` is Mihir's personal dev deployment and you both push to it. Convex dev deployments are single-developer by design — **whoever pushes last wins, for the whole team.** A push from here already deleted indexes on `observations` and `decisions`, tables that exist on the deployment but not in this repo's `schema.ts`. Agree on one watcher (`npx convex dev`) and have everyone else use `npx convex dev --once`.
+**Shared dev deployment.** `graceful-albatross-202` is a personal dev
+deployment, and Convex dev deployments are single-developer by design —
+**whoever pushes last wins, for everyone.** Agree on one `npx convex dev`
+watcher; everyone else uses `npx convex dev --once`. It still holds the
+hackathon data and was never wiped, so a schema push can fight rows that
+predate this branch.
 
-**Google refresh token expires every 7 days.** The consent screen is in Testing mode, where Google caps refresh-token lifetime at 7 days. Sending will start failing with `invalid_grant`. Re-run `node scripts/google-token.mjs <id> <secret>` to fix. Publishing to Production removes the cap but `gmail.send` is a sensitive scope needing verification — weeks.
+**`JWT_PRIVATE_KEY` was printed to a chat transcript.** If that log is shared,
+rotate: delete the var and re-run `npx @convex-dev/auth`.
 
-**Test users list.** Anyone demoing must be added under OAuth consent screen → Test users, or they get `Error 403: access_denied`.
-
-**Seeded contacts point at `example.com`** (RFC 2606, routes nowhere) so an accidental real send can't reach a stranger. Don't change them back to real-looking domains.
-
-**One identity, for now.** Until per-user OAuth lands, every send goes out as the single Google account whose refresh token is in `.env.local` — regardless of who approved it. `actions.decidedBy` and the From header will disagree.
-
-**`JWT_PRIVATE_KEY` was printed to a chat transcript.** If that log is shared, rotate: delete the var and re-run `npx @convex-dev/auth`.
+**The brain is public.** Every brief, fact and draft is readable by anyone
+signed in, and the consent gate says so before anyone can write. Don't paste
+anything into it you wouldn't publish.
 
 ---
 
 ## Quick reference
 
 ```sh
-npm run dev                      # cockpit → localhost:3000
-npx convex dev                   # function watcher (only one person at a time)
-npx convex dev --once            # push once and exit
-cd scout && docker compose up -d # the brain → localhost:8000
-
-curl -s localhost:3000/api/connectors   # what can send
-curl -s localhost:3000/api/outbox       # what's waiting for approval
-curl -s localhost:3000/api/brain        # the graph
+npm run dev                # cockpit → localhost:3000
+npx convex dev             # function watcher (one person at a time)
+npx convex dev --once      # push once and exit
+npm test                   # pure logic
+npx vitest run             # the Convex functions
+npm run eval               # 20 briefs through the live prompt (costs tokens)
 ```
 
-Command bar: `spawn <task>` · `ask <q>` · `outbox` · `approve <id>` · `reject <id> <reason>` · `graph refresh` · `help`
+Command bar: bare text is a brief · `spawn <task>` · `capture <what you know>` ·
+`approve <id>` · `reject <id> <reason>` · `answer <id> <text>` · `kill <id>` ·
+`focus <id>` · `clear` · `help`
