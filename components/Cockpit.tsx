@@ -424,6 +424,8 @@ export default function Cockpit({ me }: { me: Me }) {
             filter={filter}
             onFilter={setFilter}
             onKill={kill}
+            onRetry={spawn}
+            mineId={me.userId}
           />
         </aside>
       </div>
