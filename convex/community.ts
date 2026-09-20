@@ -51,3 +51,35 @@ export const landing = query({
     return { people: users.filter((u) => u.acceptedAt).length, facts: facts.length, approved: approved.length, cap };
   },
 });
+
+/**
+ * The three numbers on /stats. ponytail: last 1,000 runs and drafts.
+ * "Edit rate" = share of decided drafts that were edited or rejected.
+ */
+export const evals = query({
+  args: {},
+  handler: async (ctx) => {
+    const runs = await ctx.db.query("interns").order("desc").take(1000);
+    const drafts = (await ctx.db.query("actions").order("desc").take(1000)).filter((a) => a.decision);
+
+    const withBlock = runs.filter((r) => r.parseOutcome?.startsWith("action"));
+    const parsed = withBlock.filter((r) => r.parseOutcome === "action").length;
+
+    const rate = (xs: typeof drafts) =>
+      xs.length ? xs.filter((d) => d.decision !== "approved_unedited").length / xs.length : null;
+    const recalled = drafts.filter((d) => d.recalledCorrection);
+    const cold = drafts.filter((d) => !d.recalledCorrection);
+
+    return {
+      runs: runs.length,
+      parseRate: withBlock.length ? parsed / withBlock.length : null,
+      actionBlocks: withBlock.length,
+      uneditedRate: drafts.length ? drafts.filter((d) => d.decision === "approved_unedited").length / drafts.length : null,
+      decided: drafts.length,
+      editRateWithCorrection: rate(recalled),
+      withCorrection: recalled.length,
+      editRateWithout: rate(cold),
+      without: cold.length,
+    };
+  },
+});
