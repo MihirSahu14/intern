@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Graph, GraphNode, NodeKind } from "@/lib/types";
-import { useThemeTokens } from "./theme";
+import { readThemeTokens } from "./theme";
 
 export const KIND_ORDER: NodeKind[] = [
   "source",
@@ -68,6 +68,12 @@ type Props = {
   hidden: Set<NodeKind>;
   /** Ids currently doing work — rendered with an expanding ring. */
   activeIds: string[];
+  /**
+   * Extra clearance reserved at the bottom of the frame, on top of the
+   * normal padding — for a caller that overlays something (a legend) on
+   * the canvas itself, so the auto-fit doesn't settle nodes underneath it.
+   */
+  bottomInset?: number;
 };
 
 /** Everything the render loop needs, kept in a ref so the loop never restarts. */
@@ -78,7 +84,6 @@ type Live = {
   visible: Set<string>;
   matches: Set<string> | null;
   active: Set<string>;
-  tokens: Record<string, string>;
 };
 
 const FALLBACK = "#8d97a3";
@@ -112,6 +117,7 @@ export default function BrainGraph({
   query,
   hidden,
   activeIds,
+  bottomInset = 0,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -131,7 +137,10 @@ export default function BrainGraph({
   /** Once the user pans/zooms/drags, auto-framing stops fighting them. */
   const userMoved = useRef(false);
   const [hoverLabel, setHoverLabel] = useState<string | null>(null);
-  const tokens = useThemeTokens();
+  const bottomInsetRef = useRef(bottomInset);
+  useEffect(() => {
+    bottomInsetRef.current = bottomInset;
+  }, [bottomInset]);
 
   const adjacency = useMemo(() => {
     const map = new Map<string, Set<string>>();
@@ -173,7 +182,6 @@ export default function BrainGraph({
     visible,
     matches,
     active: new Set(activeIds),
-    tokens,
   });
 
   useEffect(() => {
@@ -184,13 +192,74 @@ export default function BrainGraph({
       visible,
       matches,
       active: new Set(activeIds),
-      tokens,
     };
-  }, [graph, selectedId, adjacency, visible, matches, activeIds, tokens]);
+  }, [graph, selectedId, adjacency, visible, matches, activeIds]);
+
+  // --- framing ------------------------------------------------------------
+  // Declared before the effects that use it (body seeding, resize) so both
+  // can snap the camera to a correct frame immediately instead of waiting
+  // on autoFrame()'s per-frame ease to visibly crawl there.
+  /** Camera that would frame every visible node, or null if there are none. */
+  const computeFit = useCallback(() => {
+    const bs = [...bodies.current.values()].filter((b) =>
+      live.current.visible.has(b.id),
+    );
+    if (!bs.length) return null;
+    let minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity;
+    for (const b of bs) {
+      minX = Math.min(minX, b.x);
+      maxX = Math.max(maxX, b.x);
+      minY = Math.min(minY, b.y);
+      maxY = Math.max(maxY, b.y);
+    }
+    const { w, h } = size.current;
+    // Generous enough to hold a full-length truncated label (up to ~160px
+    // wide) centred under a node sitting right at the bounding box's edge,
+    // not just the node's own radius — otherwise a fit that looks correct
+    // by node position alone still clips text.
+    const pad = 84;
+    // `bottomInset` reserves extra room at the bottom only (for a caller's
+    // overlaid legend) — the usable band shrinks and its own midpoint, not
+    // the canvas's, is what centring targets.
+    const padBottom = pad + bottomInsetRef.current;
+    const usableTop = pad;
+    const usableBottom = h - padBottom;
+    const k = Math.min(
+      2.4,
+      Math.max(
+        0.15,
+        Math.min(
+          (w - pad * 2) / (maxX - minX || 1),
+          (usableBottom - usableTop) / (maxY - minY || 1),
+        ),
+      ),
+    );
+    return {
+      k,
+      tx: w / 2 - ((minX + maxX) / 2) * k,
+      ty: (usableTop + usableBottom) / 2 - ((minY + maxY) / 2) * k,
+    };
+  }, []);
+
+  const fit = useCallback(() => {
+    const target = computeFit();
+    if (!target) return;
+    userMoved.current = false;
+    view.current = target;
+  }, [computeFit]);
+
+  const fitRef = useRef(computeFit);
+  useEffect(() => {
+    fitRef.current = computeFit;
+  }, [computeFit]);
 
   // --- sync bodies with the incoming graph, preserving positions ----------
   useEffect(() => {
     const map = bodies.current;
+    const hadBodies = map.size > 0;
     const next = new Set(graph.nodes.map((n) => n.id));
     for (const id of map.keys()) if (!next.has(id)) map.delete(id);
 
@@ -233,60 +302,22 @@ export default function BrainGraph({
       });
     });
     if (added) alpha.current = Math.max(alpha.current, 0.75);
-  }, [graph.nodes, adjacency]);
+
+    // The very first bodies to exist should appear already framed. Without
+    // this, they start under whatever the last resize left `view` at (or the
+    // k:1 default) and autoFrame() eases toward the real fit over the next
+    // second — visibly off-centre/clipped on first paint, which is exactly
+    // what looked broken.
+    if (!hadBodies && map.size > 0 && !userMoved.current) {
+      const target = computeFit();
+      if (target) view.current = target;
+    }
+  }, [graph.nodes, adjacency, computeFit]);
 
   // Reheat whenever the brain changes shape.
   useEffect(() => {
     alpha.current = Math.max(alpha.current, 0.6);
   }, [graph.generatedAt]);
-
-  // --- framing ------------------------------------------------------------
-  /** Camera that would frame every visible node, or null if there are none. */
-  const computeFit = useCallback(() => {
-    const bs = [...bodies.current.values()].filter((b) =>
-      live.current.visible.has(b.id),
-    );
-    if (!bs.length) return null;
-    let minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
-    for (const b of bs) {
-      minX = Math.min(minX, b.x);
-      maxX = Math.max(maxX, b.x);
-      minY = Math.min(minY, b.y);
-      maxY = Math.max(maxY, b.y);
-    }
-    const { w, h } = size.current;
-    const pad = 56;
-    const k = Math.min(
-      2.4,
-      Math.max(
-        0.15,
-        Math.min(
-          (w - pad * 2) / (maxX - minX || 1),
-          (h - pad * 2) / (maxY - minY || 1),
-        ),
-      ),
-    );
-    return {
-      k,
-      tx: w / 2 - ((minX + maxX) / 2) * k,
-      ty: h / 2 - ((minY + maxY) / 2) * k,
-    };
-  }, []);
-
-  const fit = useCallback(() => {
-    const target = computeFit();
-    if (!target) return;
-    userMoved.current = false;
-    view.current = target;
-  }, [computeFit]);
-
-  const fitRef = useRef(computeFit);
-  useEffect(() => {
-    fitRef.current = computeFit;
-  }, [computeFit]);
 
   // --- simulation + render loop (mounted once) ----------------------------
   useEffect(() => {
@@ -296,22 +327,28 @@ export default function BrainGraph({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let measured = false;
     const ro = new ResizeObserver(() => {
       const rect = wrap.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       size.current = { w: rect.width, h: rect.height };
-      if (!measured && rect.width > 0) {
-        // World origin starts at the middle of the canvas, not the corner.
-        measured = true;
-        view.current.tx = rect.width / 2;
-        view.current.ty = rect.height / 2;
-      }
       canvas.width = Math.max(1, Math.floor(rect.width * dpr));
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      if (rect.width <= 0 || userMoved.current) return;
+      // Snap immediately rather than leaving autoFrame()'s slow per-frame
+      // ease to crawl there — that crawl is what a resize (including the
+      // very first layout measurement, before any bodies exist) looked
+      // like: an off-centre, partly empty canvas for the first second.
+      // World origin sits at the middle of the usable band when there's
+      // nothing to fit yet.
+      view.current = fitRef.current() ?? {
+        k: 1,
+        tx: rect.width / 2,
+        ty: (rect.height - bottomInsetRef.current) / 2,
+      };
     });
     ro.observe(wrap);
 
@@ -412,8 +449,12 @@ export default function BrainGraph({
     const draw = () => {
       const { w, h } = size.current;
       const { k, tx, ty } = view.current;
-      const { graph: g, selectedId: sel, adjacency: adj, visible: vis, matches: mt, active, tokens: t } =
+      const { graph: g, selectedId: sel, adjacency: adj, visible: vis, matches: mt, active } =
         live.current;
+      // Read fresh every frame rather than from React state: a theme flip
+      // must repaint on the very next tick, and this loop already ticks at
+      // 60fps regardless (see components/theme.ts for why).
+      const t = readThemeTokens();
       const edgeRgb = t["--canvas-edge-rgb"] || "255,255,255";
       const accentRgb = t["--accent-rgb"] || "78,201,165";
       const labelRgb = t["--canvas-label-rgb"] || "200,205,211";

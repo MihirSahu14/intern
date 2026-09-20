@@ -3,14 +3,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Intern, LogLine, LogLevel } from "@/lib/types";
 
+// This stream always reads as a dark terminal inset, in both themes — see
+// the `--color-term-*` tokens in app/globals.css. Every colour class below
+// is one of those, not the theme-following bg-panel/text-dim/etc.
 const LEVEL: Record<LogLevel, { glyph: string; className: string }> = {
-  sys: { glyph: "·", className: "text-faint" },
-  in: { glyph: ">", className: "text-fg" },
-  out: { glyph: " ", className: "text-dim" },
-  tool: { glyph: "→", className: "text-k-project" },
-  ok: { glyph: "✓", className: "text-ok" },
-  warn: { glyph: "!", className: "text-warn" },
-  err: { glyph: "✗", className: "text-err" },
+  sys: { glyph: "·", className: "text-term-faint" },
+  in: { glyph: ">", className: "text-term-fg" },
+  out: { glyph: " ", className: "text-term-dim" },
+  tool: { glyph: "→", className: "text-term-k-project" },
+  ok: { glyph: "✓", className: "text-term-ok" },
+  warn: { glyph: "!", className: "text-term-warn" },
+  err: { glyph: "✗", className: "text-term-err" },
 };
 
 const clock = (ts: number) =>
@@ -55,9 +58,11 @@ export default function Terminal({
   );
 
   return (
-    <section className="flex min-h-0 flex-col bg-panel">
-      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-        <span className="label mr-2">stream</span>
+    <section style={{ colorScheme: "dark" }} className="flex min-h-0 flex-col bg-term-panel">
+      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-term-line px-2">
+        <span className="mr-2 text-[11px] tracking-[0.14em] uppercase text-term-dim">
+          stream
+        </span>
         <Tab active={filter === null} onClick={() => onFilter(null)}>
           all
         </Tab>
@@ -68,20 +73,20 @@ export default function Terminal({
             onClick={() => onFilter(i.id)}
             dot={
               i.status === "running"
-                ? "bg-ok pulse-slow"
+                ? "bg-term-ok pulse-slow"
                 : i.status === "failed"
-                  ? "bg-err"
+                  ? "bg-term-err"
                   : i.status === "cancelled"
-                    ? "bg-faint"
+                    ? "bg-term-faint"
                     : i.status === "queued"
-                      ? "bg-warn"
-                      : "bg-line-2"
+                      ? "bg-term-warn"
+                      : "bg-term-line-2"
             }
           >
             {i.handle}
           </Tab>
         ))}
-        <div className="ml-auto flex items-center gap-3 text-faint">
+        <div className="ml-auto flex items-center gap-3 text-term-faint">
           <span>
             {active.length} active · {lines.length} lines
           </span>
@@ -92,8 +97,8 @@ export default function Terminal({
               const el = scroller.current;
               if (el) el.scrollTop = el.scrollHeight;
             }}
-            className={`transition-colors hover:text-fg ${
-              follow ? "text-ok" : "text-faint"
+            className={`transition-colors hover:text-term-fg ${
+              follow ? "text-term-ok" : "text-term-faint"
             }`}
             title="follow tail"
           >
@@ -107,7 +112,7 @@ export default function Terminal({
         className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5"
       >
         {lines.length === 0 ? (
-          <p className="px-1 py-2 text-faint">
+          <p className="px-1 py-2 text-term-faint">
             no output yet. dispatch an intern below.
           </p>
         ) : null}
@@ -118,13 +123,13 @@ export default function Terminal({
               key={line.id}
               className="enter flex items-start gap-2 whitespace-pre-wrap break-words px-1 leading-[1.55]"
             >
-              <span className="shrink-0 whitespace-nowrap text-faint tabular-nums">
+              <span className="shrink-0 whitespace-nowrap text-term-faint tabular-nums">
                 {clock(line.ts)}
               </span>
               <button
                 type="button"
                 onClick={() => onFilter(line.internId)}
-                className="w-[64px] shrink-0 truncate whitespace-nowrap text-left text-faint transition-colors hover:text-dim"
+                className="w-[64px] shrink-0 truncate whitespace-nowrap text-left text-term-faint transition-colors hover:text-term-dim"
               >
                 {line.internId ?? "cockpit"}
               </button>
@@ -157,8 +162,8 @@ function Tab({
       onClick={onClick}
       className={`flex items-center gap-1.5 px-2 py-0.5 transition-colors ${
         active
-          ? "bg-raised text-fg"
-          : "text-faint hover:bg-raised/60 hover:text-dim"
+          ? "bg-term-raised text-term-fg"
+          : "text-term-faint hover:bg-term-raised/60 hover:text-term-dim"
       }`}
     >
       {dot ? <span className={`h-1 w-1 rounded-full ${dot}`} /> : null}

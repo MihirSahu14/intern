@@ -70,7 +70,7 @@ export default function Landing() {
         {/* ---- the brain ----------------------------------------------- */}
         <section className="enter mt-14 border border-line bg-panel" aria-label="Example company brain">
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
-            <span className="label">the brain · hover a node</span>
+            <span className="label">example · one onboarding brief</span>
             <span className="text-faint">size = how much hangs off it</span>
           </div>
           <LandingGraph />

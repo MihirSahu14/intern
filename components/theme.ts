@@ -35,7 +35,20 @@ const CANVAS_KEYS = [
   "--accent-rgb",
 ] as const;
 
-function readTokens(): Record<string, string> {
+/**
+ * Plain (non-hook) read of the current theme tokens, straight off the
+ * cascade. The canvas render loop calls this directly, once per frame,
+ * instead of going through `useThemeTokens()`'s React state: a theme flip
+ * needs to repaint the very next frame, and routing that through a
+ * `matchMedia`/`MutationObserver` → `setState` → effect chain adds a step
+ * that isn't guaranteed to fire promptly (some embedders — e.g. CDP-driven
+ * colour-scheme emulation — change what `prefers-color-scheme` matches
+ * without ever dispatching a `change` event on an existing
+ * `MediaQueryList`). Reading a dozen custom properties once per
+ * already-running rAF tick is not a meaningful cost next to the physics
+ * simulation it sits beside.
+ */
+export function readThemeTokens(): Record<string, string> {
   const style = getComputedStyle(document.documentElement);
   const out: Record<string, string> = {};
   for (const k of CANVAS_KEYS) out[k] = style.getPropertyValue(k).trim();
@@ -58,12 +71,12 @@ function sameTokens(a: Record<string, string>, b: Record<string, string>): boole
  */
 export function useThemeTokens(): Record<string, string> {
   const [tokens, setTokens] = useState<Record<string, string>>(() =>
-    typeof window === "undefined" ? {} : readTokens(),
+    typeof window === "undefined" ? {} : readThemeTokens(),
   );
 
   useEffect(() => {
     const update = () => setTokens((prev) => {
-      const next = readTokens();
+      const next = readThemeTokens();
       return sameTokens(prev, next) ? prev : next;
     });
     update();

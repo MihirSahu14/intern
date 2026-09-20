@@ -360,6 +360,9 @@ export default function Cockpit({ me }: { me: Me }) {
               query={query}
               hidden={hidden}
               activeIds={activeIds}
+              // The legend overlays the bottom of this same canvas (below) —
+              // reserve room so auto-fit doesn't settle nodes under it.
+              bottomInset={72}
             />
             <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
               <div className="pointer-events-auto flex items-center gap-2 border border-line bg-panel/90 px-2 py-1 backdrop-blur">
