@@ -15,7 +15,10 @@ import type { NodeKind } from "@/lib/types";
 export default function KindGlyph({ kind, size = 14 }: { kind: NodeKind; size?: number }) {
   const color = KIND_VAR[kind];
   const c = size / 2;
-  const r = size * 0.36;
+  // A diamond inside the same radius covers about a third less area than the
+  // circle beside it, so it reads smaller at a glance. Grow it until the two
+  // weigh the same.
+  const r = size * (kind === "contact" ? 0.46 : 0.36);
 
   return (
     <svg
