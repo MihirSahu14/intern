@@ -1,6 +1,7 @@
 import Link from "next/link";
 import LandingGraph from "@/components/LandingGraph";
 import LandingStats from "@/components/LandingStats";
+import ThemeToggle from "@/components/ThemeToggle";
 
 /**
  * The public face. The cockpit lives behind sign-in at `/app`.
@@ -180,9 +181,12 @@ function Nav() {
       <span className="text-[30px] tracking-tight text-fg">
         intern<span className="text-accent">_</span>
       </span>
-      <Link href="/app" className="text-dim transition-colors hover:text-fg">
-        sign in →
-      </Link>
+      <div className="flex items-center gap-3">
+        <ThemeToggle />
+        <Link href="/app" className="text-dim transition-colors hover:text-fg">
+          sign in →
+        </Link>
+      </div>
     </nav>
   );
 }

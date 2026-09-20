@@ -18,6 +18,7 @@ import Outbox, { type Decision } from "./Outbox";
 import Questions from "./Questions";
 import Teach, { type TeachInput } from "./Teach";
 import Terminal from "./Terminal";
+import ThemeToggle from "./ThemeToggle";
 
 export type Me = { userId: Id<"users">; handle: string; image: string | null };
 
@@ -455,6 +456,7 @@ function Header({ me, interns, onDeleteMine }: { me: Me; interns: Intern[]; onDe
       <span className="text-faint">community brain</span>
       <div className="ml-auto flex items-center gap-4 text-faint">
         <span>{working} working</span>
+        <ThemeToggle />
         <a
           href="/stats"
           className="border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"

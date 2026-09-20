@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useThemeTokens } from "./theme";
 
 /**
  * A miniature brain for the landing page.
@@ -11,17 +12,11 @@ import { useEffect, useRef } from "react";
  * a stored weight — so what you see here is honestly what you get inside.
  */
 
-const C = {
-  source: "#8d97a3",
-  contact: "#6ee7b7",
-  project: "#7cb7ff",
-  note: "#c0a6ff",
-  followup: "#ffb473",
-  wiki: "#5fd0d0",
-  tag: "#565c65",
-} as const;
+type Kind = "source" | "contact" | "project" | "note" | "followup" | "wiki" | "tag";
 
-type Kind = keyof typeof C;
+const FALLBACK = "#8d97a3";
+const kindColor = (tokens: Record<string, string>, kind: Kind) =>
+  tokens[`--color-k-${kind}`] || FALLBACK;
 
 const NODES: { id: string; label: string; kind: Kind }[] = [
   { id: "slack", label: "slack", kind: "source" },
@@ -74,6 +69,14 @@ export default function LandingGraph() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hover = useRef<string | null>(null);
+  const tokens = useThemeTokens();
+  // The rAF loop below is mounted once ([] deps); it reads this ref instead
+  // of the `tokens` state directly so a theme change repaints on the next
+  // frame without tearing down and restarting the simulation.
+  const tokensRef = useRef(tokens);
+  useEffect(() => {
+    tokensRef.current = tokens;
+  }, [tokens]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -177,6 +180,9 @@ export default function LandingGraph() {
       const cx = w / 2;
       const cy = h / 2;
       const at = (b: Body) => ({ x: cx + b.x, y: cy + b.y });
+      const tok = tokensRef.current;
+      const edgeRgb = tok["--canvas-edge-rgb"] || "255,255,255";
+      const labelRgb = tok["--canvas-label-rgb"] || "200,205,211";
 
       const hv = hover.current;
       const near = hv ? (adj.get(hv) ?? new Set<string>()) : null;
@@ -191,7 +197,7 @@ export default function LandingGraph() {
         const pb = at(b);
         const strength = Math.max(a.imp, b.imp);
         ctx.lineWidth = 0.4 + strength * 0.8;
-        ctx.strokeStyle = `rgba(255,255,255,${(0.04 + 0.1 * strength) * f})`;
+        ctx.strokeStyle = `rgba(${edgeRgb},${(0.04 + 0.1 * strength) * f})`;
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
         ctx.lineTo(pb.x, pb.y);
@@ -201,7 +207,7 @@ export default function LandingGraph() {
       for (const b of bodies) {
         const f = focus(b.id);
         const p = at(b);
-        const col = C[b.kind];
+        const col = kindColor(tok, b.kind);
 
         if (b.imp > 0.5) {
           ctx.beginPath();
@@ -222,7 +228,7 @@ export default function LandingGraph() {
           ctx.font = "10px var(--font-mono), ui-monospace, monospace";
           ctx.textAlign = "center";
           ctx.textBaseline = "top";
-          ctx.fillStyle = `rgba(200,205,211,${0.3 + 0.6 * f})`;
+          ctx.fillStyle = `rgba(${labelRgb},${0.3 + 0.6 * f})`;
           ctx.fillText(b.label, p.x, p.y + b.r + 5);
         }
       }

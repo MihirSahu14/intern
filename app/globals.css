@@ -1,37 +1,161 @@
 @import "tailwindcss";
 
+/* Tailwind's utility surface — kept as indirection over the raw `:root` /
+   dark variables below, so the palette can change per theme without the
+   utility classes (bg-panel, text-dim, …) ever needing to know. */
 @theme inline {
-  --color-bg: #08090a;
-  --color-panel: #0b0c0e;
-  --color-raised: #101216;
-  --color-line: #23272c;
-  --color-line-2: #343a41;
-  --color-fg: #e4e6e9;
-  /* Three readable tiers on the panel background: 15.7:1, 7.5:1, 4.7:1.
-     `faint` used to be #464c54 — 2.26:1, which is most of what made this
-     screen unreadable, because nearly every secondary label uses it. */
-  --color-dim: #9aa1ab;
-  --color-faint: #767d86;
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-fg: var(--fg);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
 
-  --color-ok: #4ec9a5;
-  --color-warn: #d9a04a;
-  --color-err: #e05a5a;
-  --color-accent: #4ec9a5;
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-accent: var(--accent);
 
-  --color-k-source: #8d97a3;
-  --color-k-contact: #6ee7b7;
-  --color-k-project: #7cb7ff;
-  --color-k-note: #c0a6ff;
-  --color-k-followup: #ffb473;
-  --color-k-wiki: #5fd0d0;
-  --color-k-tag: #565c65;
-  --color-k-intern: #f2f4f6;
-  --color-k-action: #e8788a;
-  --color-k-fact: #e3c877;
-  --color-k-question: #ff8ad8;
+  --color-k-source: var(--k-source);
+  --color-k-contact: var(--k-contact);
+  --color-k-project: var(--k-project);
+  --color-k-note: var(--k-note);
+  --color-k-followup: var(--k-followup);
+  --color-k-wiki: var(--k-wiki);
+  --color-k-tag: var(--k-tag);
+  --color-k-intern: var(--k-intern);
+  --color-k-action: var(--k-action);
+  --color-k-fact: var(--k-fact);
+  --color-k-question: var(--k-question);
 
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
     monospace;
+}
+
+/* Light is the default (no attribute, no dark system preference). Every
+   value here must clear: fg >=12:1, dim >=7:1, faint >=4.5:1, borders
+   >=1.6:1, all against --panel — see .superpowers/sdd/theme-report.md for
+   the measured numbers. */
+:root {
+  color-scheme: light dark;
+
+  --bg: #eef0f2;
+  --panel: #ffffff;
+  --raised: #f3f4f6;
+  --line: #c7cbd0;
+  --line-2: #a9aeb6;
+  --fg: #14171a;
+  --dim: #4b525a;
+  --faint: #5f6670;
+
+  --ok: #0f8f6c;
+  --warn: #8a5c08;
+  --err: #c22c3e;
+  --accent: #0f8f6c;
+
+  --k-source: #57606c;
+  --k-contact: #0f8f6c;
+  --k-project: #1c5fc7;
+  --k-note: #7a4fe0;
+  --k-followup: #b6660a;
+  --k-wiki: #0f8f8f;
+  --k-tag: #797f87;
+  --k-intern: #14171a;
+  --k-action: #c62148;
+  --k-fact: #7a6208;
+  --k-question: #b23891;
+
+  /* The canvas paints itself, so it can't use Tailwind classes — these are
+     the raw values BrainGraph/LandingGraph read via components/theme.ts. */
+  --canvas-bg: #eef0f2;
+  --canvas-dot: rgba(10, 12, 14, 0.06);
+  --canvas-edge-rgb: 20, 23, 26;
+  --canvas-label-rgb: 75, 82, 90;
+  --canvas-label-plate-rgb: 238, 240, 242;
+  --canvas-tag-rgb: 95, 102, 112;
+  --accent-rgb: 15, 143, 108;
+}
+
+/* Dark values, tuned for contrast (faint 4.70:1, dim 7.51:1) — do not alter.
+   Duplicated rather than shared: the media query is "no explicit choice,
+   OS wants dark"; the attribute is "explicit dark", which must win over
+   whatever the OS prefers. CSS has no way to express "either of these
+   selectors" across an @media boundary, so both blocks carry the same
+   values. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #08090a;
+    --panel: #0b0c0e;
+    --raised: #101216;
+    --line: #23272c;
+    --line-2: #343a41;
+    --fg: #e4e6e9;
+    --dim: #9aa1ab;
+    --faint: #767d86;
+
+    --ok: #4ec9a5;
+    --warn: #d9a04a;
+    --err: #e05a5a;
+    --accent: #4ec9a5;
+
+    --k-source: #8d97a3;
+    --k-contact: #6ee7b7;
+    --k-project: #7cb7ff;
+    --k-note: #c0a6ff;
+    --k-followup: #ffb473;
+    --k-wiki: #5fd0d0;
+    --k-tag: #565c65;
+    --k-intern: #f2f4f6;
+    --k-action: #e8788a;
+    --k-fact: #e3c877;
+    --k-question: #ff8ad8;
+
+    --canvas-bg: #08090a;
+    --canvas-dot: rgba(255, 255, 255, 0.035);
+    --canvas-edge-rgb: 255, 255, 255;
+    --canvas-label-rgb: 200, 205, 211;
+    --canvas-label-plate-rgb: 8, 9, 10;
+    --canvas-tag-rgb: 120, 126, 134;
+    --accent-rgb: 78, 201, 165;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #08090a;
+  --panel: #0b0c0e;
+  --raised: #101216;
+  --line: #23272c;
+  --line-2: #343a41;
+  --fg: #e4e6e9;
+  --dim: #9aa1ab;
+  --faint: #767d86;
+
+  --ok: #4ec9a5;
+  --warn: #d9a04a;
+  --err: #e05a5a;
+  --accent: #4ec9a5;
+
+  --k-source: #8d97a3;
+  --k-contact: #6ee7b7;
+  --k-project: #7cb7ff;
+  --k-note: #c0a6ff;
+  --k-followup: #ffb473;
+  --k-wiki: #5fd0d0;
+  --k-tag: #565c65;
+  --k-intern: #f2f4f6;
+  --k-action: #e8788a;
+  --k-fact: #e3c877;
+  --k-question: #ff8ad8;
+
+  --canvas-bg: #08090a;
+  --canvas-dot: rgba(255, 255, 255, 0.035);
+  --canvas-edge-rgb: 255, 255, 255;
+  --canvas-label-rgb: 200, 205, 211;
+  --canvas-label-plate-rgb: 8, 9, 10;
+  --canvas-tag-rgb: 120, 126, 134;
+  --accent-rgb: 78, 201, 165;
 }
 
 html,
@@ -40,8 +164,8 @@ body {
 }
 
 body {
-  background: #08090a;
-  color: #e4e6e9;
+  background: var(--bg);
+  color: var(--fg);
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.55;
@@ -51,8 +175,8 @@ body {
 }
 
 ::selection {
-  background: rgba(78, 201, 165, 0.28);
-  color: #fff;
+  background: rgba(var(--accent-rgb), 0.28);
+  color: var(--fg);
 }
 
 /* Thin, unobtrusive scrollbars — the panels should read as one surface. */
@@ -92,7 +216,7 @@ textarea:focus {
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #9aa1ab;
+  color: var(--color-dim);
 }
 
 @keyframes pulse-dot {

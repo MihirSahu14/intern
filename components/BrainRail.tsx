@@ -1,7 +1,8 @@
 "use client";
 
-import { KIND_COLOR, KIND_ORDER } from "./BrainGraph";
+import { KIND_ORDER } from "./BrainGraph";
 import { KIND_LABEL } from "./Legend";
+import { KIND_VAR } from "./theme";
 import type { Graph, GraphNode, NodeKind } from "@/lib/types";
 
 export default function BrainRail({
@@ -51,7 +52,7 @@ export default function BrainRail({
             >
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: KIND_COLOR[k] }}
+                style={{ background: KIND_VAR[k] }}
               />
               <span className="text-dim">{KIND_LABEL[k] ?? k}</span>
               <span className="ml-auto text-faint tabular-nums">
@@ -73,7 +74,7 @@ export default function BrainRail({
               <div className="flex items-start gap-2">
                 <span
                   className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: KIND_COLOR[selected.kind] }}
+                  style={{ background: KIND_VAR[selected.kind] }}
                 />
                 <div className="min-w-0">
                   <p className="break-words text-fg">{selected.label}</p>
@@ -113,7 +114,7 @@ export default function BrainRail({
                         <span className="w-14 shrink-0 text-faint">{n.rel}</span>
                         <span
                           className="h-1 w-1 shrink-0 rounded-full"
-                          style={{ background: KIND_COLOR[node.kind] }}
+                          style={{ background: KIND_VAR[node.kind] }}
                         />
                         <span className="truncate text-dim">{node.label}</span>
                       </button>

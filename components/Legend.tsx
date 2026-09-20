@@ -1,6 +1,6 @@
 "use client";
 
-import { KIND_COLOR } from "./BrainGraph";
+import { KIND_VAR } from "./theme";
 import type { NodeKind } from "@/lib/types";
 
 /**
@@ -32,7 +32,7 @@ export default function Legend() {
         <span key={e.kind} className="flex items-center gap-1.5">
           <span
             className={`h-1.5 w-1.5 shrink-0 ${e.kind === "contact" ? "rotate-45" : "rounded-full"}`}
-            style={{ background: KIND_COLOR[e.kind] }}
+            style={{ background: KIND_VAR[e.kind] }}
           />
           <span className="text-dim">{e.label}</span>
           <span className="text-faint">{e.gloss}</span>
