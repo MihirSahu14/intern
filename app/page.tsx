@@ -1,6 +1,7 @@
 import Link from "next/link";
 import LandingGraph from "@/components/LandingGraph";
 import LandingStats from "@/components/LandingStats";
+import Loop from "@/components/Loop";
 import ThemeToggle from "@/components/ThemeToggle";
 
 /**
@@ -120,29 +121,15 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ---- how the brain fills --------------------------------------- */}
+        {/* ---- the loop -------------------------------------------------- */}
         <section className="mt-24">
-          <p className="label">how the brain fills</p>
+          <p className="label">how it gets better</p>
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            Everything the company observes lands once, immutably. Only what an
-            intern could plausibly cite gets promoted to a fact — the rest stays
-            in the log rather than bloating the graph.
+            Four steps, and the fourth feeds the second. That loop is the whole
+            product: the brain learns this company by being corrected, not by
+            being configured.
           </p>
-          <div className="mt-6 overflow-x-auto border border-line bg-panel p-5">
-            <pre className="min-w-max leading-[1.9] text-dim">
-              {`capture  →  observation      immutable, unique on (source, external_id)
-              ↓ promote        only if an intern could cite it
-            fact             provenance · confidence · validity window
-              ↓
-            graph node       wired back to whatever observed it`}
-            </pre>
-          </div>
-          <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            Capturing the same thing twice is harmless. A second, independent
-            observation of something already known doesn&rsquo;t duplicate it —
-            it corroborates it, and confidence goes up. Facts are never deleted,
-            only superseded.
-          </p>
+          <Loop />
         </section>
 
         {/* ---- close ---------------------------------------------------- */}
