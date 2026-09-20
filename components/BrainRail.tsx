@@ -1,8 +1,8 @@
 "use client";
 
 import { KIND_ORDER } from "./BrainGraph";
+import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
-import { KIND_VAR } from "./theme";
 import type { Graph, GraphNode, NodeKind } from "@/lib/types";
 
 export default function BrainRail({
@@ -51,10 +51,9 @@ export default function BrainRail({
               } hover:opacity-100`}
               title={off ? "show these" : "hide these"}
             >
-              <span
-                className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: KIND_VAR[k] }}
-              />
+              <span className="mt-0.5">
+                <KindGlyph kind={k} />
+              </span>
               <span className="min-w-0 flex-1">
                 <span className="text-dim">{KIND_LABEL[k] ?? k}</span>
                 {KIND_GLOSS[k] ? (
@@ -78,10 +77,9 @@ export default function BrainRail({
           ) : (
             <div className="space-y-2">
               <div className="flex items-start gap-2">
-                <span
-                  className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: KIND_VAR[selected.kind] }}
-                />
+                <span className="mt-0.5">
+                  <KindGlyph kind={selected.kind} />
+                </span>
                 <div className="min-w-0">
                   <p className="break-words text-fg">{selected.label}</p>
                   <p className="text-faint">{selected.kind}</p>
@@ -118,10 +116,7 @@ export default function BrainRail({
                         className="flex w-full items-center gap-2 py-0.5 text-left hover:bg-raised"
                       >
                         <span className="w-14 shrink-0 text-faint">{n.rel}</span>
-                        <span
-                          className="h-1 w-1 shrink-0 rounded-full"
-                          style={{ background: KIND_VAR[node.kind] }}
-                        />
+                        <KindGlyph kind={node.kind} size={11} />
                         <span className="truncate text-dim">{node.label}</span>
                       </button>
                     );
