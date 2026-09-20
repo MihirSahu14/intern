@@ -233,3 +233,53 @@ test("usage is recorded even when the run is cancelled", async () => {
   expect(usage?.costUsd).toBeCloseTo(costUsd(1000, 500));
   expect(usage?.runs).toBe(1);
 });
+
+test("evals: only action-block outcomes count as draft attempts", async () => {
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+
+  const mkRun = (parseOutcome: string) =>
+    t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "t", status: "done", countsTowardCap: true, parseOutcome }));
+  await mkRun("action");
+  await mkRun("action_malformed:no body");
+  await mkRun("question_malformed:no question");
+
+  const s = await t.query(api.community.evals, {});
+  expect(s.runs).toBe(3);
+  expect(s.actionBlocks).toBe(2);
+  expect(s.parseRate).toBe(0.5);
+});
+
+test("evals: edit rate splits by whether a correction was recalled", async () => {
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "t", status: "done", countsTowardCap: true }),
+  );
+  const mkAction = (recalledCorrection: boolean, decision: "approved_unedited" | "edited" | "rejected") =>
+    t.run((ctx) =>
+      ctx.db.insert("actions", {
+        ownerId: userId,
+        internId,
+        kind: "email",
+        status: decision === "rejected" ? "rejected" : "approved",
+        title: "t",
+        draft: { to: ["x@example.com"], subject: "s", body: "b" },
+        rationale: "because",
+        sources: [],
+        recalledCorrection,
+        decision,
+        decidedAt: Date.now(),
+      }),
+    );
+  await mkAction(true, "approved_unedited");
+  await mkAction(true, "approved_unedited");
+  await mkAction(false, "edited");
+  await mkAction(false, "rejected");
+
+  const s = await t.query(api.community.evals, {});
+  expect(s.withCorrection).toBe(2);
+  expect(s.editRateWithCorrection).toBe(0);
+  expect(s.without).toBe(2);
+  expect(s.editRateWithout).toBe(1);
+});

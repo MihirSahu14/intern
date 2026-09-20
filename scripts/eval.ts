@@ -7,7 +7,9 @@
  *   npm run eval
  *
  * About $0.10 per run on paid Gemini; free tier works but paces at 6s/brief.
- * Exits 1 if the action parse rate is under 90%.
+ * Exits 1 if the action parse rate is under 90% — or if every attempt errored
+ * out before producing anything to rate, so a Gemini outage can't look like a
+ * pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
 import { PROMPT_VERSION, brief } from "../lib/brief.ts";
@@ -44,6 +46,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let attempted = 0;
 let usable = 0;
 let matched = 0;
+let errored = 0;
 
 console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs\n`);
 for (const [task, expect] of CASES) {
@@ -52,6 +55,7 @@ for (const [task, expect] of CASES) {
     for await (const c of stream(brief(task, []))) report += c.text ?? "";
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
+    errored++;
     await sleep(6000);
     continue;
   }
@@ -66,6 +70,18 @@ for (const [task, expect] of CASES) {
   await sleep(6000);
 }
 
-const parseRate = attempted ? usable / attempted : 1;
-console.log(`\naction parse rate ${Math.round(parseRate * 100)}% (${usable}/${attempted}) · expectation match ${matched}/${CASES.length}`);
+// `attempted` (action blocks seen, malformed or not) is 0 whenever nothing
+// could be rated — either every call errored, or none of the "action"
+// briefs produced a block. Either way there is no parse rate to report, and
+// that is a failure, not a vacuous pass.
+if (!attempted) {
+  console.log(`\n${errored}/${CASES.length} briefs errored · nothing evaluable · expectation match ${matched}/${CASES.length}`);
+  process.exit(1);
+}
+
+const parseRate = usable / attempted;
+console.log(
+  `\naction parse rate ${Math.round(parseRate * 100)}% (${usable}/${attempted}) · expectation match ${matched}/${CASES.length}` +
+    (errored ? ` · ${errored} errored` : ""),
+);
 process.exit(parseRate < 0.9 ? 1 : 0);

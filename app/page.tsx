@@ -79,7 +79,7 @@ export default function Landing() {
         <section className="enter mt-6 border border-line bg-panel" aria-label="Example intern run">
           <div className="flex items-center gap-2 border-b border-line px-4 py-2">
             <span className="size-2 rounded-full bg-ok pulse-slow" />
-            <span className="label">live · one intern</span>
+            <span className="label">example · one intern</span>
           </div>
           <div className="overflow-x-auto p-4">
             <pre className="min-w-max leading-[1.9]">
