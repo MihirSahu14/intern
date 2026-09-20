@@ -3,29 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 
 export const HELP = [
-  "spawn <task>            dispatch an intern",
-  "ask <question>          ask the brain directly (no intern)",
-  "capture <what you know> put a fact into the brain by hand — nothing has to ask",
-  "                        the + panel top-right does the same with a kind and a link",
-  "kill <id>               stop an intern",
+  "spawn <task>            brief an intern (bare text does the same)",
+  "capture <what you know> teach the brain a fact (the + panel does it with a kind)",
+  "kill <id>               stop your intern",
   "",
-  "outbox                  list drafts waiting for approval",
-  "approve <id>            approve as written — edit in the rail instead to teach it",
-  "reject <id> <why>       stop it, and file why as a correction",
-  "",
-  "asks                    what the interns are stuck on",
-  "answer <id> <answer>    unblock one; the answer becomes a fact",
-  "",
-  "trust                   accepted-unedited rate per email/slack/calendar",
-  "graduate <kind>         let that kind go out unreviewed",
-  "supervise <kind>        put it back under review",
+  "approve <id>            approve your draft as written (sandbox: nothing is sent)",
+  "reject <id> <why>       reject it; the reason becomes a correction fact",
+  "answer <id> <answer>    unblock your intern; the answer becomes a fact",
   "",
   "focus <id|all>          filter the stream",
-  "graph refresh           re-read the brain",
-  "clear                   clear the stream view",
+  "clear                   clear your local lines",
   "help                    this",
-  "",
-  "bare text with no verb is treated as `spawn`.",
 ];
 
 export default function CommandBar({
@@ -99,7 +87,7 @@ export default function CommandBar({
         }}
         spellCheck={false}
         autoComplete="off"
-        placeholder="spawn map every mention of the ramp pilot across slack, drive and the wiki   ( / to focus )"
+        placeholder="brief an intern, e.g. draft a Slack post introducing Intern   ( / to focus )"
         className="min-w-0 flex-1 bg-transparent text-fg placeholder:text-faint/70"
       />
       <button
