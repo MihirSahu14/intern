@@ -13,6 +13,8 @@ export const MAX_BRIEF_CHARS = 2000;
 export const MAX_FACT_CHARS = 1000;
 /** An edited draft's `to`/`cc` list, before it becomes a fact body. */
 export const MAX_RECIPIENTS = 20;
+/** Each recipient in that list — an email address or a Slack channel name, never a paragraph. */
+export const MAX_RECIPIENT_CHARS = 200;
 
 // ponytail: list price per 1M tokens for gemini-flash-latest, checked by hand
 // at ai.google.dev/pricing. On the free tier nothing is billed; the cap then

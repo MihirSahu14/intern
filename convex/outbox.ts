@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { MAX_FACT_CHARS, MAX_RECIPIENTS } from "../lib/caps.ts";
+import { MAX_FACT_CHARS, MAX_RECIPIENT_CHARS, MAX_RECIPIENTS } from "../lib/caps.ts";
 import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
 import { mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
@@ -17,12 +17,17 @@ type Edits = {
  * it the same way every sibling path bounds its input (`teach`'s
  * MAX_FACT_CHARS, `dispatch`'s MAX_BRIEF_CHARS) — the accepted draft becomes a
  * fact body (`correctionFromEdit`), and an unbounded one can blow the 1MB
- * document limit after `actions` was already patched to approved.
+ * document limit after `actions` was already patched to approved. Bounding the
+ * array length alone isn't enough: each element is a free-text string too, so
+ * a single oversized recipient is capped the same way subject/body are.
  */
+const capRecipients = (list: string[]) =>
+  list.slice(0, MAX_RECIPIENTS).map((r) => r.trim().slice(0, MAX_RECIPIENT_CHARS)).filter(Boolean);
+
 function capEdits(edits: Edits): Edits {
   const out: Edits = {};
-  if (edits.to !== undefined) out.to = edits.to.slice(0, MAX_RECIPIENTS);
-  if (edits.cc !== undefined) out.cc = edits.cc.slice(0, MAX_RECIPIENTS);
+  if (edits.to !== undefined) out.to = capRecipients(edits.to);
+  if (edits.cc !== undefined) out.cc = capRecipients(edits.cc);
   if (edits.subject !== undefined) out.subject = edits.subject.slice(0, MAX_FACT_CHARS);
   if (edits.body !== undefined) out.body = edits.body.slice(0, MAX_FACT_CHARS);
   return out;
