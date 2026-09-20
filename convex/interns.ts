@@ -27,7 +27,12 @@ export async function dispatch(
   const usage = await ctx.db.query("usage").withIndex("by_date", (q) => q.eq("date", dayKey(now))).unique();
   const blocked = spawnBlocked({
     briefsToday: today.filter((i) => i.countsTowardCap).length,
-    active: today.some((i) => i.status === "queued" || i.status === "running"),
+    // A cancelled run's in-flight action (start/finish/fail) hasn't reported
+    // back yet — spawn→cancel→spawn must not evade the one-concurrent-intern
+    // cap just because the row already reads "cancelled".
+    active: today.some(
+      (i) => i.status === "queued" || i.status === "running" || (i.status === "cancelled" && i.endedAt === undefined),
+    ),
     spentToday: usage?.costUsd ?? 0,
   });
   if (blocked) throw new ConvexError(blocked);
@@ -58,8 +63,24 @@ export const cancel = mutation({
     const i = await ctx.db.get("interns", internId);
     if (!i || i.ownerId !== user._id) throw new ConvexError("Only whoever briefed an intern can stop it.");
     if (i.status === "queued" || i.status === "running" || i.status === "waiting") {
-      await ctx.db.patch("interns", internId, { status: "cancelled", endedAt: Date.now() });
+      await ctx.db.patch("interns", internId, {
+        status: "cancelled",
+        // A queued/running intern's action is still in flight and reports its
+        // own end via start/finish/fail (see dispatch's active check above); a
+        // waiting intern has nothing left running, so it ends right here.
+        ...(i.status === "waiting" ? { endedAt: Date.now() } : {}),
+      });
       await ctx.db.insert("logs", { internId, level: "warn", text: "cancelled" });
+      if (i.status === "waiting") {
+        // Otherwise answering the open question later would file a fact and
+        // dispatch a fresh intern for a run the owner already cancelled.
+        const q = await ctx.db
+          .query("questions")
+          .withIndex("by_ownerId", (q) => q.eq("ownerId", user._id))
+          .filter((q) => q.and(q.eq(q.field("internId"), internId), q.eq(q.field("status"), "open")))
+          .first();
+        if (q) await ctx.db.patch("questions", q._id, { status: "dismissed" });
+      }
     }
     return null;
   },
@@ -84,7 +105,16 @@ export const start = internalMutation({
   args: { internId: v.id("interns") },
   handler: async (ctx, { internId }) => {
     const i = await ctx.db.get("interns", internId);
-    if (!i || i.status !== "queued") return null;
+    if (!i) return null;
+    if (i.status !== "queued") {
+      // Cancelled before its scheduled run ever reached Gemini: no tokens
+      // were spent, but dispatch's active check still needs a terminal
+      // endedAt to release the concurrency slot.
+      if (i.status === "cancelled" && i.endedAt === undefined) {
+        await ctx.db.patch("interns", internId, { endedAt: Date.now() });
+      }
+      return null;
+    }
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION });
     return { task: i.task };
   },
@@ -131,6 +161,7 @@ export const finish = internalMutation({
     ),
     actionError: v.optional(v.string()),
     question: v.optional(v.object({ question: v.string(), context: v.string() })),
+    questionError: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const intern = await ctx.db.get("interns", a.internId);
@@ -185,6 +216,11 @@ export const finish = internalMutation({
     } else if (a.actionError) {
       await log("err", `${a.actionError}. Nothing was queued.`);
       parseOutcome = `action_malformed:${a.actionError}`;
+    } else if (a.questionError) {
+      // A dropped intent is indistinguishable from no intent unless it's
+      // surfaced — same argument as actionError above.
+      await log("err", `${a.questionError}. No question was asked.`);
+      parseOutcome = `question_malformed:${a.questionError}`;
     }
 
     await ctx.db.patch("interns", a.internId, { ...base, status: "done", parseOutcome });
@@ -194,15 +230,35 @@ export const finish = internalMutation({
 });
 
 export const fail = internalMutation({
-  args: { internId: v.id("interns"), error: v.string(), countsTowardCap: v.boolean() },
+  args: {
+    internId: v.id("interns"),
+    error: v.string(),
+    countsTowardCap: v.boolean(),
+    tokensIn: v.number(),
+    tokensOut: v.number(),
+  },
   handler: async (ctx, a) => {
     const intern = await ctx.db.get("interns", a.internId);
-    if (!intern || intern.status === "cancelled") return null;
+    if (!intern) return null;
+    // The tokens were spent whatever happens next — a stream that dies
+    // mid-way (empty report, network error, a `finish` validator rejection)
+    // was still billed by Google.
+    await addUsage(ctx, a.tokensIn, a.tokensOut);
+
+    if (intern.status === "cancelled") {
+      // Marks when the in-flight action actually ended, distinct from when
+      // cancellation was requested — dispatch's active check waits for this.
+      await ctx.db.patch("interns", a.internId, { endedAt: Date.now(), tokensIn: a.tokensIn, tokensOut: a.tokensOut });
+      return null;
+    }
+
     await ctx.db.patch("interns", a.internId, {
       status: "failed",
       error: a.error,
       endedAt: Date.now(),
       countsTowardCap: a.countsTowardCap,
+      tokensIn: a.tokensIn,
+      tokensOut: a.tokensOut,
     });
     await ctx.db.insert("logs", { internId: a.internId, level: "err", text: a.error });
     return null;

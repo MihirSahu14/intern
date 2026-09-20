@@ -11,6 +11,8 @@ export const FACTS_PER_DAY = 20;
 export const DAILY_BUDGET_USD = 5;
 export const MAX_BRIEF_CHARS = 2000;
 export const MAX_FACT_CHARS = 1000;
+/** An edited draft's `to`/`cc` list, before it becomes a fact body. */
+export const MAX_RECIPIENTS = 20;
 
 // ponytail: list price per 1M tokens for gemini-flash-latest, checked by hand
 // at ai.google.dev/pricing. On the free tier nothing is billed; the cap then

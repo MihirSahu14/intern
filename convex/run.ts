@@ -10,8 +10,9 @@ const BUSY = "The free model is busy, try again in a minute.";
 
 /**
  * One intern run: recall, one streamed Gemini call, parse, finish.
- * Plain fetch, so no "use node". Cancellation is checked by `finish`, which
- * ignores a run whose intern was cancelled meanwhile.
+ * Plain fetch, so no "use node". Cancellation is checked by `finish` and
+ * `fail`, which both still record usage and mark the run's real end when the
+ * intern was cancelled meanwhile — see `dispatch`'s active check.
  */
 export const go = internalAction({
   args: { internId: v.id("interns") },
@@ -23,6 +24,9 @@ export const go = internalAction({
       ctx.runMutation(internal.interns.appendLog, { internId, level, text });
     const t0 = Date.now();
 
+    // Hoisted above the try so a mid-stream failure can still report what
+    // Google had already billed by the time it threw — see interns.fail.
+    let usage = { in: 0, out: 0 };
     try {
       const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task });
       await ctx.runMutation(internal.interns.noteRecall, {
@@ -34,7 +38,6 @@ export const go = internalAction({
 
       let report = "";
       let pending = "";
-      let usage = { in: 0, out: 0 };
       for await (const chunk of stream(brief(started.task, recalled))) {
         if (chunk.usage) usage = chunk.usage;
         if (!chunk.text) continue;
@@ -75,14 +78,22 @@ export const go = internalAction({
           : undefined,
         actionError: parsed && "error" in parsed ? parsed.error : undefined,
         question: asked && !("error" in asked) ? asked : undefined,
+        questionError: asked && "error" in asked ? asked.error : undefined,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const busy = message.startsWith("gemini 429");
+      // 429 (quota) and 503 (overloaded) are both the free tier being busy,
+      // not this run's fault — same user-facing copy either way. Whether it
+      // counts toward the daily brief cap is decided by usage, not the status
+      // text: a missing key or an overloaded model that returned zero output
+      // tokens produced nothing billable, so it shouldn't cost a brief.
+      const busy = message.startsWith("gemini 429") || message.startsWith("gemini 503");
       await ctx.runMutation(internal.interns.fail, {
         internId,
         error: busy ? BUSY : message.slice(0, 500),
-        countsTowardCap: !busy,
+        countsTowardCap: usage.out > 0,
+        tokensIn: usage.in,
+        tokensOut: usage.out,
       });
     }
     return null;

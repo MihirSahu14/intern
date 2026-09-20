@@ -1,8 +1,32 @@
 import { ConvexError, v } from "convex/values";
+import { MAX_FACT_CHARS, MAX_RECIPIENTS } from "../lib/caps.ts";
 import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
 import { mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
 import { insertFact } from "./facts";
+
+type Edits = {
+  to?: string[];
+  cc?: string[];
+  subject?: string;
+  body?: string;
+};
+
+/**
+ * The one free-text input in this file a person, not an intern, types. Bound
+ * it the same way every sibling path bounds its input (`teach`'s
+ * MAX_FACT_CHARS, `dispatch`'s MAX_BRIEF_CHARS) — the accepted draft becomes a
+ * fact body (`correctionFromEdit`), and an unbounded one can blow the 1MB
+ * document limit after `actions` was already patched to approved.
+ */
+function capEdits(edits: Edits): Edits {
+  const out: Edits = {};
+  if (edits.to !== undefined) out.to = edits.to.slice(0, MAX_RECIPIENTS);
+  if (edits.cc !== undefined) out.cc = edits.cc.slice(0, MAX_RECIPIENTS);
+  if (edits.subject !== undefined) out.subject = edits.subject.slice(0, MAX_FACT_CHARS);
+  if (edits.body !== undefined) out.body = edits.body.slice(0, MAX_FACT_CHARS);
+  return out;
+}
 
 export const list = query({
   args: {},
@@ -51,7 +75,7 @@ export const decide = mutation({
       return null;
     }
 
-    const accepted = { ...action.draft, ...a.edits };
+    const accepted = { ...action.draft, ...(a.edits ? capEdits(a.edits) : {}) };
     const fields = changedFields(action.draft, accepted);
     await ctx.db.patch("actions", action._id, {
       status: "approved",
