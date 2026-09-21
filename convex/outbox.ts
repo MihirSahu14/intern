@@ -1,211 +1,100 @@
-import { getAuthUserId } from "@convex-dev/auth/server";
-import { v } from "convex/values";
-import { type QueryCtx, mutation, query } from "./_generated/server";
+import { ConvexError, v } from "convex/values";
+import { MAX_FACT_CHARS, MAX_RECIPIENT_CHARS, MAX_RECIPIENTS } from "../lib/caps.ts";
+import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
+import { mutation, query } from "./_generated/server";
+import { ownerView, requireMember } from "./access";
+import { insertFact } from "./facts";
+
+type Edits = {
+  to?: string[];
+  cc?: string[];
+  subject?: string;
+  body?: string;
+};
 
 /**
- * Interns propose. A human decides. Someone else sends.
- *
- * There is no `send` here by design — approving returns what was approved, so
- * the caller does the sending (Intern's own connector, or VoiceOS with its
- * credentials when none is configured) and reports back via `recordResult`.
+ * The one free-text input in this file a person, not an intern, types. Bound
+ * it the same way every sibling path bounds its input (`teach`'s
+ * MAX_FACT_CHARS, `dispatch`'s MAX_BRIEF_CHARS) — the accepted draft becomes a
+ * fact body (`correctionFromEdit`), and an unbounded one can blow the 1MB
+ * document limit after `actions` was already patched to approved. Bounding the
+ * array length alone isn't enough: each element is a free-text string too, so
+ * a single oversized recipient is capped the same way subject/body are.
  */
+const capRecipients = (list: string[]) =>
+  list.slice(0, MAX_RECIPIENTS).map((r) => r.trim().slice(0, MAX_RECIPIENT_CHARS)).filter(Boolean);
 
-const DRAFT = v.object({
-  to: v.array(v.string()),
-  cc: v.optional(v.array(v.string())),
-  subject: v.string(),
-  body: v.string(),
-});
-
-const VIA = v.union(v.literal("voice"), v.literal("cockpit"), v.literal("graduated"));
-
-const STATUSES = v.union(
-  v.literal("pending"),
-  v.literal("approved"),
-  v.literal("sent"),
-  v.literal("rejected"),
-  v.literal("failed"),
-);
-
-/**
- * The caller's own draft by handle, or null.
- *
- * A draft is scoped to the person whose intern wrote it. The decision is still
- * a human one — it just isn't a *shared* one, because the draft quotes pages
- * and messages the intern read on one person's behalf.
- */
-async function ownAction(ctx: QueryCtx, handle: string) {
-  const userId = await getAuthUserId(ctx);
-  if (!userId) return null;
-  const action = await ctx.db
-    .query("actions")
-    .withIndex("by_handle", (q) => q.eq("handle", handle))
-    .unique();
-  return action?.ownerId === userId ? action : null;
+function capEdits(edits: Edits): Edits {
+  const out: Edits = {};
+  if (edits.to !== undefined) out.to = capRecipients(edits.to);
+  if (edits.cc !== undefined) out.cc = capRecipients(edits.cc);
+  if (edits.subject !== undefined) out.subject = edits.subject.slice(0, MAX_FACT_CHARS);
+  if (edits.body !== undefined) out.body = edits.body.slice(0, MAX_FACT_CHARS);
+  return out;
 }
 
 export const list = query({
-  args: {
-    status: v.optional(STATUSES),
-    limit: v.optional(v.number()),
-  },
-  handler: async (ctx, args) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) return [];
-
-    const limit = Math.min(args.limit ?? 50, 200);
-    if (args.status) {
-      return await ctx.db
-        .query("actions")
-        .withIndex("by_ownerId_and_status", (q) =>
-          q.eq("ownerId", userId).eq("status", args.status!),
-        )
-        .order("desc")
-        .take(limit);
-    }
-    return await ctx.db
-      .query("actions")
-      .withIndex("by_ownerId", (q) => q.eq("ownerId", userId))
-      .order("desc")
-      .take(limit);
-  },
-});
-
-export const get = query({
-  args: { handle: v.string() },
-  handler: async (ctx, args) => {
-    return await ownAction(ctx, args.handle);
-  },
-});
-
-export const propose = mutation({
-  args: {
-    handle: v.string(),
-    internHandle: v.union(v.string(), v.null()),
-    kind: v.union(v.literal("email"), v.literal("slack"), v.literal("calendar")),
-    title: v.string(),
-    draft: DRAFT,
-    rationale: v.string(),
-    sources: v.array(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const ownerId = await getAuthUserId(ctx);
-    if (!ownerId) throw new Error("sign in to propose an action");
-
-    const existing = await ctx.db
-      .query("actions")
-      .withIndex("by_handle", (q) => q.eq("handle", args.handle))
-      .unique();
-    // Idempotent on handle, but only for the owner — otherwise proposing onto
-    // a handle someone else already used would silently return their row.
-    if (existing) {
-      return existing.ownerId === ownerId ? existing._id : null;
-    }
-
-    return await ctx.db.insert("actions", {
-      ...args,
-      ownerId,
-      status: "pending",
-      createdAt: Date.now(),
-    });
+  args: {},
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("actions").order("desc").take(30);
+    return await Promise.all(rows.map(async (a) => ({ ...a, handle: (await ownerView(ctx, a.ownerId)).handle })));
   },
 });
 
 /**
- * Approve and hand the draft back for sending.
- *
- * `confirmed` is not ceremony. The assistant may only set it after reading
- * the draft to the user and hearing an explicit yes — a draft is assembled
- * from web pages, Slack messages and documents the intern read, all untrusted
- * text, and this is the one place a human stands between that text and the
- * outside world.
+ * Approve (optionally edited) or reject. Sandbox: nothing is ever sent. An edit
+ * becomes a preference fact and a rejection becomes a correction fact, which
+ * the next intern recalls. That is the learning loop.
  */
-export const approve = mutation({
+export const decide = mutation({
   args: {
-    handle: v.string(),
-    confirmed: v.boolean(),
-    via: VIA,
-    /** Present when the person rewrote the draft before approving it. */
-    accepted: v.optional(DRAFT),
+    actionId: v.id("actions"),
+    decision: v.union(v.literal("approve"), v.literal("reject")),
+    edits: v.optional(
+      v.object({
+        to: v.optional(v.array(v.string())),
+        cc: v.optional(v.array(v.string())),
+        subject: v.optional(v.string()),
+        body: v.optional(v.string()),
+      }),
+    ),
+    reason: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
-    if (!args.confirmed) {
-      return {
-        error:
-          "not approved: confirmed must be true, and only after reading the draft to the user and hearing an explicit yes",
-      };
+  handler: async (ctx, a) => {
+    const user = await requireMember(ctx);
+    const action = await ctx.db.get("actions", a.actionId);
+    if (!action || action.ownerId !== user._id) {
+      throw new ConvexError("Only the person who briefed this intern can decide on its draft.");
+    }
+    if (action.status !== "pending") throw new ConvexError("Already decided.");
+    const now = Date.now();
+    const log = (level: "ok" | "warn", text: string) =>
+      ctx.db.insert("logs", { internId: action.internId, level, text });
+
+    if (a.decision === "reject") {
+      const reason = (a.reason ?? "").trim().slice(0, 500) || "no reason given";
+      await ctx.db.patch("actions", action._id, { status: "rejected", decision: "rejected", reason, decidedAt: now });
+      const c = correctionFromReject(action.kind, action.draft, reason);
+      await insertFact(ctx, { ...c, kind: "correction", ownerId: user._id, internId: action.internId });
+      await log("warn", `rejected · learned: ${c.title}`);
+      return null;
     }
 
-    const action = await ownAction(ctx, args.handle);
-    if (!action) return { error: `no action ${args.handle}` };
-    if (action.status !== "pending") {
-      return { error: `${args.handle} is already ${action.status}` };
-    }
-
-    // The edit is the training signal, so record which fields moved rather
-    // than just the final text.
-    const editedFields = args.accepted
-      ? (["to", "cc", "subject", "body"] as const).filter(
-          (f) => JSON.stringify(args.accepted![f]) !== JSON.stringify(action.draft[f]),
-        )
-      : [];
-
+    const accepted = { ...action.draft, ...(a.edits ? capEdits(a.edits) : {}) };
+    const fields = changedFields(action.draft, accepted);
     await ctx.db.patch("actions", action._id, {
       status: "approved",
-      decidedAt: Date.now(),
-      decidedVia: args.via,
-      decidedBy: action.ownerId,
-      ...(args.accepted ? { accepted: args.accepted, editedFields: [...editedFields] } : {}),
+      decision: fields.length ? "edited" : "approved_unedited",
+      editRatio: editRatio(action.draft, accepted),
+      decidedAt: now,
+      ...(fields.length ? { accepted, editedFields: fields } : {}),
     });
-
-    // Hand back what was approved, not what was proposed.
-    return {
-      handle: action.handle,
-      kind: action.kind,
-      draft: args.accepted ?? action.draft,
-      edited: editedFields.length > 0,
-    };
-  },
-});
-
-export const reject = mutation({
-  args: {
-    handle: v.string(),
-    via: VIA,
-    /** What should have happened instead. This is the training signal. */
-    note: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const action = await ownAction(ctx, args.handle);
-    if (!action) return { error: `no action ${args.handle}` };
-
-    await ctx.db.patch("actions", action._id, {
-      status: "rejected",
-      decidedAt: Date.now(),
-      decidedVia: args.via,
-      decidedBy: action.ownerId,
-      result: args.note,
-    });
-    return { ok: true };
-  },
-});
-
-/** What actually happened once someone tried to send it. */
-export const recordResult = mutation({
-  args: {
-    handle: v.string(),
-    ok: v.boolean(),
-    detail: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const action = await ownAction(ctx, args.handle);
-    if (!action) return { error: `no action ${args.handle}` };
-
-    await ctx.db.patch("actions", action._id, {
-      status: args.ok ? "sent" : "failed",
-      settledAt: Date.now(),
-      result: args.detail,
-    });
-    return { ok: true };
+    if (fields.length) {
+      const c = correctionFromEdit(action.kind, action.draft, accepted, fields);
+      await insertFact(ctx, { ...c, kind: "preference", ownerId: user._id, internId: action.internId });
+      await log("ok", `learned: ${c.title}`);
+    }
+    await log("ok", "Approved. Sandbox: nothing was sent.");
+    return null;
   },
 });

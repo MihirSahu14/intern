@@ -1,34 +1,41 @@
 "use client";
 
-import { AuthLoading, Authenticated, Unauthenticated } from "convex/react";
+import { AuthLoading, Authenticated, Unauthenticated, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import Cockpit from "./Cockpit";
+import Consent from "./Consent";
 import SignIn from "./SignIn";
 
-/**
- * Nothing renders until Convex has decided who you are.
- *
- * `AuthLoading` matters more than it looks: without it there is a frame where
- * the token hasn't been checked yet, the app reads as signed out, and the
- * sign-in screen flashes at someone who is already signed in.
- */
+const Wait = ({ text }: { text: string }) => (
+  <div className="flex h-full items-center justify-center bg-bg">
+    <span className="text-faint">
+      {text}
+      <span className="caret">_</span>
+    </span>
+  </div>
+);
+
 export default function Gate() {
   return (
     <>
       <AuthLoading>
-        <div className="flex h-full items-center justify-center bg-bg">
-          <span className="text-faint">
-            checking session<span className="caret">_</span>
-          </span>
-        </div>
+        <Wait text="checking session" />
       </AuthLoading>
-
       <Unauthenticated>
         <SignIn />
       </Unauthenticated>
-
       <Authenticated>
-        <Cockpit />
+        <Member />
       </Authenticated>
     </>
   );
+}
+
+function Member() {
+  const me = useQuery(api.users.viewer, {});
+  if (me === undefined) return <Wait text="loading" />;
+  if (me === null) return <SignIn />;
+  if (me.banned) return <Wait text="this account is blocked from the public brain" />;
+  if (!me.accepted) return <Consent />;
+  return <Cockpit me={{ userId: me.userId, handle: me.handle, image: me.image }} />;
 }

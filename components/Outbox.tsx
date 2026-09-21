@@ -3,7 +3,6 @@
 import { useState } from "react";
 import type {
   ActionStatus,
-  ConnectorsState,
   Draft,
   ProposedAction,
 } from "@/lib/types";
@@ -22,15 +21,12 @@ export type Decision =
 
 export default function Outbox({
   actions,
-  connectors,
   onDecide,
 }: {
   actions: ProposedAction[];
-  connectors: ConnectorsState | null;
   onDecide: (id: string, decision: Decision) => void;
 }) {
-  const wiredFor = (kind: string) =>
-    connectors?.connectors.find((c) => c.kind === kind)?.configured ?? false;
+  const wiredFor = (_kind: string) => true;
   const [open, setOpen] = useState<string | null>(null);
   const pending = actions.filter((a) => a.status === "pending");
   const rest = actions.filter((a) => a.status !== "pending");
@@ -41,9 +37,7 @@ export default function Outbox({
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
         <h2 className="label">outbox</h2>
         <div className="flex items-center gap-2">
-          {connectors?.dryRun ? (
-            <span className="border border-warn/40 px-1 text-warn">dry run</span>
-          ) : null}
+          <span className="border border-warn/40 px-1 text-warn">sandbox</span>
           <span
             className={`tabular-nums ${pending.length ? "text-k-action" : "text-faint"}`}
           >
@@ -55,8 +49,8 @@ export default function Outbox({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {shown.length === 0 ? (
           <p className="p-3 text-faint leading-relaxed">
-            nothing waiting. interns draft outbound messages here — they never
-            send on their own. you approve, then it goes.
+            nothing waiting. your interns&rsquo; drafts land here. approving never
+            sends anything, this is a sandbox.
           </p>
         ) : null}
 
@@ -66,7 +60,7 @@ export default function Outbox({
               key={a.id}
               action={a}
               wired={wiredFor(a.kind)}
-              dryRun={connectors?.dryRun ?? false}
+              dryRun={true}
               expanded={open === a.id}
               onToggle={() => setOpen(open === a.id ? null : a.id)}
               onDecide={onDecide}
@@ -222,7 +216,7 @@ function Pending({
               ? "approve with edits"
               : wired
                 ? dryRun
-                  ? "approve (dry run)"
+                  ? "approve (sandbox)"
                   : "approve & send"
                 : "approve"}
           </button>
@@ -296,10 +290,7 @@ function Settled({
       ) : null}
 
       {action.status === "approved" ? (
-        <p className="mt-1.5 text-faint">
-          approved via {action.decidedVia} ·{" "}
-          {wired ? "sending…" : "waiting for an external sender"}
-        </p>
+        <p className="mt-1.5 text-faint">Approved. Sandbox: nothing was sent.</p>
       ) : null}
       {action.status === "sent" && action.result ? (
         <p className="mt-1.5 truncate text-faint" title={action.result}>

@@ -3,349 +3,152 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * The company brain, and the work done against it.
- *
- * Shapes mirror `lib/types.ts` so the cockpit and the MCP surface keep
- * speaking the same language. The one deliberate difference: every record
- * that the outside world names by string (`int-01vr`, `act-01jo`) keeps that
- * string in a `handle` field alongside Convex's `_id`, so VoiceOS and the
- * existing tool contracts do not have to learn Convex ids.
+ * The public community brain. Everyone reads everything; each row has one
+ * owner who alone can change it.
  */
 
-const nodeKind = v.union(
-  v.literal("source"),
-  v.literal("contact"),
-  v.literal("project"),
+export const factKind = v.union(
   v.literal("note"),
-  v.literal("followup"),
-  v.literal("wiki"),
-  v.literal("tag"),
-  v.literal("intern"),
-  v.literal("action"),
-  v.literal("fact"),
-  v.literal("question"),
+  v.literal("decision"),
+  v.literal("preference"),
+  v.literal("correction"),
+  v.literal("answer"),
 );
 
-const draft = v.object({
+export const actionKind = v.union(v.literal("email"), v.literal("slack"), v.literal("calendar"));
+
+export const draft = v.object({
   to: v.array(v.string()),
   cc: v.optional(v.array(v.string())),
   subject: v.string(),
   body: v.string(),
 });
 
-/** Every outbound surface a person can connect their own account to. */
-const provider = v.union(v.literal("google"), v.literal("slack"));
+export const logLevel = v.union(
+  v.literal("sys"),
+  v.literal("in"),
+  v.literal("out"),
+  v.literal("tool"),
+  v.literal("ok"),
+  v.literal("warn"),
+  v.literal("err"),
+);
+
+export const internStatus = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("waiting"),
+  v.literal("done"),
+  v.literal("failed"),
+  v.literal("cancelled"),
+);
 
 export default defineSchema({
   ...authTables,
 
-  // -------------------------------------------------------------------------
-  // Per-user connections — whose account the work goes out as
-  // -------------------------------------------------------------------------
-
-  /**
-   * One person's grant to one provider. Interns send as the person who
-   * approved, not as a single shared service account, so `actions.decidedBy`
-   * and the From header can never disagree.
-   *
-   * Only the refresh token is stored. Access tokens are short-lived and
-   * re-minted on demand, so there is nothing here worth stealing that a
-   * revoke at the provider doesn't immediately kill.
-   */
-  connections: defineTable({
-    userId: v.id("users"),
-    provider,
-    refreshToken: v.string(),
-    /**
-     * The provider's own id for this person — Slack's `U…`. Needed to address
-     * them there, not just to act as them: an intern with a question has to
-     * open a DM *to* somebody.
-     */
-    providerUserId: v.optional(v.string()),
-    /**
-     * A workspace-level bot token, where the provider issues one. Slack only
-     * delivers events to a bot, so the reply half of the loop cannot use the
-     * user grant no matter how well scoped it is.
-     */
-    botToken: v.optional(v.string()),
-    /** For display: which account this actually is. */
-    accountLabel: v.optional(v.string()),
-    scopes: v.array(v.string()),
-    connectedAt: v.number(),
-    /** Set when a refresh comes back invalid_grant — revoked or expired. */
-    brokenAt: v.optional(v.number()),
-    brokenReason: v.optional(v.string()),
+  /** Convex Auth's users table plus the GitHub profile and the two gates. */
+  users: defineTable({
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    handle: v.optional(v.string()),
+    githubId: v.optional(v.string()),
+    acceptedAt: v.optional(v.number()),
+    bannedAt: v.optional(v.number()),
   })
-    .index("by_userId", ["userId"])
-    .index("by_userId_and_provider", ["userId", "provider"])
-    .index("by_provider_and_providerUserId", ["provider", "providerUserId"]),
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_handle", ["handle"]),
 
-  /**
-   * One DM thread an intern started, and the question it is waiting on.
-   *
-   * The question itself lives in the Next process's memory; this is only the
-   * routing table that turns a Slack reply back into the thing it answers.
-   * Keyed by thread timestamp because that is what Slack echoes back on a
-   * threaded reply — which is what makes "answer the right one" work when a
-   * person has three interns stuck at once.
-   */
-  slackThreads: defineTable({
-    /** `ts` of the message the intern sent — the thread root. */
-    ts: v.string(),
-    channel: v.string(),
-    userId: v.id("users"),
-    /** The in-memory question handle, e.g. `ask-01ab`. */
-    questionId: v.string(),
-    internId: v.union(v.string(), v.null()),
-    askedAt: v.number(),
-    answeredAt: v.optional(v.number()),
-  })
-    .index("by_ts", ["ts"])
-    .index("by_questionId", ["questionId"])
-    .index("by_userId_and_answeredAt", ["userId", "answeredAt"]),
-
-  /**
-   * A pending OAuth handshake. Minted by an authenticated call, so the user is
-   * bound before the browser ever leaves for the provider — the callback then
-   * needs no session of its own, which is what lets it be a plain HTTP action.
-   *
-   * Single-use and short-lived: this row is the capability.
-   */
-  oauthStates: defineTable({
-    state: v.string(),
-    userId: v.id("users"),
-    provider,
-    redirectTo: v.optional(v.string()),
-    expiresAt: v.number(),
-  }).index("by_state", ["state"]),
-
-
-  // -------------------------------------------------------------------------
-  // The brain
-  // -------------------------------------------------------------------------
-
-  /**
-   * One thing the company knows. `extId` is the stable identity across
-   * re-syncs — a Scout row id, a wiki path, a Slack permalink — so repeated
-   * ingestion updates in place instead of duplicating.
-   *
-   * No vector index yet: `dimensions` must match the embedder exactly, and
-   * the embedder is still an open choice. Add it in the same change that
-   * picks one.
-   */
+  /** One claim. Seed facts have no owner. `text` = title + body, for search. */
   facts: defineTable({
-    extId: v.string(),
-    kind: nodeKind,
-    label: v.string(),
-    detail: v.optional(v.string()),
-    weight: v.optional(v.number()),
-    meta: v.optional(v.record(v.string(), v.union(v.string(), v.number(), v.null()))),
-    /** Where this came from, for citation at the approval gate. */
-    source: v.optional(v.string()),
-    observedAt: v.number(),
-  })
-    .index("by_extId", ["extId"])
-    .index("by_kind", ["kind"])
-    .searchIndex("search_label", { searchField: "label", filterFields: ["kind"] }),
-
-  relations: defineTable({
-    from: v.string(),
-    to: v.string(),
-    rel: v.optional(v.string()),
-  })
-    .index("by_from", ["from"])
-    .index("by_to", ["to"]),
-
-  // -------------------------------------------------------------------------
-  // The log — the only thing that is actually the truth
-  //
-  // Facts and relations above are a projection rebuilt from these rows, which
-  // is what "facts are a projection" has to mean if it means anything. This
-  // replaces .data/brain.jsonl: same append-only shape, somewhere every
-  // instance and every teammate can reach.
-  // -------------------------------------------------------------------------
-
-  observations: defineTable({
-    obsId: v.string(),
-    sourceId: v.string(),
-    /** `(sourceId, externalId)` is unique — the constraint that makes retry safe. */
-    externalId: v.string(),
-    actor: v.string(),
     title: v.string(),
     body: v.string(),
-    url: v.optional(v.string()),
-    observedAt: v.number(),
-    ingestedAt: v.number(),
-    /** What extraction made of it, so replay rebuilds the same facts. */
-    hint: v.optional(
-      v.object({
-        kind: v.union(
-          v.literal("note"),
-          v.literal("decision"),
-          v.literal("preference"),
-          v.literal("correction"),
-          v.literal("answer"),
-          v.literal("person"),
-          v.literal("project"),
-        ),
-        tags: v.optional(v.array(v.string())),
-        subject: v.optional(v.string()),
-        /**
-         * Graph node ids the person filing this pointed it at. Part of the
-         * hint rather than a table of its own because it is an input to
-         * extraction like the rest of it — replay has to see it to rebuild the
-         * same edges.
-         */
-        links: v.optional(v.array(v.string())),
-      }),
-    ),
+    kind: factKind,
+    ownerId: v.optional(v.id("users")),
+    internId: v.optional(v.id("interns")),
+    text: v.string(),
   })
-    .index("by_obsId", ["obsId"])
-    .index("by_source_and_external", ["sourceId", "externalId"]),
-
-  /**
-   * A person's decision on a handover. Lives in the log beside observations
-   * because the accepted-unedited rate is the one number that must survive a
-   * restart — an intern that forgot it had been trusted would have to earn it
-   * again on every deploy.
-   */
-  decisions: defineTable({
-    actionId: v.string(),
-    /**
-     * Which surface it went out on — trust is earned per kind, not per intern.
-     *
-     * Optional only to admit rows written before the roster was removed, which
-     * carry `role` instead. `log:backfillDecisionKinds` converts them; the
-     * field is required in spirit and every writer sets it.
-     */
-    kind: v.optional(v.string()),
-    /** Legacy. A pre-roster-removal row's job title. Read only by the backfill. */
-    role: v.optional(v.string()),
-    outcome: v.union(v.literal("unedited"), v.literal("edited"), v.literal("rejected")),
-    at: v.number(),
-  }).index("by_actionId", ["actionId"]),
-
-  // -------------------------------------------------------------------------
-  // Interns
-  // -------------------------------------------------------------------------
+    .index("by_ownerId", ["ownerId"])
+    .index("by_kind", ["kind"])
+    .searchIndex("search_text", { searchField: "text" }),
 
   interns: defineTable({
-    handle: v.string(),
+    ownerId: v.id("users"),
     task: v.string(),
-    status: v.union(
-      v.literal("queued"),
-      v.literal("running"),
-      v.literal("done"),
-      v.literal("failed"),
-      v.literal("cancelled"),
-    ),
-    mode: v.union(v.literal("live"), v.literal("sim")),
-    /** Who dispatched it. Null for machine callers with no user attached. */
-    userId: v.optional(v.id("users")),
-    createdAt: v.number(),
-    startedAt: v.optional(v.number()),
-    endedAt: v.optional(v.number()),
-    tools: v.array(v.string()),
-    toolCalls: v.number(),
-    artifacts: v.array(
-      v.object({
-        kind: v.union(
-          v.literal("note"),
-          v.literal("wiki"),
-          v.literal("contact"),
-          v.literal("project"),
-          v.literal("followup"),
-          v.literal("answer"),
-        ),
-        label: v.string(),
-        ref: v.optional(v.string()),
-      }),
-    ),
+    status: internStatus,
+    resumes: v.optional(v.id("interns")),
     summary: v.optional(v.string()),
     error: v.optional(v.string()),
-    sessionId: v.string(),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    /** False when the run died on Gemini's free-tier 429, so it isn't charged. */
+    countsTowardCap: v.boolean(),
+    // Eval fields, one row per run.
+    promptVersion: v.optional(v.string()),
+    recalledFactIds: v.optional(v.array(v.id("facts"))),
+    recalledCorrection: v.optional(v.boolean()),
+    tokensIn: v.optional(v.number()),
+    tokensOut: v.optional(v.number()),
+    latencyMs: v.optional(v.number()),
+    /** "action" | "action_malformed:<why>" | "question" | "none" */
+    parseOutcome: v.optional(v.string()),
   })
-    .index("by_handle", ["handle"])
-    .index("by_status", ["status"])
-    .index("by_userId", ["userId"])
-    .index("by_userId_and_status", ["userId", "status"]),
+    .index("by_ownerId", ["ownerId"])
+    .index("by_status", ["status"]),
 
-  /**
-   * Log lines are the high-churn half of an intern — kept in their own table
-   * so appending a line never rewrites the intern document.
-   */
   logs: defineTable({
-    internHandle: v.union(v.string(), v.null()),
-    ts: v.number(),
-    level: v.union(
-      v.literal("sys"),
-      v.literal("in"),
-      v.literal("out"),
-      v.literal("tool"),
-      v.literal("ok"),
-      v.literal("warn"),
-      v.literal("err"),
-    ),
+    internId: v.id("interns"),
+    level: logLevel,
     text: v.string(),
-  }).index("by_internHandle", ["internHandle"]),
+  }).index("by_internId", ["internId"]),
 
-  // -------------------------------------------------------------------------
-  // Outbox — interns propose, a human decides, someone else sends
-  // -------------------------------------------------------------------------
-
-  /**
-   * Survives a restart, which the in-memory version did not. A pending draft
-   * outliving a hot reload is the difference between a demo that holds and
-   * one that doesn't.
-   */
   actions: defineTable({
-    handle: v.string(),
-    internHandle: v.union(v.string(), v.null()),
-    /**
-     * Whose intern proposed this. A draft is only ever shown to, and decidable
-     * by, its owner — it quotes whatever the intern read on that person's
-     * behalf, so it is no more shareable than the intern itself.
-     *
-     * Optional only because rows written before this field existed have no
-     * owner; those are readable by nobody, which is the safe direction.
-     */
-    ownerId: v.optional(v.id("users")),
-    kind: v.union(v.literal("email"), v.literal("slack"), v.literal("calendar")),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("approved"),
-      v.literal("sent"),
-      v.literal("rejected"),
-      v.literal("failed"),
-    ),
-    /** One line, written to be spoken aloud. */
+    ownerId: v.id("users"),
+    internId: v.id("interns"),
+    kind: actionKind,
+    status: v.union(v.literal("pending"), v.literal("approved"), v.literal("rejected")),
     title: v.string(),
     /** What the intern proposed. Never overwritten. */
     draft,
-    /**
-     * What the person was actually willing to send, when they changed
-     * something. Kept apart from `draft` on purpose — collapsing the two
-     * throws away the only record of what the intern got wrong, and that
-     * difference is the entire learning loop.
-     */
+    /** What the person approved, when they changed something. */
     accepted: v.optional(draft),
-    /** Which fields the person rewrote before approving. */
     editedFields: v.optional(v.array(v.string())),
     rationale: v.string(),
-    /** Fact extIds and urls the draft was built from. */
     sources: v.array(v.string()),
-    createdAt: v.number(),
-    decidedAt: v.optional(v.number()),
-    settledAt: v.optional(v.number()),
-    decidedVia: v.optional(
-      v.union(v.literal("voice"), v.literal("cockpit"), v.literal("graduated")),
+    /** Copied from the run: did it recall a preference/correction? Drives /stats. */
+    recalledCorrection: v.boolean(),
+    decision: v.optional(
+      v.union(v.literal("approved_unedited"), v.literal("edited"), v.literal("rejected")),
     ),
-    decidedBy: v.optional(v.id("users")),
-    result: v.optional(v.string()),
+    editRatio: v.optional(v.number()),
+    reason: v.optional(v.string()),
+    decidedAt: v.optional(v.number()),
   })
-    .index("by_handle", ["handle"])
-    .index("by_status", ["status"])
-    .index("by_internHandle", ["internHandle"])
     .index("by_ownerId", ["ownerId"])
-    .index("by_ownerId_and_status", ["ownerId", "status"]),
+    .index("by_status", ["status"])
+    .index("by_internId", ["internId"]),
+
+  questions: defineTable({
+    ownerId: v.id("users"),
+    internId: v.id("interns"),
+    question: v.string(),
+    context: v.string(),
+    status: v.union(v.literal("open"), v.literal("answered"), v.literal("dismissed")),
+    answer: v.optional(v.string()),
+    resumedBy: v.optional(v.id("interns")),
+  })
+    .index("by_ownerId", ["ownerId"])
+    .index("by_status", ["status"]),
+
+  /** One row per UTC day. The global budget reads this. */
+  usage: defineTable({
+    date: v.string(),
+    costUsd: v.number(),
+    runs: v.number(),
+  }).index("by_date", ["date"]),
 });
