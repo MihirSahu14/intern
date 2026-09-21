@@ -32,11 +32,16 @@ export default function InternRail({
   filter,
   onFilter,
   onKill,
+  onRetry,
+  mineId,
 }: {
   interns: Intern[];
   filter: string | null;
   onFilter: (id: string | null) => void;
   onKill: (id: string) => void;
+  /** Run this same intern again, in place. Only offered on your own runs. */
+  onRetry: (id: string) => void;
+  mineId: string;
 }) {
   const live = interns.some(
     (i) => i.status === "running" || i.status === "queued",
@@ -95,6 +100,26 @@ export default function InternRail({
                     title="kill"
                   >
                     ✕
+                  </button>
+                ) : null}
+                {/*
+                  A failed run usually failed for a reason that has since
+                  passed — the free model was busy — so the fix is the same
+                  brief again. It runs *this* intern again rather than making
+                  a second one: same card, same node, same log.
+                */}
+                {(i.status === "failed" || i.status === "cancelled") &&
+                i.ownerId === mineId ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRetry(i.id);
+                    }}
+                    className="text-faint transition-colors hover:text-fg"
+                    title="run this brief again"
+                  >
+                    ↻
                   </button>
                 ) : null}
               </div>

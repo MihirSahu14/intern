@@ -17,6 +17,7 @@ import Outbox, { type Decision } from "./Outbox";
 import Questions from "./Questions";
 import Teach, { type TeachInput } from "./Teach";
 import Terminal from "./Terminal";
+import ThemeToggle from "./ThemeToggle";
 
 export type Me = { userId: Id<"users">; handle: string; image: string | null };
 
@@ -39,6 +40,7 @@ export default function Cockpit({ me }: { me: Me }) {
 
   const spawnM = useMutation(api.interns.spawn);
   const cancelM = useMutation(api.interns.cancel);
+  const retryM = useMutation(api.interns.retry);
   const decideM = useMutation(api.outbox.decide);
   const answerM = useMutation(api.questions.answer);
   const dismissM = useMutation(api.questions.dismiss);
@@ -172,6 +174,17 @@ export default function Cockpit({ me }: { me: Me }) {
       }
     },
     [spawnM, echo],
+  );
+
+  const retry = useCallback(
+    async (id: string) => {
+      try {
+        await retryM({ internId: id as Id<"interns"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [retryM, echo],
   );
 
   const kill = useCallback(
@@ -420,6 +433,8 @@ export default function Cockpit({ me }: { me: Me }) {
             filter={filter}
             onFilter={setFilter}
             onKill={kill}
+            onRetry={retry}
+            mineId={me.userId}
           />
         </aside>
       </div>
@@ -437,8 +452,20 @@ function Header({ me, interns, onDeleteMine }: { me: Me; interns: Intern[]; onDe
       <span className="text-faint">community brain</span>
       <div className="ml-auto flex items-center gap-4 text-faint">
         <span>{working} working</span>
-        <a href="/stats" className="hover:text-fg">stats</a>
-        <button type="button" onClick={onDeleteMine} className="hover:text-err">delete my stuff</button>
+        <ThemeToggle />
+        <a
+          href="/stats"
+          className="border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"
+        >
+          stats
+        </a>
+        <button
+          type="button"
+          onClick={onDeleteMine}
+          className="border border-line px-1.5 py-0.5 transition-colors hover:border-err/50 hover:text-err"
+        >
+          delete my stuff
+        </button>
         <span className="flex items-center gap-1.5">
           {me.image ? (
             // eslint-disable-next-line @next/next/no-img-element

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import LandingGraph from "@/components/LandingGraph";
 import LandingStats from "@/components/LandingStats";
+import Loop from "@/components/Loop";
+import ThemeToggle from "@/components/ThemeToggle";
 
 /**
  * The public face. The cockpit lives behind sign-in at `/app`.
@@ -69,7 +71,7 @@ export default function Landing() {
         {/* ---- the brain ----------------------------------------------- */}
         <section className="enter mt-14 border border-line bg-panel" aria-label="Example company brain">
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
-            <span className="label">the brain · hover a node</span>
+            <span className="label">example · one onboarding brief</span>
             <span className="text-faint">size = how much hangs off it</span>
           </div>
           <LandingGraph />
@@ -119,29 +121,15 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ---- how the brain fills --------------------------------------- */}
+        {/* ---- the loop -------------------------------------------------- */}
         <section className="mt-24">
-          <p className="label">how the brain fills</p>
+          <p className="label">how it gets better</p>
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            Everything the company observes lands once, immutably. Only what an
-            intern could plausibly cite gets promoted to a fact — the rest stays
-            in the log rather than bloating the graph.
+            Four steps, and the fourth feeds the second. That loop is the whole
+            product: the brain learns this company by being corrected, not by
+            being configured.
           </p>
-          <div className="mt-6 overflow-x-auto border border-line bg-panel p-5">
-            <pre className="min-w-max leading-[1.9] text-dim">
-              {`capture  →  observation      immutable, unique on (source, external_id)
-              ↓ promote        only if an intern could cite it
-            fact             provenance · confidence · validity window
-              ↓
-            graph node       wired back to whatever observed it`}
-            </pre>
-          </div>
-          <p className="mt-5 max-w-xl leading-relaxed text-dim">
-            Capturing the same thing twice is harmless. A second, independent
-            observation of something already known doesn&rsquo;t duplicate it —
-            it corroborates it, and confidence goes up. Facts are never deleted,
-            only superseded.
-          </p>
+          <Loop />
         </section>
 
         {/* ---- close ---------------------------------------------------- */}
@@ -180,9 +168,12 @@ function Nav() {
       <span className="text-[30px] tracking-tight text-fg">
         intern<span className="text-accent">_</span>
       </span>
-      <Link href="/app" className="text-dim transition-colors hover:text-fg">
-        sign in →
-      </Link>
+      <div className="flex items-center gap-3">
+        <ThemeToggle />
+        <Link href="/app" className="text-dim transition-colors hover:text-fg">
+          sign in →
+        </Link>
+      </div>
     </nav>
   );
 }

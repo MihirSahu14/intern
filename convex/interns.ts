@@ -8,17 +8,11 @@ import { ownerView, requireMember } from "./access";
 import { insertFact } from "./facts";
 import { actionKind, draft, factKind, logLevel } from "./schema";
 
-/** Caps, then insert, then schedule. Shared by spawn and by answering a question. */
-export async function dispatch(
-  ctx: MutationCtx,
-  ownerId: Id<"users">,
-  task: string,
-  resumes?: Id<"interns">,
-): Promise<Id<"interns">> {
-  if (!task) throw new ConvexError("Give the intern a task.");
-  if (task.length > MAX_BRIEF_CHARS) {
-    throw new ConvexError(`Keep the brief under ${MAX_BRIEF_CHARS} characters.`);
-  }
+/**
+ * Every rule about whether this person may start work right now. Shared by
+ * dispatch and by retry, which spends exactly as much as a fresh brief does.
+ */
+async function assertWithinCaps(ctx: MutationCtx, ownerId: Id<"users">) {
   const now = Date.now();
   const today = await ctx.db
     .query("interns")
@@ -41,6 +35,20 @@ export async function dispatch(
     spentToday: usage?.costUsd ?? 0,
   });
   if (blocked) throw new ConvexError(blocked);
+}
+
+/** Caps, then insert, then schedule. Shared by spawn and by answering a question. */
+export async function dispatch(
+  ctx: MutationCtx,
+  ownerId: Id<"users">,
+  task: string,
+  resumes?: Id<"interns">,
+): Promise<Id<"interns">> {
+  if (!task) throw new ConvexError("Give the intern a task.");
+  if (task.length > MAX_BRIEF_CHARS) {
+    throw new ConvexError(`Keep the brief under ${MAX_BRIEF_CHARS} characters.`);
+  }
+  await assertWithinCaps(ctx, ownerId);
 
   const internId = await ctx.db.insert("interns", {
     ownerId,
@@ -58,6 +66,46 @@ export const spawn = mutation({
   handler: async (ctx, { task }) => {
     const user = await requireMember(ctx);
     return await dispatch(ctx, user._id, task.trim());
+  },
+});
+
+/**
+ * Run a finished-badly brief again, in place.
+ *
+ * The same intern goes back to `queued` and its log keeps going, because a
+ * retry is the same piece of work — a second row would put a duplicate card in
+ * the rail and a duplicate node on a graph everybody shares. Usually the reason
+ * it failed has simply passed: the free model was busy.
+ *
+ * It costs what any brief costs: same caps, same budget.
+ */
+export const retry = mutation({
+  args: { internId: v.id("interns") },
+  handler: async (ctx, { internId }) => {
+    const user = await requireMember(ctx);
+    const i = await ctx.db.get("interns", internId);
+    if (!i || i.ownerId !== user._id) {
+      throw new ConvexError("You can only retry your own brief.");
+    }
+    if (i.status !== "failed" && i.status !== "cancelled") {
+      throw new ConvexError("Only a failed or cancelled brief can be run again.");
+    }
+    await assertWithinCaps(ctx, user._id);
+
+    await ctx.db.patch("interns", internId, {
+      status: "queued",
+      countsTowardCap: true,
+      // Clear what the last attempt concluded; the log keeps the history.
+      error: undefined,
+      summary: undefined,
+      startedAt: undefined,
+      endedAt: undefined,
+      latencyMs: undefined,
+      parseOutcome: undefined,
+    });
+    await ctx.db.insert("logs", { internId, level: "sys", text: "running it again" });
+    await ctx.scheduler.runAfter(0, internal.run.go, { internId });
+    return null;
   },
 });
 
