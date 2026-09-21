@@ -1,5 +1,6 @@
 import Link from "next/link";
 import LandingGraph from "@/components/LandingGraph";
+import LandingStats from "@/components/LandingStats";
 
 /**
  * The public face. The cockpit lives behind sign-in at `/app`.
@@ -49,8 +50,8 @@ export default function Landing() {
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
             Dispatch a long-running intern at a brief and leave it alone. It
             reads everything the company knows, does the work, and files what it
-            learns back. Anything that would leave the building stops and waits
-            for you.
+            learns back. Drafts stop and wait for you; in this public sandbox
+            nothing is ever sent.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -58,10 +59,11 @@ export default function Landing() {
               href="/app"
               className="border border-accent/60 bg-accent/10 px-4 py-2 text-accent transition-colors hover:bg-accent/20"
             >
-              open the cockpit →
+              Try it with GitHub →
             </Link>
-            <span className="text-faint">no setup — it runs seeded until you connect anything</span>
+            <span className="text-faint">a public test brain · everyone who signs in shares it</span>
           </div>
+          <LandingStats />
         </header>
 
         {/* ---- the brain ----------------------------------------------- */}
@@ -77,7 +79,7 @@ export default function Landing() {
         <section className="enter mt-6 border border-line bg-panel" aria-label="Example intern run">
           <div className="flex items-center gap-2 border-b border-line px-4 py-2">
             <span className="size-2 rounded-full bg-ok pulse-slow" />
-            <span className="label">live · one intern</span>
+            <span className="label">example · one intern</span>
           </div>
           <div className="overflow-x-auto p-4">
             <pre className="min-w-max leading-[1.9]">
@@ -167,14 +169,15 @@ export default function Landing() {
         <section className="mt-24 border border-line bg-panel p-8">
           <h2 className="text-fg">Point it at a brief and walk away.</h2>
           <p className="mt-3 max-w-lg leading-relaxed text-dim">
-            It starts seeded, so there is nothing to configure before you can see
-            it work. Connect Slack and mail when you want it acting for real.
+            It&rsquo;s a public test brain — sign in with GitHub and everything
+            you do joins what everyone else has taught it. Drafts stop and wait
+            for you; nothing is ever sent.
           </p>
           <Link
             href="/app"
             className="mt-6 inline-block border border-accent/60 bg-accent/10 px-4 py-2 text-accent transition-colors hover:bg-accent/20"
           >
-            open the cockpit →
+            Try it with GitHub →
           </Link>
         </section>
 

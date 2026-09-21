@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "node --experimental-strip-types --test lib/*.test.ts",
     "test:convex": "vitest run",
-    "lint": "eslint"
+    "lint": "eslint",
+    "eval": "node --env-file=.env.local --experimental-strip-types scripts/eval.ts"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.94",
