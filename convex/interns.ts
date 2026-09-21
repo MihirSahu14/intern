@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked } from "../lib/caps.ts";
+import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
 import { PROMPT_VERSION } from "../lib/brief.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -23,7 +23,12 @@ export async function dispatch(
   const today = await ctx.db
     .query("interns")
     .withIndex("by_ownerId", (q) => q.eq("ownerId", ownerId).gte("_creationTime", dayStart(now)))
-    .take(50);
+    .take(DAY_WINDOW + 1);
+  // One row past the window means the day no longer fits in what's read here,
+  // so neither count below can be believed: a run that fails with zero output
+  // tokens is free, takes a second, and doesn't count toward the cap, so fifty
+  // of them would otherwise switch both caps off for the rest of the day.
+  if (today.length > DAY_WINDOW) throw new ConvexError(tooManyBriefs);
   const usage = await ctx.db.query("usage").withIndex("by_date", (q) => q.eq("date", dayKey(now))).unique();
   const blocked = spawnBlocked({
     briefsToday: today.filter((i) => i.countsTowardCap).length,

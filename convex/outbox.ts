@@ -1,3 +1,4 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { MAX_FACT_CHARS, MAX_RECIPIENT_CHARS, MAX_RECIPIENTS } from "../lib/caps.ts";
 import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
@@ -33,10 +34,31 @@ function capEdits(edits: Edits): Edits {
   return out;
 }
 
+/**
+ * The newest 30 drafts anyone owns, plus your own newest.
+ *
+ * The global window alone is a trap: the cockpit filters this to the viewer,
+ * so once 30 other people's drafts land after yours, your own *pending* one
+ * falls out of the only UI that can approve or reject it — permanently.
+ * Signed-out callers just get the global window. `questions.list` does the
+ * same, inlined rather than shared: one helper over both tables doesn't
+ * survive Convex's generated index types.
+ */
 export const list = query({
   args: {},
   handler: async (ctx) => {
     const rows = await ctx.db.query("actions").order("desc").take(30);
+    const userId = await getAuthUserId(ctx);
+    if (userId) {
+      const mine = await ctx.db
+        .query("actions")
+        .withIndex("by_ownerId", (q) => q.eq("ownerId", userId))
+        .order("desc")
+        .take(15);
+      const seen = new Set(rows.map((r) => r._id));
+      rows.push(...mine.filter((m) => !seen.has(m._id)));
+      rows.sort((a, b) => b._creationTime - a._creationTime);
+    }
     return await Promise.all(rows.map(async (a) => ({ ...a, handle: (await ownerView(ctx, a.ownerId)).handle })));
   },
 });

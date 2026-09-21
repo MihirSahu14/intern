@@ -1,6 +1,45 @@
 # Handover
 
-State of the build as of 9 Aug 2026, ~16:20. Written for whoever picks this up next.
+**Read the Public MVP section first. Everything under it is the hackathon
+record — 9 Aug 2026, kept for the traps it documents, not as a description of
+the code.** Scout, the MCP server, VoiceOS and every outbound connector are
+gone from this branch; the sections below still talk about them.
+
+---
+
+## Public MVP
+
+What this is now: one public shared brain, GitHub sign-in, interns that run
+inside Convex on Gemini, and approvals that send nothing.
+
+**The run path.** `interns.spawn` (mutation) checks the caps, inserts the row
+and schedules `internal.run.go` (action), which recalls facts, makes one
+streamed Gemini call over plain `fetch`, parses the report, and calls
+`internal.interns.finish` (mutation) — facts, a draft *or* a question, in one
+transaction. A run that throws lands in `internal.interns.fail` instead, which
+still records what Google billed. No agent service, no Python, no queue.
+
+**Caps**, all in `lib/caps.ts`, all checked inside mutations: 5 briefs per
+person per UTC day, 1 intern working at a time, 20 facts per person per day,
+$5 of model spend across everyone per day. A run that produced nothing billable
+(free-tier 429) doesn't cost a brief.
+
+**Approvals are a sandbox.** There is no connector, webhook or outbound path in
+the repo. Approving files the decision and the difference from the draft as a
+preference fact; rejecting files the reason as a correction. That is the whole
+learning loop, and `/stats` measures it from real runs.
+
+**Admin** is the Convex dashboard's function runner — `users:ban
+{"handle":"x"}` bans and purges everything that person added. There is no admin
+UI and deliberately so.
+
+**Tests**: `npm test` (pure logic), `npx vitest run` (the Convex functions via
+convex-test), `npm run eval` (20 fixed briefs through the live prompt — costs
+tokens, and exits non-zero on a partial outage, not just a total one).
+
+**The dev deployment still holds hackathon data and was never wiped.** Rows and
+indexes from before this branch are still there, which is why a schema push can
+fight you. See MANIFEST.md.
 
 ---
 
@@ -174,26 +213,18 @@ now: **always branch, then PR.**
 
 ---
 
-## Next, in priority order
+## Next
 
-1. ~~Rewrite the four positioning facts~~ · ~~fix the interleaved stream~~ ·
-   ~~kill the roster~~ — all done, see above.
-2. **Rebuild Scout** and re-run one brief. `scout/scout/contexts.py` now gives
-   the web sub-agent serial tool calls and a three-search budget, because
-   firing six searches at once pinned the OpenAI 200k TPM ceiling and the last
-   ninety seconds of a run were 429s and empty results. **This one is not
-   verified** — it needs `docker compose up -d --build scout-api` and a real run.
-3. **Watch for a schema fight.** Every `npx convex dev --once` from this branch
-   deletes `actions.by_ownerId`, `actions.by_ownerId_and_status` and
-   `interns.by_userId_and_status`. Those indexes are on the *deployed* schema
-   but not in `convex/schema.ts` here, so someone else's branch has an `ownerId`
-   this one does not. Reconcile before either of you pushes again.
-4. **VoiceOS** — nothing to build. Point it at `http://localhost:3000/api/mcp`,
-   or `ngrok http 3000` if it's on another machine.
+Nothing outbound. Whatever comes next should not quietly reintroduce a send
+path — the sandbox invariant is stated on every screen and in the consent gate,
+and the docs lied about it for a whole branch before anyone noticed.
 
-For the two-person demo, Andrew needs the three `NEXT_PUBLIC_CONVEX_*` /
-`CONVEX_DEPLOYMENT` values plus `SCOUT_API_URL=http://<your-lan-ip>:8000`, so
-both cockpits say LIVE against one brain.
+The open ones that survive the cut:
 
-**Run the whole flow once before presenting** — sign in, brief that drafts to
-Slack, approve it. The first end-to-end run should not be on stage.
+1. **Watch for a schema fight.** The deployment carries indexes and tables that
+   are not in this repo's `convex/schema.ts`, left over from the hackathon.
+   Reconcile before pushing from a second branch.
+2. **Pagination.** `facts.graph`, `community.feed` and `community.evals` all
+   take bounded windows (400 facts, 30 events, 1,000 runs) and say so in a
+   `ponytail:` comment. They stop being honest once the community outgrows one
+   screen.

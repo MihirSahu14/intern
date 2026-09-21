@@ -17,9 +17,6 @@ const BUSY = "The free model is busy, try again in a minute.";
 export const go = internalAction({
   args: { internId: v.id("interns") },
   handler: async (ctx, { internId }) => {
-    const started = await ctx.runMutation(internal.interns.start, { internId });
-    if (!started) return null;
-
     const say = (level: "sys" | "out", text: string) =>
       ctx.runMutation(internal.interns.appendLog, { internId, level, text });
     const t0 = Date.now();
@@ -28,6 +25,12 @@ export const go = internalAction({
     // Google had already billed by the time it threw — see interns.fail.
     let usage = { in: 0, out: 0 };
     try {
+      // Inside the try: if this throws, `fail` still runs. Outside it, the
+      // intern stayed `queued` forever and held the concurrency slot until the
+      // UTC day rolled over.
+      const started = await ctx.runMutation(internal.interns.start, { internId });
+      if (!started) return null;
+
       const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task });
       await ctx.runMutation(internal.interns.noteRecall, {
         internId,
@@ -36,9 +39,10 @@ export const go = internalAction({
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
       await say("sys", "thinking · gemini");
 
+      const prompt = brief(started.task, recalled);
       let report = "";
       let pending = "";
-      for await (const chunk of stream(brief(started.task, recalled))) {
+      for await (const chunk of stream(prompt)) {
         if (chunk.usage) usage = chunk.usage;
         if (!chunk.text) continue;
         report += chunk.text;
@@ -53,6 +57,15 @@ export const go = internalAction({
 
       report = report.trim();
       if (!report) throw new Error("gemini returned an empty report");
+
+      // ponytail: if Gemini ever stops sending usageMetadata, every run books
+      // 0 tokens, addUsage adds $0 and the $5/day global budget quietly stops
+      // existing. chars/4 is the usual rough estimate — wrong by a third at
+      // worst, which is a budget that still holds. Only for a run that
+      // produced something: an empty report must stay free (see the catch).
+      if (usage.out === 0) {
+        usage = { in: Math.ceil(prompt.length / 4), out: Math.ceil(report.length / 4) };
+      }
 
       const asked = parseQuestionBlock(report);
       const parsed = parseActionBlock(report);

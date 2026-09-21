@@ -1,3 +1,4 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { MAX_BRIEF_CHARS } from "../lib/caps.ts";
 import { mutation, query } from "./_generated/server";
@@ -5,9 +6,22 @@ import { requireMember } from "./access";
 import { insertFact } from "./facts";
 import { dispatch } from "./interns";
 
+/** Your own newest questions merged into the global window — see `outbox.list`. */
 export const list = query({
   args: {},
-  handler: async (ctx) => await ctx.db.query("questions").order("desc").take(30),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("questions").order("desc").take(30);
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return rows;
+    const mine = await ctx.db
+      .query("questions")
+      .withIndex("by_ownerId", (q) => q.eq("ownerId", userId))
+      .order("desc")
+      .take(15);
+    const seen = new Set(rows.map((r) => r._id));
+    rows.push(...mine.filter((m) => !seen.has(m._id)));
+    return rows.sort((a, b) => b._creationTime - a._creationTime);
+  },
 });
 
 /** The answer becomes a fact first, then the work resumes as a fresh intern (subject to caps). */

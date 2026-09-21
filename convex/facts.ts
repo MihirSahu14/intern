@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { MAX_FACT_CHARS, dayStart, teachBlocked } from "../lib/caps.ts";
+import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from "../lib/caps.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalQuery, mutation, query } from "./_generated/server";
 import { requireMember } from "./access";
@@ -27,7 +27,11 @@ export const teach = mutation({
     const today = await ctx.db
       .query("facts")
       .withIndex("by_ownerId", (q) => q.eq("ownerId", user._id).gte("_creationTime", dayStart(Date.now())))
-      .take(50);
+      .take(DAY_WINDOW + 1);
+    // Same guard as `dispatch`: run-filed facts, corrections and answers share
+    // this window without counting, so an overflowed day can't be counted at
+    // all — refuse rather than read the first fifty and call it twenty.
+    if (today.length > DAY_WINDOW) throw new ConvexError(tooManyFacts);
     const blocked = teachBlocked(today.length);
     if (blocked) throw new ConvexError(blocked);
     return await insertFact(ctx, { title, body, kind: args.kind, ownerId: user._id });

@@ -8,6 +8,13 @@
 
 export const BRIEFS_PER_DAY = 5;
 export const FACTS_PER_DAY = 20;
+/**
+ * How many of a person's rows a mutation reads to judge their day. Rows that
+ * don't count toward a cap (a failed run, say) still fill it, so a day that
+ * overflows the window is refused outright rather than counted wrongly — see
+ * `tooManyBriefs` / `tooManyFacts`.
+ */
+export const DAY_WINDOW = 50;
 export const DAILY_BUDGET_USD = 5;
 export const MAX_BRIEF_CHARS = 2000;
 export const MAX_FACT_CHARS = 1000;
@@ -48,3 +55,7 @@ export function spawnBlocked(s: {
 
 export const teachBlocked = (factsToday: number): string | null =>
   factsToday >= FACTS_PER_DAY ? `You've added ${FACTS_PER_DAY} facts today. ${RESETS}` : null;
+
+/** Said when the day's window overflows and the counts above stop being trustworthy. */
+export const tooManyBriefs = `You've started too many interns today. ${RESETS}`;
+export const tooManyFacts = `You've written too many facts today. ${RESETS}`;

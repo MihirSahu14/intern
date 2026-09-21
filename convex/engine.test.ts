@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
-import { DAILY_BUDGET_USD, costUsd, dayKey } from "../lib/caps.ts";
+import { DAILY_BUDGET_USD, DAY_WINDOW, costUsd, dayKey } from "../lib/caps.ts";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -282,4 +282,82 @@ test("evals: edit rate splits by whether a correction was recalled", async () =>
   expect(s.editRateWithCorrection).toBe(0);
   expect(s.without).toBe(2);
   expect(s.editRateWithout).toBe(1);
+});
+
+test("a day that overflows the read window refuses further briefs", async () => {
+  const { t, seedUser, asUser } = setup();
+  const userId = await seedUser("a");
+
+  // Runs that cost nothing and count toward nothing — a failure with zero
+  // output tokens. Fifty of them used to push the day's real briefs out of the
+  // window, switching both the 5/day and the 1-concurrent cap off until 00:00.
+  await t.run(async (ctx) => {
+    for (let i = 0; i < DAY_WINDOW + 1; i++) {
+      await ctx.db.insert("interns", {
+        ownerId: userId,
+        task: `free failure ${i}`,
+        status: "failed",
+        countsTowardCap: false,
+        endedAt: Date.now(),
+      });
+    }
+  });
+
+  await expect(asUser(userId).mutation(api.interns.spawn, { task: "one more" })).rejects.toThrow(
+    /too many interns/,
+  );
+});
+
+test("a day that overflows the read window refuses further facts", async () => {
+  const { t, seedUser, asUser } = setup();
+  const userId = await seedUser("a");
+
+  // Facts an intern filed: they share the window without going through `teach`
+  // or counting against the 20/day cap.
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "t", status: "done", countsTowardCap: true }),
+  );
+  await t.run(async (ctx) => {
+    for (let i = 0; i < DAY_WINDOW + 1; i++) {
+      await ctx.db.insert("facts", { title: `f${i}`, body: "b", kind: "note", text: `f${i}\nb`, ownerId: userId, internId });
+    }
+  });
+
+  await expect(
+    asUser(userId).mutation(api.facts.teach, { title: "one more", body: "b", kind: "note" }),
+  ).rejects.toThrow(/too many facts/);
+});
+
+test("your own pending draft survives thirty newer ones from other people", async () => {
+  const { t, seedUser, asUser } = setup();
+  const owner = await seedUser("owner");
+  const other = await seedUser("other");
+
+  const mkAction = (ownerId: Id<"users">, title: string) =>
+    t.run(async (ctx) => {
+      const internId = await ctx.db.insert("interns", { ownerId, task: "t", status: "done", countsTowardCap: true });
+      return await ctx.db.insert("actions", {
+        ownerId,
+        internId,
+        kind: "email" as const,
+        status: "pending" as const,
+        title,
+        draft: { to: ["x@example.com"], subject: title, body: "b" },
+        rationale: "because",
+        sources: [],
+        recalledCorrection: false,
+      });
+    });
+
+  const mine = await mkAction(owner, "mine");
+  for (let i = 0; i < 31; i++) await mkAction(other, `theirs ${i}`);
+
+  // The global window alone buries it, and the cockpit filters to the viewer,
+  // so it would vanish from the only UI that can approve or reject it.
+  const rows = await asUser(owner).query(api.outbox.list, {});
+  expect(rows.map((r) => r._id)).toContain(mine);
+  expect(await asUser(owner).mutation(api.outbox.decide, { actionId: mine, decision: "approve" })).toBe(null);
+
+  // Signed out, the global window is all there is.
+  expect((await t.query(api.outbox.list, {})).map((r) => r._id)).not.toContain(mine);
 });

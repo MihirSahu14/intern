@@ -272,12 +272,11 @@ export type ActionKind = "email" | "slack" | "calendar";
 /** Every surface work can go out on — and so every surface trust is earned on. */
 export const ACTION_KINDS: ActionKind[] = ["email", "slack", "calendar"];
 
-export type ActionStatus =
-  | "pending"
-  | "approved"
-  | "sent"
-  | "rejected"
-  | "failed";
+/**
+ * Approvals are sandbox-only — nothing is ever sent — so there is no `sent` or
+ * `failed` to reach. These three are exactly what `actions.status` stores.
+ */
+export type ActionStatus = "pending" | "approved" | "rejected";
 
 export type Draft = {
   /** Email addresses, or Slack channel ids/names for a slack action. */

@@ -10,9 +10,7 @@ import type {
 const STATUS: Record<ActionStatus, { dot: string; text: string }> = {
   pending: { dot: "bg-k-action pulse-slow", text: "text-k-action" },
   approved: { dot: "bg-ok", text: "text-ok" },
-  sent: { dot: "bg-line-2", text: "text-dim" },
   rejected: { dot: "bg-faint", text: "text-faint" },
-  failed: { dot: "bg-err", text: "text-err" },
 };
 
 export type Decision =
@@ -26,7 +24,6 @@ export default function Outbox({
   actions: ProposedAction[];
   onDecide: (id: string, decision: Decision) => void;
 }) {
-  const wiredFor = (_kind: string) => true;
   const [open, setOpen] = useState<string | null>(null);
   const pending = actions.filter((a) => a.status === "pending");
   const rest = actions.filter((a) => a.status !== "pending");
@@ -59,8 +56,6 @@ export default function Outbox({
             <Pending
               key={a.id}
               action={a}
-              wired={wiredFor(a.kind)}
-              dryRun={true}
               expanded={open === a.id}
               onToggle={() => setOpen(open === a.id ? null : a.id)}
               onDecide={onDecide}
@@ -69,7 +64,6 @@ export default function Outbox({
             <Settled
               key={a.id}
               action={a}
-              wired={wiredFor(a.kind)}
               expanded={open === a.id}
               onToggle={() => setOpen(open === a.id ? null : a.id)}
             />
@@ -90,15 +84,11 @@ export default function Outbox({
  */
 function Pending({
   action,
-  wired,
-  dryRun,
   expanded,
   onToggle,
   onDecide,
 }: {
   action: ProposedAction;
-  wired: boolean;
-  dryRun: boolean;
   expanded: boolean;
   onToggle: () => void;
   onDecide: (id: string, decision: Decision) => void;
@@ -212,13 +202,7 @@ function Pending({
             onClick={approve}
             className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10"
           >
-            {changed.length
-              ? "approve with edits"
-              : wired
-                ? dryRun
-                  ? "approve (sandbox)"
-                  : "approve & send"
-                : "approve"}
+            {changed.length ? "approve with edits" : "approve (sandbox)"}
           </button>
           <button
             type="button"
@@ -236,17 +220,15 @@ function Pending({
 /** Anything already decided. Read-only, and shows both halves of an edit. */
 function Settled({
   action,
-  wired,
   expanded,
   onToggle,
 }: {
   action: ProposedAction;
-  wired: boolean;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const s = STATUS[action.status];
-  const sent = action.accepted ?? action.draft;
+  const decided = action.accepted ?? action.draft;
   const edited = action.editedFields ?? [];
 
   return (
@@ -263,15 +245,15 @@ function Settled({
         <span className="ml-auto shrink-0 text-faint">{expanded ? "−" : "+"}</span>
       </button>
 
-      <p className="mt-1 truncate text-dim" title={sent.to.join(", ")}>
-        → {sent.to.join(", ")}
+      <p className="mt-1 truncate text-dim" title={decided.to.join(", ")}>
+        → {decided.to.join(", ")}
       </p>
-      <p className="truncate text-fg">{sent.subject}</p>
+      <p className="truncate text-fg">{decided.subject}</p>
 
       {expanded ? (
         <div className="mt-2 space-y-2">
           <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words border-l border-line-2 pl-2 text-dim">
-            {sent.body}
+            {decided.body}
           </pre>
           {edited.length ? (
             <details className="text-faint">
@@ -292,16 +274,8 @@ function Settled({
       {action.status === "approved" ? (
         <p className="mt-1.5 text-faint">Approved. Sandbox: nothing was sent.</p>
       ) : null}
-      {action.status === "sent" && action.result ? (
-        <p className="mt-1.5 truncate text-faint" title={action.result}>
-          {action.result}
-        </p>
-      ) : null}
       {action.status === "rejected" && action.result ? (
         <p className="mt-1.5 text-faint">“{action.result}”</p>
-      ) : null}
-      {action.status === "failed" && action.result ? (
-        <p className="mt-1.5 text-err">{action.result}</p>
       ) : null}
     </article>
   );

@@ -51,10 +51,12 @@ export async function* stream(
   if (!apiKey) throw new Error("GEMINI_API_KEY unset");
 
   const res = await fetch(
-    `${ENDPOINT}/${MODEL}:streamGenerateContent?alt=sse&key=${apiKey}`,
+    `${ENDPOINT}/${MODEL}:streamGenerateContent?alt=sse`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // Header, not `?key=` — a query string is what ends up in proxy logs and
+      // error reports.
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       signal: opts.signal,
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],

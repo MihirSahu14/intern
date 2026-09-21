@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { KIND_COLOR } from "./BrainGraph";
-import type { FactKind, GraphNode } from "@/lib/types";
+import type { FactKind } from "@/lib/types";
 
 /**
  * Put something into the brain by hand.
@@ -11,8 +10,12 @@ import type { FactKind, GraphNode } from "@/lib/types";
  * question and waits for someone to answer it. That only ever covers what an
  * intern happened to get stuck on, so everything a person already knows and was
  * never asked about stays outside the brain. This is the other direction —
- * unprompted, and the same landing path as `POST /api/capture`, so a fact typed
- * here is indistinguishable from one an answer produced.
+ * unprompted, and the same landing path as an answered question, so a fact
+ * typed here is indistinguishable from one an answer produced.
+ *
+ * Text and kind, and nothing else: that is exactly what `facts.teach` stores.
+ * Tags, a subject and an "attach to the selected node" toggle used to be
+ * collected here and silently dropped on the way to the mutation.
  *
  * Collapsed to a single line at rest. The panel below it is where interns are
  * stopped, and that has to stay the loudest thing in the column.
@@ -32,46 +35,29 @@ const KINDS: FactKind[] = [
 const ABOUT: Record<FactKind, string> = {
   note: "something true worth citing later",
   decision: "what was settled, and by whom",
-  preference: "how the work should be done — binds to a role",
+  preference: "how the work should be done",
   correction: "what an intern got wrong",
   answer: "the answer to something nobody asked yet",
-  person: "who someone is and what they own",
-  project: "what a piece of work is",
+  person: "who someone is and what they own — filed as a note",
+  project: "what a piece of work is — filed as a note",
 };
-
-/** Kinds that bind to a role rather than to a thing in the graph. */
-const ROLES = ["researcher", "correspondent", "archivist", "onboarder"];
 
 export type TeachInput = {
   text: string;
   kind: FactKind;
-  tags: string[];
-  subject?: string;
-  links: string[];
 };
 
 export default function Teach({
-  selected,
   onTeach,
 }: {
-  selected: GraphNode | null;
   onTeach: (input: TeachInput) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [kind, setKind] = useState<FactKind>("note");
-  const [tags, setTags] = useState("");
-  const [subject, setSubject] = useState("");
-  const [attach, setAttach] = useState(true);
   const [busy, setBusy] = useState(false);
   const [filed, setFiled] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
-
-  // The node it would attach to is whatever is selected *now*, and the
-  // selection changes under this panel as the graph is explored. Pinning it at
-  // submit rather than on open is what makes "attach to" honest.
-  const target = attach ? selected : null;
-  const binds = kind === "preference" || kind === "correction";
 
   useEffect(() => {
     if (open) box.current?.focus();
@@ -88,24 +74,11 @@ export default function Teach({
     const body = text.trim();
     if (!body || busy) return;
     setBusy(true);
-    const ok = await onTeach({
-      text: body,
-      kind,
-      tags: tags
-        .split(/[,\s]+/)
-        .map((t) => t.replace(/^#/, "").trim())
-        .filter(Boolean)
-        .slice(0, 8),
-      subject: binds ? subject.trim() || undefined : undefined,
-      links: target ? [target.id] : [],
-    });
+    const ok = await onTeach({ text: body, kind });
     setBusy(false);
     if (!ok) return;
     setText("");
-    setTags("");
-    setFiled(
-      target ? `filed · linked to ${target.label}` : "filed into the brain",
-    );
+    setFiled("filed into the brain");
     box.current?.focus();
   };
 
@@ -174,60 +147,6 @@ export default function Teach({
           ))}
         </div>
         <p className="mt-1 text-faint">{ABOUT[kind]}</p>
-
-        {binds ? (
-          <select
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            className="mt-1.5 w-full border border-line bg-bg px-1.5 py-0.5 text-dim"
-          >
-            <option value="">every role</option>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        ) : null}
-
-        <input
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-          spellCheck={false}
-          placeholder="tags, space separated — they join it to what's already there"
-          className="mt-1.5 w-full border border-line bg-bg px-1.5 py-0.5 text-fg placeholder:text-faint/70 focus:border-line-2"
-        />
-
-        {selected ? (
-          <button
-            type="button"
-            onClick={() => setAttach((a) => !a)}
-            className={`mt-1.5 flex w-full items-center gap-2 border px-1.5 py-0.5 text-left transition-colors ${
-              attach ? "border-line-2" : "border-line opacity-50"
-            }`}
-            title="hang the new fact off the selected node"
-          >
-            <span className={attach ? "text-k-fact" : "text-faint"}>
-              {attach ? "▣" : "▢"}
-            </span>
-            <span className="text-faint">about</span>
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ background: KIND_COLOR[selected.kind] }}
-            />
-            <span className="truncate text-dim">{selected.label}</span>
-          </button>
-        ) : (
-          <p className="mt-1.5 text-faint">
-            select a node first to hang it off something
-          </p>
-        )}
 
         <button
           type="button"
