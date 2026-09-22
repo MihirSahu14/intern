@@ -2,7 +2,8 @@
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import { SLACK_TOOLS, TRIGGERS, sign } from "../lib/inbound.ts";
 import { broadcast } from "./broadcast";
 import schema from "./schema";
 
@@ -60,9 +61,17 @@ function setup() {
     t.run((ctx) =>
       ctx.db.insert("connections", { userId, connector, status: "pending", state, composioAccountId, createdAt: Date.now() }),
     );
-  const seedActive = (userId: Id<"users">, connector: "gmail" | "slack" = "gmail") =>
+  const seedActive = (userId: Id<"users">, connector: "gmail" | "slack" = "gmail", extra: Partial<Doc<"connections">> = {}) =>
     t.run((ctx) =>
-      ctx.db.insert("connections", { userId, connector, status: "active", composioAccountId: "ca_1", state: "s0", createdAt: Date.now() }),
+      ctx.db.insert("connections", {
+        userId,
+        connector,
+        status: "active",
+        composioAccountId: "ca_1",
+        state: "s0",
+        createdAt: Date.now(),
+        ...extra,
+      }),
     );
   return { t, seedUser, asUser, seedDraft, seedPending, seedActive };
 }
@@ -1157,3 +1166,440 @@ test("an edited sandbox approval does broadcast the lesson it learns", async () 
 });
 
 const discordLine = (content: string) => ({ content, username: "Intern", allowed_mentions: { parse: [] } });
+
+// --- inbound: 🧠 in Slack, the Intern label in Gmail -------------------------
+
+const WEBHOOK_SECRET = "test-webhook-secret";
+
+/** Replies by URL: the first key contained in the request URL wins; anything else is a 404. */
+function route(table: [string, unknown][]) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
+    const hit = table.find(([k]) => url.includes(k));
+    return new Response(JSON.stringify(hit ? hit[1] : {}), { status: hit ? 200 : 404 });
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+/** A webhook request signed the way Composio signs one (see lib/inbound.ts). */
+async function signed(payload: unknown, secret = WEBHOOK_SECRET) {
+  const body = JSON.stringify(payload);
+  const id = "msg_1";
+  const ts = String(Math.floor(Date.now() / 1000));
+  return {
+    method: "POST",
+    body,
+    headers: { "webhook-id": id, "webhook-timestamp": ts, "webhook-signature": `v1,${await sign(secret, id, ts, body)}` },
+  };
+}
+
+// The V3 envelope with each trigger's documented `data` fields.
+const slackEvent = (
+  userId: string,
+  o: { reactor?: string; reaction?: string; accountId?: string; channel?: string; author?: string } = {},
+) => ({
+  id: "msg_abc",
+  type: "composio.trigger.message",
+  metadata: { trigger_slug: TRIGGERS.slack.slug, trigger_id: "ti_s", user_id: userId, connected_account_id: o.accountId ?? "ca_1" },
+  data: {
+    reaction: o.reaction ?? "brain",
+    user: o.reactor ?? "U123",
+    message_channel: o.channel ?? "C1",
+    message_ts: "1726900000.000100",
+    message_user: o.author ?? "U123",
+    event_ts: "1726900001.000200",
+  },
+  timestamp: "2026-09-21T12:00:00Z",
+});
+
+const gmailEvent = (userId: string, accountId = "ca_1") => ({
+  id: "msg_def",
+  type: "composio.trigger.message",
+  metadata: { trigger_slug: TRIGGERS.gmail.slug, trigger_id: "ti_g", user_id: userId, connected_account_id: accountId },
+  data: { id: "18f0a1", message_id: "18f0a1", subject: "Pricing decision", message_text: "We charge per seat.", label_ids: ["Label_7"] },
+  timestamp: "2026-09-21T12:00:00Z",
+});
+
+/** Slack's conversations.info for a public channel the member is in. */
+const PUBLIC_CHANNEL = { ok: true, channel: { id: "C1", is_channel: true, is_private: false, is_im: false, is_mpim: false } };
+
+/**
+ * Slack tools through a session, answered by tool slug: history returns
+ * `text` at `ts`; conversations.info returns `info`, or a 500 for "fail".
+ */
+function stubSlack(o: { text: string; ts?: string; info?: unknown }) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url, init) => {
+    if (url.includes("/execute")) {
+      const tool = JSON.parse(String(init?.body)).tool_slug;
+      if (tool === SLACK_TOOLS.history) {
+        const messages = [{ type: "message", text: o.text, ts: o.ts ?? "1726900000.000100" }];
+        return new Response(JSON.stringify({ data: { ok: true, messages }, error: null, log_id: "log_1" }));
+      }
+      if (tool === SLACK_TOOLS.info) {
+        if (o.info === "fail") return new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 });
+        return new Response(JSON.stringify({ data: o.info ?? PUBLIC_CHANNEL, error: null, log_id: "log_2" }));
+      }
+    }
+    if (url.includes("/tool_router/session")) return new Response(JSON.stringify({ session_id: "trs_1" }));
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+const toolsCalled = (f: ReturnType<typeof stubSlack>) =>
+  f.mock.calls.filter(([url]) => url.includes("/execute")).map(([, init]) => JSON.parse(String(init?.body)).tool_slug);
+
+const allFacts = (t: ReturnType<typeof setup>["t"]) => t.run((ctx) => ctx.db.query("facts").collect());
+const path = (url: string) => url.replace(/^.*\/api\/v3\.1/, "");
+
+function inboundEnv() {
+  composioEnv();
+  vi.stubEnv("COMPOSIO_WEBHOOK_SECRET", WEBHOOK_SECRET);
+}
+
+test("connecting Slack learns who the member is there and subscribes to their 🧠", async () => {
+  inboundEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a, "slack");
+  const f = route([
+    ["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "slack" }],
+    ["/execute", { data: { ok: true, user_id: "U123", user: "ann", team: "acme" }, error: null, log_id: "log_1" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+    [`/trigger_instances/${TRIGGERS.slack.slug}/upsert`, { trigger_id: "ti_s" }],
+  ]);
+
+  expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "slack" });
+  expect(await t.run((ctx) => ctx.db.query("connections").first())).toMatchObject({
+    status: "active",
+    externalUserId: "U123",
+    accountLabel: "@ann in acme",
+    triggerId: "ti_s",
+  });
+  const whoami = f.mock.calls.find(([url]) => url.includes("/execute"));
+  expect(JSON.parse(String(whoami?.[1]?.body)).tool_slug).toBe(SLACK_TOOLS.whoami);
+  const trigger = f.mock.calls.find(([url]) => url.includes("/trigger_instances/"));
+  expect(JSON.parse(String(trigger?.[1]?.body))).toEqual({ user_id: a, connected_account_id: "ca_1", trigger_config: TRIGGERS.slack.config });
+});
+
+test("connecting Slack subscribes to nothing without a webhook secret", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a, "slack");
+  const f = route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "slack" }]]);
+  expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(true);
+  expect(f).toHaveBeenCalledTimes(1);
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.triggerId).toBeUndefined();
+});
+
+test("connecting Gmail to send never starts reading mail", async () => {
+  inboundEnv();
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE", "ac_read");
+  const { seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a, "gmail");
+  const f = route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "gmail" }]]);
+  expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(true);
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/complete_auth"]);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", connected: true, capture: false }),
+  );
+});
+
+test("the Intern-label toggle isn't offered until the deployment sets up a read-only grant and a webhook secret", async () => {
+  inboundEnv();
+  const { seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = route([]);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(expect.objectContaining({ key: "gmail", capture: null }));
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail", capture: true })).rejects.toThrow(/not set up yet/);
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE", "ac_read");
+  vi.stubEnv("COMPOSIO_WEBHOOK_SECRET", "");
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail", capture: true })).rejects.toThrow(/not set up yet/);
+  vi.stubEnv("COMPOSIO_WEBHOOK_SECRET", WEBHOOK_SECRET);
+  await expect(asUser(a).action(api.connections.start, { connector: "slack", capture: true })).rejects.toThrow(/not set up yet/);
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("turning the Intern label on is its own consent, through the read-only auth config, and only then a Gmail trigger", async () => {
+  inboundEnv();
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE", "ac_read");
+  const { seedUser, asUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { composioAccountId: "ca_send" });
+  const f = route([
+    ["/link", { redirect_url: "https://connect.composio.dev/link/ln_1", connected_account_id: "ca_read" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+  ]);
+  expect(await asUser(a).action(api.connections.start, { connector: "gmail", capture: true })).toBe("https://connect.composio.dev/link/ln_1");
+  expect(JSON.parse(String(f.mock.calls[0][1]?.body))).toEqual({ user_id: a, auth_configs: { gmail: "ac_read" } });
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(expect.objectContaining({ key: "gmail", capture: false }));
+
+  const g = route([
+    ["/connected_accounts/complete_auth", { connected_account_id: "ca_read", toolkit_slug: "gmail" }],
+    [`/trigger_instances/${TRIGGERS.gmail.slug}/upsert`, { trigger_id: "ti_g" }],
+  ]);
+  expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "gmail", capture: true });
+  const trigger = g.mock.calls.find(([url]) => url.includes("/trigger_instances/"));
+  expect(JSON.parse(String(trigger?.[1]?.body))).toEqual({ user_id: a, connected_account_id: "ca_read", trigger_config: TRIGGERS.gmail.config });
+  // The send grant is untouched: capture is a second account, not a replacement.
+  expect(g.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", connected: true, capture: true }),
+  );
+});
+
+test("turning the Intern label off deletes the trigger and the read grant, and keeps sending", async () => {
+  inboundEnv();
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE", "ac_read");
+  const { seedUser, asUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { composioAccountId: "ca_send" });
+  await seedActive(a, "gmail", { composioAccountId: "ca_read", capture: true, triggerId: "ti_g" });
+  const f = route([["/trigger_instances/manage/ti_g", { trigger_id: "ti_g" }], ["/connected_accounts/ca_read", { success: true }]]);
+
+  await asUser(a).action(api.connections.stopCapture, {});
+  expect(f.mock.calls.map(([url, init]) => [path(url), init?.method])).toEqual([
+    ["/trigger_instances/manage/ti_g", "DELETE"],
+    // No revoke: with the same OAuth app it would take the send grant down too.
+    ["/connected_accounts/ca_read", "DELETE"],
+  ]);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", connected: true, capture: false }),
+  );
+});
+
+test("a Gmail trigger that can't be created turns capture straight back off, so no read grant sits unused", async () => {
+  inboundEnv();
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE", "ac_read");
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const row = await seedPending(a, "gmail", "s1", "ca_read");
+  await t.run((ctx) => ctx.db.patch("connections", row, { capture: true }));
+  const f = route([
+    ["/connected_accounts/complete_auth", { connected_account_id: "ca_read", toolkit_slug: "gmail" }],
+    ["/connected_accounts/ca_read", { success: true }],
+  ]);
+  expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(false);
+  expect((await t.run((ctx) => ctx.db.get("connections", row)))?.status).toBe("failed");
+  expect(f.mock.calls.map(([url, init]) => [path(url), init?.method]).at(-1)).toEqual(["/connected_accounts/ca_read", "DELETE"]);
+});
+
+test("disconnecting deletes the account's trigger before the account", async () => {
+  inboundEnv();
+  const { seedUser, asUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123", triggerId: "ti_s" });
+  const f = route([["/trigger_instances/manage/ti_s", {}], ["/connected_accounts/ca_1", { success: true }]]);
+  await asUser(a).action(api.connections.disconnect, { connector: "slack" });
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/trigger_instances/manage/ti_s", "/connected_accounts/ca_1?revoke_on_delete=true"]);
+});
+
+test("disconnecting Gmail also switches the Intern label off", async () => {
+  inboundEnv();
+  const { seedUser, asUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { composioAccountId: "ca_send" });
+  await seedActive(a, "gmail", { composioAccountId: "ca_read", capture: true, triggerId: "ti_g" });
+  const f = route([["/trigger_instances/manage/ti_g", {}], ["/connected_accounts/", { success: true }]]);
+  await asUser(a).action(api.connections.disconnect, { connector: "gmail" });
+  expect(f.mock.calls.map(([url]) => path(url)).sort()).toEqual([
+    "/connected_accounts/ca_read",
+    "/connected_accounts/ca_send?revoke_on_delete=true",
+    "/trigger_instances/manage/ti_g",
+  ]);
+});
+
+test("purge deletes a connection's trigger along with its account", async () => {
+  inboundEnv();
+  vi.useFakeTimers();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { triggerId: "ti_s" });
+  const f = route([["/trigger_instances/manage/ti_s", {}], ["/connected_accounts/ca_1", { success: true }]]);
+  await t.mutation(internal.users.purge, { userId: a });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/trigger_instances/manage/ti_s", "/connected_accounts/ca_1?revoke_on_delete=true"]);
+});
+
+test("webhook: a bad signature, or no secret configured, is refused with 401 before anything is read", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "hello" });
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a), "wrong"))).status).toBe(401);
+  expect((await t.fetch("/composio/webhook", { method: "POST", body: JSON.stringify(slackEvent(a)) })).status).toBe(401);
+  vi.stubEnv("COMPOSIO_WEBHOOK_SECRET", "");
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(401);
+  expect(f).not.toHaveBeenCalled();
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("webhook: the member's own 🧠 on their own message in a confirmed public channel is public and broadcast, once", async () => {
+  inboundEnv();
+  broadcastEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "We ship on Fridays\nbecause QA is Thursday" });
+
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(200);
+  const exec = f.mock.calls.filter(([url]) => url.includes("/execute")).map(([, init]) => JSON.parse(String(init?.body)));
+  expect(exec).toEqual([
+    { tool_slug: SLACK_TOOLS.history, arguments: { channel: "C1", latest: "1726900000.000100", inclusive: true, limit: 1 } },
+    { tool_slug: SLACK_TOOLS.info, arguments: { channel: "C1" } },
+  ]);
+  const rows = await allFacts(t);
+  expect(rows).toEqual([expect.objectContaining({ title: "We ship on Fridays", body: "because QA is Thursday", ownerId: a, kind: "note" })]);
+  expect(rows[0]?.visibility).toBeUndefined();
+  expect((await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count).toBe(1);
+
+  // Composio redelivers: same message, no second fact.
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(1);
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+});
+
+test("webhook: someone else's 🧠, another reaction, or a message that's gone captures nothing", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "nope" });
+
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a, { reactor: "U999" })))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a, { reaction: "thumbsup" })))).status).toBe(200);
+  expect(f).not.toHaveBeenCalled();
+
+  stubSlack({ text: "an older message", ts: "1726899999.000000" });
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("webhook: a payload's user id counts only through that user's own live connection", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "hello" });
+
+  // b claims a's account; an account nobody has; not an id at all.
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(b)))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(a, { accountId: "ca_9" })))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent("not-an-id")))).status).toBe(200);
+  expect(f).not.toHaveBeenCalled();
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("webhook: banned or unconsented members capture nothing", async () => {
+  inboundEnv();
+  const { t, seedActive } = setup();
+  const banned = await t.run((ctx) => ctx.db.insert("users", { handle: "x", acceptedAt: Date.now(), bannedAt: Date.now() }));
+  const unconsented = await t.run((ctx) => ctx.db.insert("users", { handle: "u" }));
+  await seedActive(banned, "slack", { externalUserId: "U123" });
+  await seedActive(unconsented, "gmail", { composioAccountId: "ca_2", capture: true, triggerId: "ti_g" });
+  const f = stubSlack({ text: "hello" });
+  expect((await t.fetch("/composio/webhook", await signed(slackEvent(banned)))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(unconsented, "ca_2")))).status).toBe(200);
+  expect(f).not.toHaveBeenCalled();
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("webhook: an Intern-labelled email becomes an owner-only fact, never broadcast, once", async () => {
+  inboundEnv();
+  broadcastEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { capture: true, triggerId: "ti_g" });
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a)))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a)))).status).toBe(200);
+  expect(await allFacts(t)).toEqual([
+    expect.objectContaining({ title: "Pricing decision", body: "We charge per seat.", ownerId: a, visibility: "owner" }),
+  ]);
+  expect(await t.run((ctx) => ctx.db.query("broadcasts").collect())).toHaveLength(0);
+});
+
+test("webhook: with the Intern label off, a Gmail event captures nothing", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  // Only the send grant, plus a capture grant the member switched off.
+  await seedActive(a, "gmail");
+  await seedActive(a, "gmail", { composioAccountId: "ca_2", capture: true, triggerId: "ti_g", status: "failed" });
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a)))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a, "ca_2")))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("webhook: a full day captures nothing", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { capture: true, triggerId: "ti_g" });
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 20; i++) await ctx.db.insert("facts", { title: `f${i}`, body: "", kind: "note", ownerId: a, text: `f${i}\n` });
+  });
+  expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a)))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(20);
+});
+
+/** A 🧠 that could reach the public brain, but for one reason is filed owner-only and never broadcast. */
+async function capturedPrivately(event: (a: string) => unknown, info?: unknown) {
+  inboundEnv();
+  broadcastEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "Salary bands\nare private", info });
+  expect((await t.fetch("/composio/webhook", await signed(event(a)))).status).toBe(200);
+  expect(await allFacts(t)).toEqual([
+    expect.objectContaining({ title: "Salary bands", body: "are private", ownerId: a, visibility: "owner" }),
+  ]);
+  expect(await t.run((ctx) => ctx.db.query("broadcasts").collect())).toHaveLength(0);
+  return f;
+}
+
+test("webhook: a 🧠 in a DM is saved owner-only, without even asking Slack about the channel", async () => {
+  const f = await capturedPrivately((a) => slackEvent(a, { channel: "D0123" }));
+  expect(toolsCalled(f)).toEqual([SLACK_TOOLS.history]);
+});
+
+test("webhook: a 🧠 in a legacy private channel or group DM is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a, { channel: "G0123" }));
+});
+
+test("webhook: a 🧠 in a channel Slack reports private is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a), { ok: true, channel: { id: "C1", is_private: true, is_im: false, is_mpim: false } });
+});
+
+test("webhook: when the channel lookup fails, the 🧠 is saved owner-only", async () => {
+  const f = await capturedPrivately((a) => slackEvent(a), "fail");
+  expect(toolsCalled(f)).toEqual([SLACK_TOOLS.history, SLACK_TOOLS.info]);
+});
+
+test("webhook: a channel reply without the privacy flags counts as private", async () => {
+  await capturedPrivately((a) => slackEvent(a), { ok: true, channel: { id: "C1" } });
+});
+
+test("webhook: a 🧠 on someone else's message in a public channel is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a, { author: "U777" }));
+});
+
+test("webhook: a Gmail event with no message id is dropped, not keyed on the delivery id", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { capture: true, triggerId: "ti_g" });
+  const e = gmailEvent(a);
+  const noId = { ...e, data: { subject: "Pricing decision", message_text: "We charge per seat." } };
+  // A re-poll delivers the same mail under a new delivery id.
+  expect((await t.fetch("/composio/webhook", await signed(noId))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed({ ...noId, id: "msg_other" }))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(0);
+});

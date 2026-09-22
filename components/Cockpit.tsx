@@ -91,6 +91,7 @@ export default function Cockpit({ me }: { me: Me }) {
   const confirmUnsentM = useMutation(api.outbox.confirmUnsent);
   const startConnectA = useAction(api.connections.start);
   const disconnectA = useAction(api.connections.disconnect);
+  const stopCaptureA = useAction(api.connections.stopCapture);
 
   const [local, setLocal] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
@@ -118,7 +119,7 @@ export default function Cockpit({ me }: { me: Me }) {
     finishM({ sessionUri })
       .then((r) => {
         const label = r.connector ? connectorByKey(r.connector).label : "account";
-        if (r.ok) echo("ok", `${label} connected`);
+        if (r.ok) echo("ok", r.capture ? `${label}'s Intern label is on` : `${label} connected`);
         else echo("err", r.reason ?? `connecting ${label} didn't go through.`);
       })
       .catch((err) => echo("err", why(err)));
@@ -299,6 +300,19 @@ export default function Cockpit({ me }: { me: Me }) {
       }
     },
     [disconnectA, echo],
+  );
+
+  // On is a consent screen of its own (read-only Gmail); off deletes that grant.
+  const capture = useCallback(
+    async (on: boolean) => {
+      try {
+        if (on) window.location.href = await startConnectA({ connector: "gmail", capture: true });
+        else await stopCaptureA({});
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [startConnectA, stopCaptureA, echo],
   );
 
   const decide = useCallback(
@@ -491,6 +505,7 @@ export default function Cockpit({ me }: { me: Me }) {
           connectors={connectorRows ?? []}
           onConnect={(k) => void connect(k)}
           onDisconnect={(k) => void disconnect(k)}
+          onCapture={(on) => void capture(on)}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">

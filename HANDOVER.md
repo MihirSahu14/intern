@@ -238,3 +238,29 @@ The open ones that survive the cut:
    take bounded windows (400 facts, 30 events, 1,000 runs) and say so in a
    `ponytail:` comment. They stop being honest once the community outgrows one
    screen.
+
+---
+
+## Inbound from members' own tools (Task 7)
+
+- **🧠 in Slack** files a fact under the member's name. It is **public and
+  broadcast only** when the member wrote the message *and* it's in a channel
+  Slack confirms public (`SLACK_RETRIEVE_CONVERSATION_INFORMATION`:
+  `is_private`, `is_im`, `is_mpim` all false). A 🧠 on a DM (`D…`), a legacy
+  private channel or group DM (`G…`), a channel reported private, or someone
+  else's message is saved **owner-only**, never broadcast. If the channel
+  lookup fails, the fact is owner-only too.
+- **Slack user scopes:** `reactions:read` and `channels:history` (public
+  channels) are enough. **Don't grant `groups:history`, `im:history` or
+  `mpim:history`** unless Mihir decides he wants private captures. They would
+  let a member's 🧠 in private channels (`groups`), DMs (`im`) and group DMs
+  (`mpim`) read that message's text through Composio into their own
+  owner-only facts. Without them, a 🧠 there captures nothing, because the
+  history lookup is refused.
+- **The Gmail `Intern` label** is opt-in per member: a second, read-only
+  (`gmail.readonly`) grant with its own consent screen, through
+  `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE`. The send grant never reads mail.
+  Captures are owner-only.
+- **Webhook:** `https://<deployment>.convex.site/composio/webhook`, signed with
+  `COMPOSIO_WEBHOOK_SECRET`. Without the secret, every event gets a 401 and no
+  trigger is created.

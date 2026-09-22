@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { COMPOSIO_API, ComposioError, PATHS, completeAuth, connect, deleteAccount, execute } from "../lib/composio.ts";
+import { COMPOSIO_API, ComposioError, PATHS, completeAuth, connect, deleteAccount, deleteTrigger, execute, upsertTrigger } from "../lib/composio.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -88,4 +88,23 @@ test("a refused completeAuth keeps the HTTP status, so a mismatch reads apart fr
   await expect(completeAuth("key", { sessionUri: "su_1", userId: "u1" })).rejects.toMatchObject({ status: 400 });
   replies([{ error: { message: "not found" } }, 404]);
   await expect(completeAuth("key", { sessionUri: "su_1", userId: "u1" })).rejects.toMatchObject({ status: 404 });
+});
+
+test("a trigger is created for one member's connected account, and its id kept", async () => {
+  const f = replies([{ trigger_id: "ti_1" }]);
+  expect(await upsertTrigger("key", "SLACK_MESSAGE_REACTION_ADDED", { userId: "u1", accountId: "ca_1", config: { emoji_name: "brain" } })).toBe(
+    "ti_1",
+  );
+  expect(f.mock.calls[0][0]).toBe(`${COMPOSIO_API}/trigger_instances/SLACK_MESSAGE_REACTION_ADDED/upsert`);
+  expect(f.mock.calls[0][1]?.method).toBe("POST");
+  expect(sent(f, 0)).toEqual({ user_id: "u1", connected_account_id: "ca_1", trigger_config: { emoji_name: "brain" } });
+  replies([{}]);
+  await expect(upsertTrigger("key", "X", { userId: "u1", accountId: "ca_1", config: {} })).rejects.toBeInstanceOf(ComposioError);
+});
+
+test("a trigger is deleted by its id", async () => {
+  const f = replies([{ trigger_id: "ti_1" }]);
+  await deleteTrigger("key", "ti_1");
+  expect(f.mock.calls[0][0]).toBe(`${COMPOSIO_API}/trigger_instances/manage/ti_1`);
+  expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });
