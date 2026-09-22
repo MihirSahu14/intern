@@ -16,6 +16,7 @@ afterEach(() => {
 /** Every env var the connect path reads, set to test values. Managed auth: no auth config. */
 function composioEnv() {
   vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("COMPOSIO_VERIFIER_URL", "https://site.test/app");
 }
 
 /** Canned replies, one per outgoing request in order; the last repeats. No test reaches the network. */
@@ -586,4 +587,71 @@ test("purge deletes the member's connections and their accounts at Composio", as
   expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(0);
   expect(f.mock.calls[0][0]).toContain("/connected_accounts/ca_1");
   expect(f.mock.calls[0][1]?.method).toBe("DELETE");
+});
+
+test("connect: the key without a verifier URL is not set up: no links, nothing written", async () => {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubFetch({});
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/not set up yet/);
+  expect(f).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(0);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", configured: false }),
+  );
+});
+
+test("finish: without Composio's key it says not set up yet, before any fetch", async () => {
+  const { seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubComposio(completed);
+  await expect(asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).rejects.toThrow(/not set up yet/);
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("finish: Composio's 200 for an account on another member's link is still refused, and the grant deleted", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedPending(a);
+  const f = stubComposio(completed, { success: true });
+
+  expect((await asUser(b).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(false);
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[1][1]?.method).toBe("DELETE");
+});
+
+test("finish: a member with more than 50 earlier attempts still connects, and the newest old grant is retired", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const old = await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "active", composioAccountId: "ca_0", state: "s0", createdAt: Date.now() }),
+  );
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 60; i++) {
+      await ctx.db.insert("connections", { userId: a, connector: "gmail", status: "failed", state: `f${i}`, createdAt: Date.now() });
+    }
+  });
+  await seedPending(a);
+  const f = stubComposio(completed, { success: true });
+
+  expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "gmail" });
+  expect(await t.run((ctx) => ctx.db.query("connections").withIndex("by_composioAccountId", (q) => q.eq("composioAccountId", "ca_1")).unique())).toMatchObject({ status: "active" });
+  expect((await t.run((ctx) => ctx.db.get("connections", old)))?.status).toBe("failed");
+  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_0");
+});
+
+test("finish: Composio's own error text never reaches the client", async () => {
+  composioEnv();
+  const { seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a);
+  stubComposio(status(500, "internal detail xyz"));
+  const r = await asUser(a).action(api.connections.finish, { sessionUri: "su_1" });
+  expect(r.ok).toBe(false);
+  expect(JSON.stringify(r)).not.toMatch(/xyz|req_1|500/);
 });

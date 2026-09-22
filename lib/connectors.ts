@@ -69,9 +69,17 @@ export function connectorByKey(key: ConnectorKey): Connector {
 
 /**
  * The deployment has what this connector needs. Says nothing about whether *you* connected.
- * Both toolkits have Composio-managed OAuth, so the API key is enough.
+ * Both toolkits have Composio-managed OAuth, so no auth config is needed. The
+ * verifier URL is the deployer's word that Composio's callback identity
+ * verification is switched on for this project (Composio requires public
+ * HTTPS). Without it Composio would activate every consent on its side while
+ * ours never finishes, leaving live grants nobody deletes.
  */
-export const isConfigured = (_c: Connector, env: Record<string, string | undefined>) => !!env.COMPOSIO_API_KEY;
+export const isConfigured = (_c: Connector, env: Record<string, string | undefined>) =>
+  !!env.COMPOSIO_API_KEY && !!env.COMPOSIO_VERIFIER_URL?.startsWith("https://");
+
+/** Shown by the connect buttons: who actually holds the member's grant. */
+export const COMPOSIO_DISCLOSURE = "Composio holds this connection for Intern.";
 
 const firstLine = (s: string) => s.split("\n").find((l) => l.trim())?.trim() ?? "";
 

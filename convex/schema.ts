@@ -182,8 +182,9 @@ export default defineSchema({
   }).index("by_date", ["date"]),
 
   /**
-   * A member's link to one account at Composio. `state` is the single-use
-   * nonce the callback is looked up by; the user id never comes from the URL.
+   * A member's link to one account at Composio. `state` keys the row until
+   * Composio's account id is known; after that `finish` finds it by
+   * `composioAccountId`. The user id never comes from a URL.
    */
   connections: defineTable({
     userId: v.id("users"),
@@ -195,5 +196,6 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_userId_and_connector", ["userId", "connector"])
-    .index("by_state", ["state"]),
+    .index("by_state", ["state"])
+    .index("by_composioAccountId", ["composioAccountId"]),
 });

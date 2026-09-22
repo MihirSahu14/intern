@@ -119,7 +119,7 @@ export const start = action({
   handler: async (ctx, { connector }): Promise<string> => {
     const c = connectorByKey(connector);
     const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) throw new ConvexError(`${c.label} is not set up yet.`);
+    if (!apiKey || !isConfigured(c, process.env)) throw new ConvexError(`${c.label} is not set up yet.`);
 
     // Our key for the row while Composio's account id is still unknown.
     const state = crypto.randomUUID();
@@ -134,7 +134,8 @@ export const start = action({
       return redirectUrl;
     } catch (err) {
       await ctx.runMutation(internal.connections.fail, { state });
-      throw new ConvexError(`Couldn't reach Composio: ${err instanceof Error ? err.message : String(err)}`);
+      console.log(`connections.start: ${String(err)}`);
+      throw new ConvexError("Couldn't reach Composio. Try again.");
     }
   },
 });
@@ -142,32 +143,48 @@ export const start = action({
 type Finish = { ok: boolean; connector: ConnectorKey | null; reason?: string };
 
 /**
- * After Composio confirmed `composioAccountId` belongs to `userId`: adopt it
- * if it is that member's own pending link from the last 15 minutes, retiring
- * any older grant. `forget` lists the Composio accounts to delete.
+ * After Composio confirmed `composioAccountId` for the signed-in member: adopt
+ * it only if it is on that member's own pending link from the last 15 minutes,
+ * retiring any older grant. Checks the member itself rather than trusting the
+ * caller. `forget` lists the Composio accounts to delete (and revoke).
  */
 export const activate = internalMutation({
-  args: { userId: v.id("users"), composioAccountId: v.string(), toolkit: v.string() },
-  handler: async (ctx, a): Promise<{ result: Finish; forget: string[] }> => {
-    const c = CONNECTORS.find((x) => x.toolkit === a.toolkit);
-    const rows = c
-      ? await ctx.db
-          .query("connections")
-          .withIndex("by_userId_and_connector", (q) => q.eq("userId", a.userId).eq("connector", c.key))
-          .take(50)
-      : [];
-    const row = rows.find((r) => r.composioAccountId === a.composioAccountId);
-    if (!c || !row) {
-      return { result: { ok: false, connector: c?.key ?? null, reason: "That connect link isn't one of yours." }, forget: [a.composioAccountId] };
+  args: { composioAccountId: v.string() },
+  handler: async (ctx, { composioAccountId }): Promise<{ result: Finish; forget: string[] }> => {
+    const user = await requireMember(ctx);
+    const row = await ctx.db
+      .query("connections")
+      .withIndex("by_composioAccountId", (q) => q.eq("composioAccountId", composioAccountId))
+      .first();
+    const refused = (reason: string) => ({
+      result: { ok: false, connector: row?.connector ?? null, reason },
+      forget: [composioAccountId],
+    });
+    if (!row) return refused("That connect link isn't one of yours.");
+    const c = connectorByKey(row.connector);
+    if (row.userId !== user._id) {
+      // Composio says it's this member's; our row says someone else started it.
+      // Trust neither: nobody keeps this grant.
+      if (row.status === "pending") await ctx.db.patch("connections", row._id, { status: "failed" });
+      console.log(`connections.activate: ${row._id} confirmed for a different member; failing it`);
+      return refused("That connect link isn't one of yours.");
     }
     if (row.status === "active") return { result: { ok: true, connector: c.key }, forget: [] };
     if (row.status !== "pending" || Date.now() - row.createdAt > FINISH_WINDOW) {
-      await ctx.db.patch("connections", row._id, { status: "failed" });
-      return { result: { ok: false, connector: c.key, reason: `That ${c.label} link expired. Try again.` }, forget: [a.composioAccountId] };
+      if (row.status === "pending") await ctx.db.patch("connections", row._id, { status: "failed" });
+      return refused(`That ${c.label} link expired. Try again.`);
     }
+
+    // Newest first, active only: however many attempts came before, the live
+    // grant can't fall outside the read.
     const forget: string[] = [];
-    for (const o of rows) {
-      if (o.status !== "active") continue;
+    const older = await ctx.db
+      .query("connections")
+      .withIndex("by_userId_and_connector", (q) => q.eq("userId", user._id).eq("connector", c.key))
+      .order("desc")
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .take(10);
+    for (const o of older) {
       await ctx.db.patch("connections", o._id, { status: "failed" });
       if (o.composioAccountId) forget.push(o.composioAccountId);
     }
@@ -179,34 +196,31 @@ export const activate = internalMutation({
 /**
  * Called by the cockpit with the `session_uri` Composio's verifier redirect
  * brought it. The member is whoever is signed in; there is no user id
- * argument to trust.
+ * argument to trust. Composio's own error text goes to the log, never the
+ * client.
  */
 export const finish = action({
   args: { sessionUri: v.string() },
   handler: async (ctx, { sessionUri }): Promise<Finish> => {
     const userId: Id<"users"> = await ctx.runQuery(internal.connections.member, {});
     const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) throw new ConvexError("Connecting accounts is not set up yet.");
-
-    let done: { accountId: string; toolkit: string };
-    try {
-      done = await completeAuth(apiKey, { sessionUri, userId });
-    } catch (err) {
-      const status = err instanceof ComposioError ? err.status : undefined;
-      if (status === 400) {
-        // Composio has already failed the connection. No address or token in the log.
-        console.log(`connections.finish: Composio refused ${userId}'s identity for a verifier session`);
-        return { ok: false, connector: null, reason: "Composio refused that link: it was started from another account." };
-      }
-      if (status === 404) return { ok: false, connector: null, reason: "That connect link expired or was already used." };
-      return { ok: false, connector: null, reason: `Couldn't reach Composio: ${err instanceof Error ? err.message : String(err)}` };
+    if (!apiKey || !CONNECTORS.some((c) => isConfigured(c, process.env))) {
+      throw new ConvexError("Connecting accounts is not set up yet.");
     }
 
-    const { result, forget } = await ctx.runMutation(internal.connections.activate, {
-      userId,
-      composioAccountId: done.accountId,
-      toolkit: done.toolkit,
-    });
+    let accountId: string;
+    try {
+      ({ accountId } = await completeAuth(apiKey, { sessionUri, userId }));
+    } catch (err) {
+      const status = err instanceof ComposioError ? err.status : undefined;
+      console.log(`connections.finish: complete_auth failed for ${userId}: ${String(err)}`);
+      // 400: Composio refused the identity and has failed the connection itself.
+      if (status === 400) return { ok: false, connector: null, reason: "Composio refused that link: it was started from another account." };
+      if (status === 404) return { ok: false, connector: null, reason: "That connect link expired or was already used." };
+      return { ok: false, connector: null, reason: "Couldn't reach Composio. Try again." };
+    }
+
+    const { result, forget } = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
     for (const id of forget) await forgetAccount(id);
     return result;
   },

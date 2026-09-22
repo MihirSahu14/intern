@@ -2,8 +2,9 @@
 
 import { useAuthActions } from "@convex-dev/auth/react";
 import { AuthLoading, Authenticated, Unauthenticated, useQuery } from "convex/react";
+import { useEffect } from "react";
 import { api } from "@/convex/_generated/api";
-import Cockpit from "./Cockpit";
+import Cockpit, { stashSessionUri } from "./Cockpit";
 import Consent from "./Consent";
 import SignIn from "./SignIn";
 
@@ -17,6 +18,9 @@ const Wait = ({ text }: { text: string }) => (
 );
 
 export default function Gate() {
+  // Back from Composio but not signed in yet: keep the one-time session_uri
+  // through the GitHub round trip; the cockpit redeems it after.
+  useEffect(stashSessionUri, []);
   return (
     <>
       <AuthLoading>

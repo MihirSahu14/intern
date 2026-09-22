@@ -44,18 +44,24 @@ test("a link reply without a URL or account is an error, not an empty redirect",
   await expect(connect("key", { userId: "u1", toolkit: "gmail" })).rejects.toBeInstanceOf(ComposioError);
 });
 
-test("deleteAccount deletes at Composio", async () => {
+test("deleteAccount deletes at Composio and revokes the grant upstream", async () => {
   const f = replies([{ success: true }]);
   await deleteAccount("key", "ca_1");
-  expect(f.mock.calls[0][0]).toBe(`${COMPOSIO_API}${PATHS.account("ca_1")}`);
+  expect(f.mock.calls[0][0]).toBe(`${COMPOSIO_API}${PATHS.account("ca_1")}?revoke_on_delete=true`);
   expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });
 
-test("execute pins the member's account on a session and returns the tool's data", async () => {
+test("execute pins the member's account on a session that can run only that tool", async () => {
   const f = replies([{ session_id: "trs_1" }], [{ data: { id: "m1" }, error: null, log_id: "log_1" }]);
   const args = { userId: "u1", toolkit: "gmail", accountId: "ca_1", arguments: { subject: "s" } };
   expect(await execute("key", "GMAIL_SEND_EMAIL", args)).toEqual({ id: "m1" });
-  expect(sent(f, 0)).toEqual({ user_id: "u1", connected_accounts: { gmail: ["ca_1"] } });
+  expect(sent(f, 0)).toEqual({
+    user_id: "u1",
+    connected_accounts: { gmail: ["ca_1"] },
+    toolkits: { enable: ["gmail"] },
+    tools: { gmail: { enable: ["GMAIL_SEND_EMAIL"] } },
+    workbench: { enable: false },
+  });
   expect(f.mock.calls[1][0]).toBe(`${COMPOSIO_API}${PATHS.execute("trs_1")}`);
   expect(sent(f, 1)).toEqual({ tool_slug: "GMAIL_SEND_EMAIL", arguments: { subject: "s" } });
 });

@@ -32,6 +32,44 @@ const EXAMPLES = [
 const why = (err: unknown) =>
   err instanceof ConvexError ? String(err.data) : err instanceof Error ? err.message : String(err);
 
+const SESSION_URI = "intern.composio_session_uri";
+
+/**
+ * Moves Composio's verifier `session_uri` out of the URL into sessionStorage,
+ * so it survives a sign-in round trip in this tab. Gate calls it on every
+ * load, before anyone is signed in.
+ */
+export function stashSessionUri() {
+  const uri = new URL(window.location.href).searchParams.get("session_uri");
+  if (!uri) return;
+  try {
+    sessionStorage.setItem(SESSION_URI, uri);
+  } catch {
+    return; // Storage blocked: leave it in the URL for takeSessionUri.
+  }
+  dropFromUrl();
+}
+
+function dropFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("session_uri");
+  window.history.replaceState(null, "", url);
+}
+
+/** The stashed `session_uri`, once: it is single-use at Composio anyway. */
+function takeSessionUri(): string | null {
+  stashSessionUri();
+  let uri: string | null = null;
+  try {
+    uri = sessionStorage.getItem(SESSION_URI);
+    sessionStorage.removeItem(SESSION_URI);
+  } catch {
+    uri = new URL(window.location.href).searchParams.get("session_uri");
+  }
+  dropFromUrl();
+  return uri;
+}
+
 export default function Cockpit({ me }: { me: Me }) {
   const internRows = useQuery(api.interns.list, {});
   const logRows = useQuery(api.interns.logs, {});
@@ -69,11 +107,8 @@ export default function Cockpit({ me }: { me: Me }) {
   useEffect(() => {
     if (finishedOnce.current) return;
     finishedOnce.current = true;
-    const url = new URL(window.location.href);
-    const sessionUri = url.searchParams.get("session_uri");
+    const sessionUri = takeSessionUri();
     if (!sessionUri) return;
-    url.searchParams.delete("session_uri");
-    window.history.replaceState(null, "", url);
     echo("sys", "finishing the connection…");
     finishM({ sessionUri })
       .then((r) => {

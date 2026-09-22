@@ -13,7 +13,7 @@
  *   /reference/api-reference/tool-router/postToolRouterSession.md
  *   /reference/api-reference/tool-router/postToolRouterSessionBySessionIdLink.md
  *   /reference/api-reference/tool-router/postToolRouterSessionBySessionIdExecute.md
- *   /reference/api-reference/connected-accounts/deleteConnectedAccountsByNanoid.md
+ *   /reference/api-reference/connected-accounts/deleteConnectedAccountsByNanoid.md (revoke_on_delete)
  *   /reference/api-reference/connected-accounts.md#callback-identity-verification
  *   /reference/api-reference/connected-accounts/postConnectedAccountsCompleteAuth.md
  *
@@ -115,13 +115,25 @@ export async function completeAuth(
   return { accountId, toolkit: (str(j.toolkit_slug) ?? "").toLowerCase() };
 }
 
+/**
+ * Deletes the account at Composio and revokes its credentials at the provider
+ * (`revoke_on_delete=true`), so the Google/Slack grant dies with it rather
+ * than sitting in Composio's store.
+ * Trade-off: providers revoke per app grant, not per token, so revoking an
+ * old Gmail account can also kill a newer grant the same person just gave
+ * Composio's app for the same Google account (a reconnect). They then connect
+ * once more; we accept that over leaving grants behind.
+ */
 export async function deleteAccount(apiKey: string, id: string): Promise<void> {
-  await call(apiKey, "DELETE", PATHS.account(id));
+  await call(apiKey, "DELETE", `${PATHS.account(id)}?revoke_on_delete=true`);
 }
 
 /**
  * Runs one tool as one member, on a session pinned to their account (Composio
- * refuses an account that isn't that user's). Throws ComposioError carrying
+ * refuses an account that isn't that user's: "Each account must exist ... and
+ * belong to the same `user_id` as the session", `connected_accounts` in
+ * /reference/api-reference/tool-router/postToolRouterSession.md). The session
+ * can run only this one tool, with no workbench. Throws ComposioError carrying
  * Composio's reason and log id.
  * ponytail: a session per send; persist its id on the connection if volume grows.
  */
@@ -130,7 +142,13 @@ export async function execute(
   tool: string,
   a: { userId: string; toolkit: string; accountId: string; arguments: Json },
 ): Promise<Json> {
-  const id = await session(apiKey, { user_id: a.userId, connected_accounts: { [a.toolkit]: [a.accountId] } });
+  const id = await session(apiKey, {
+    user_id: a.userId,
+    connected_accounts: { [a.toolkit]: [a.accountId] },
+    toolkits: { enable: [a.toolkit] },
+    tools: { [a.toolkit]: { enable: [tool] } },
+    workbench: { enable: false },
+  });
   const j = await call(apiKey, "POST", PATHS.execute(id), { tool_slug: tool, arguments: a.arguments });
   if (j.error) throw new ComposioError(reason(j) ?? `${tool} failed`);
   return obj(j.data);
