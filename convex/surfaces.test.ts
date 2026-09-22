@@ -59,7 +59,11 @@ function setup() {
     t.run((ctx) =>
       ctx.db.insert("connections", { userId, connector, status: "pending", state, composioAccountId, createdAt: Date.now() }),
     );
-  return { t, seedUser, asUser, seedDraft, seedPending };
+  const seedActive = (userId: Id<"users">, connector: "gmail" | "slack" = "gmail") =>
+    t.run((ctx) =>
+      ctx.db.insert("connections", { userId, connector, status: "active", composioAccountId: "ca_1", state: "s0", createdAt: Date.now() }),
+    );
+  return { t, seedUser, asUser, seedDraft, seedPending, seedActive };
 }
 
 test("other people's drafts come back as a bare status, never the draft", async () => {
@@ -656,4 +660,116 @@ test("finish: Composio's own error text never reaches the client", async () => {
   const r = await asUser(a).action(api.connections.finish, { sessionUri: "su_1" });
   expect(r.ok).toBe(false);
   expect(JSON.stringify(r)).not.toMatch(/xyz|req_1|500/);
+});
+
+test("approving without a connected account asks to connect and keeps the edits", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+
+  expect(
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } }),
+  ).toEqual({ needsConnect: "gmail" });
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("pending");
+  expect(row?.accepted?.body).toBe("Edited body");
+  // Nothing is learned until it's actually decided.
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
+});
+
+test("approving with a connected account sends it and files an owner-only fact", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // execute() is two Composio calls: create the send-only session, then run
+  // the tool on it — see lib/composio.ts.
+  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+
+  expect(await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).toBe(null);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sending");
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const sent = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(sent).toMatchObject({ status: "sent", connector: "gmail" });
+  expect(sent?.sentAt).toBeTypeOf("number");
+  expect(JSON.parse(String(f.mock.calls[0][1]?.body))).toMatchObject({
+    user_id: a,
+    connected_accounts: { gmail: ["ca_1"] },
+    tools: { gmail: { enable: ["GMAIL_SEND_EMAIL"] } },
+  });
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body))).toMatchObject({
+    tool_slug: "GMAIL_SEND_EMAIL",
+    arguments: { recipient_email: "ann@acme.com", subject: "Pricing", body: "Secret body" },
+  });
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toEqual([
+    expect.objectContaining({ title: "emailed ann@acme.com about Pricing", kind: "note", visibility: "owner", ownerId: a }),
+  ]);
+});
+
+test("a failed send keeps Composio's reason and can be retried", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  stubFetch({ session_id: "trs_1" }, { error: { message: "invalid_grant" } });
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  const failed = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(failed?.status).toBe("failed");
+  expect(failed?.sendError).toMatch(/invalid_grant/);
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
+
+  stubFetch({ session_id: "trs_2" }, { successful: true, data: {} });
+  await asUser(a).mutation(api.outbox.resend, { actionId });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  const retried = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(retried?.status).toBe("sent");
+  expect(retried?.sendError).toBeUndefined();
+});
+
+test("the twenty-first send of the day is refused", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const { actionId, internId } = await seedDraft(a);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 20; i++) {
+      await ctx.db.insert("actions", {
+        ownerId: a,
+        internId,
+        kind: "email",
+        status: "sent",
+        title: "t",
+        draft: { to: ["x@example.com"], subject: "s", body: "b" },
+        rationale: "because",
+        sources: [],
+        recalledCorrection: false,
+        decidedAt: Date.now(),
+        connector: "gmail",
+      });
+    }
+  });
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/20 sends/);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
+});
+
+test("a lesson from a draft that could reach a real person stays private", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const { actionId } = await seedDraft(a);
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "wrong person" });
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toEqual([
+    expect.objectContaining({ kind: "correction", visibility: "owner" }),
+  ]);
 });

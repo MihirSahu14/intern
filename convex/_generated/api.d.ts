@@ -19,6 +19,7 @@ import type * as outbox from "../outbox.js";
 import type * as questions from "../questions.js";
 import type * as run from "../run.js";
 import type * as seed from "../seed.js";
+import type * as send from "../send.js";
 import type * as users from "../users.js";
 
 import type {
@@ -39,6 +40,7 @@ declare const fullApi: ApiFromModules<{
   questions: typeof questions;
   run: typeof run;
   seed: typeof seed;
+  send: typeof send;
   users: typeof users;
 }>;
 
