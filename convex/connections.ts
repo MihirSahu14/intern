@@ -5,12 +5,14 @@ import { CONNECTORS, type ConnectorKey, connectorByKey, isConfigured } from "../
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  type MutationCtx,
   type QueryCtx,
   action,
   httpAction,
   internalAction,
   internalMutation,
   internalQuery,
+  mutation,
   query,
 } from "./_generated/server";
 import { requireMember } from "./access";
@@ -18,8 +20,9 @@ import { connectorKey } from "./schema";
 
 /**
  * A member's accounts at Composio. One hop, inline: approve → Composio's
- * consent screen → `/composio/callback` → back to the cockpit. There is no
- * settings page; the rail is the only place to connect or disconnect.
+ * consent screen → `/composio/callback` → back to the cockpit, which calls
+ * `finish` as the signed-in member. There is no settings page; the rail is the
+ * only place to connect or disconnect.
  */
 
 /** The member's live grant for one connector, if any. */
@@ -184,46 +187,106 @@ export const forget = internalAction({
   },
 });
 
+/** How long a connect link stays finishable. */
+const FINISH_WINDOW = 15 * 60_000;
+
+type Finish = { ok: boolean; connector: ConnectorKey | null; reason?: string };
+
+/** Fails a pending row and deletes its account at Composio: nobody may use that grant. */
+async function refuse(ctx: MutationCtx, row: Doc<"connections">, reason: string): Promise<Finish> {
+  await ctx.db.patch("connections", row._id, { status: "failed" });
+  if (row.composioAccountId) {
+    await ctx.scheduler.runAfter(0, internal.connections.forget, { composioAccountId: row.composioAccountId });
+  }
+  return { ok: false, connector: row.connector, reason };
+}
+
+/**
+ * Called by the cockpit with the `state` the callback handed it. This is the
+ * only way a connection goes active, and only for the signed-in member who
+ * started it. That closes OAuth session fixation: if someone gets another
+ * person to consent on their link, the consent lands in the other person's
+ * browser, signed in as them (or not at all), and the grant is thrown away.
+ */
+export const finish = mutation({
+  args: { state: v.string() },
+  handler: async (ctx, { state }): Promise<Finish> => {
+    const user = await requireMember(ctx);
+    const row = await ctx.db.query("connections").withIndex("by_state", (q) => q.eq("state", state)).unique();
+    if (!row) return { ok: false, connector: null, reason: "That connect link is unknown." };
+    const label = connectorByKey(row.connector).label;
+    if (row.userId !== user._id) {
+      // Only a pending row: an active one is the owner's live grant, not ours to break.
+      if (row.status !== "pending") return { ok: false, connector: row.connector, reason: "That connect link isn't yours." };
+      console.log(`connections.finish: ${row._id} finished by another member; failing it and deleting its account`);
+      return await refuse(ctx, row, `That ${label} link was started by someone else, so it was thrown away.`);
+    }
+    if (row.status === "active") return { ok: true, connector: row.connector };
+    if (row.status === "failed") return { ok: false, connector: row.connector, reason: `Connecting ${label} didn't go through. Try again.` };
+    if (Date.now() - row.createdAt > FINISH_WINDOW) {
+      return await refuse(ctx, row, `That ${label} link expired. Try again.`);
+    }
+    await ctx.scheduler.runAfter(0, internal.connections.verify, { state });
+    return { ok: true, connector: row.connector };
+  },
+});
+
+/** Where the member's own link stands, so the cockpit can say how `finish` ended. */
+export const outcome = query({
+  args: { state: v.string() },
+  handler: async (ctx, { state }) => {
+    const userId = await getAuthUserId(ctx);
+    const row = await ctx.db.query("connections").withIndex("by_state", (q) => q.eq("state", state)).unique();
+    return row && row.userId === userId ? row.status : null;
+  },
+});
+
+/**
+ * Scheduled by `finish`. The account must be the one Composio made for this
+ * row's link, and Composio's own record of it must say ACTIVE for the right
+ * toolkit before anything goes active.
+ */
+export const verify = internalAction({
+  args: { state: v.string() },
+  handler: async (ctx, { state }) => {
+    const row: Doc<"connections"> | null = await ctx.runQuery(internal.connections.byState, { state });
+    if (!row || row.status !== "pending") return null;
+    const apiKey = process.env.COMPOSIO_API_KEY;
+    const accountId = row.composioAccountId;
+    let account: Account | null = null;
+    if (apiKey && accountId) {
+      try {
+        account = await getAccount(apiKey, accountId);
+      } catch (err) {
+        console.log(`composio get ${accountId} failed: ${String(err)}`);
+      }
+    }
+    const c = connectorByKey(row.connector);
+    // Composio no longer promises user_id here; when it does send one, it must be ours.
+    const ok =
+      !!account &&
+      account.status === "ACTIVE" &&
+      account.toolkit === c.toolkit &&
+      (account.userId === undefined || account.userId === row.userId);
+
+    const retired: string[] = await ctx.runMutation(internal.connections.settle, { state, ok });
+    if (!ok && accountId) retired.push(accountId);
+    for (const id of retired) await forgetAccount(id);
+    return null;
+  },
+});
+
 /**
  * GET /composio/callback?state=…&status=…&connected_account_id=…
  *
- * The query string is only the browser's word. The user is whoever the
- * `state` row says; the account must be the one Composio created for that
- * row's link, and Composio's own record of it must agree before anything goes
- * active. A user id in the URL is never read.
+ * Writes nothing. The browser that lands here may not be the member who
+ * started the link, and this endpoint can't see who is signed in, so it only
+ * passes the `state` on to the cockpit, where `finish` checks who is asking.
+ * Nothing else from the query string is read or passed on.
  */
 export const callback = httpAction(async (ctx, req) => {
-  const url = new URL(req.url);
-  const state = url.searchParams.get("state");
+  const state = new URL(req.url).searchParams.get("state");
   const row: Doc<"connections"> | null = state ? await ctx.runQuery(internal.connections.byState, { state }) : null;
-  if (!state || !row || row.status !== "pending") {
-    return new Response("This connect link is unknown or was already used.", { status: 400 });
-  }
-  const c = connectorByKey(row.connector);
-  const back = (query: string) =>
-    new Response(null, { status: 302, headers: { Location: `${process.env.SITE_URL}/app?${query}` } });
-  const fail = async () => {
-    await ctx.runMutation(internal.connections.settle, { state, ok: false });
-    return back(`connect_failed=${c.key}`);
-  };
-
-  const accountId = url.searchParams.get("connected_account_id");
-  const apiKey = process.env.COMPOSIO_API_KEY;
-  if (url.searchParams.get("status") !== "success" || !accountId || accountId !== row.composioAccountId || !apiKey) {
-    return await fail();
-  }
-
-  let account: Account;
-  try {
-    account = await getAccount(apiKey, accountId);
-  } catch {
-    return await fail();
-  }
-  // Composio no longer promises user_id here; when it does send one, it must be ours.
-  const someoneElse = account.userId !== undefined && account.userId !== row.userId;
-  if (account.status !== "ACTIVE" || account.toolkit !== c.toolkit || someoneElse) return await fail();
-
-  const retired: string[] = await ctx.runMutation(internal.connections.settle, { state, ok: true });
-  for (const id of retired) await forgetAccount(id);
-  return back(`connected=${c.key}`);
+  const to = row?.status === "pending" && state ? `finish=${encodeURIComponent(state)}` : "connect_failed=1";
+  return new Response(null, { status: 302, headers: { Location: `${process.env.SITE_URL}/app?${to}` } });
 });
