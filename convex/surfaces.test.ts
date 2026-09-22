@@ -1108,4 +1108,52 @@ test("a successful send broadcasts who sent, never to whom", async () => {
   expect(posts).toEqual([JSON.stringify(discordLine("@a sent an email · https://site.test/u/a"))]);
 });
 
+/**
+ * `outbox.decide`'s `if (!visibility) await broadcast(...)` is the entire
+ * enforcement that an owner-only edit lesson never reaches the community's
+ * channels — everything above it (the fact itself, the log line) is already
+ * owner-only regardless. Checked right after `decide` returns, before its
+ * scheduled send ever runs: at that point `decide`'s own mutation is the only
+ * thing that could have queued a `learned` broadcast, so a clean `broadcasts`
+ * table and an untouched fetch stub prove the gate held, not just that the
+ * later send hadn't gotten around to posting yet.
+ */
+test("an edited approval that could reach a real person doesn't broadcast the lesson it learns", async () => {
+  composioEnv();
+  broadcastEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const { actionId } = await seedDraft(a);
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } });
+
+  expect(await t.run((ctx) => ctx.db.query("broadcasts").collect())).toHaveLength(0);
+  expect(f).not.toHaveBeenCalled();
+
+  // Drain the scheduled send so its real timer can't fire mid-way through a
+  // later test (see the "broadcast hooks" test above) — its outcome (a `sent`
+  // broadcast) isn't what this test is about.
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+});
+
+/** The mirror of the test above: a sandbox draft's edit lesson is public, so it does broadcast. */
+test("an edited sandbox approval does broadcast the lesson it learns", async () => {
+  broadcastEnv();
+  const { t, seedUser, asUser, seedDraft } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  const f = stubFetch({});
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } });
+  expect((await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count).toBe(1);
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  const posts = f.mock.calls.filter(([url]) => url === "https://discord.test/hook").map(([, init]) => String(init?.body));
+  expect(posts).toEqual([JSON.stringify(discordLine("@a corrected a draft and the brain learned: email: body rewritten before approval · https://site.test/u/a"))]);
+});
+
 const discordLine = (content: string) => ({ content, username: "Intern", allowed_mentions: { parse: [] } });

@@ -36,7 +36,9 @@ export const post = internalAction({
           const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
           if (!res.ok) console.log(`broadcast webhook ${res.status}`);
         } catch (err) {
-          console.log(`broadcast webhook failed: ${String(err)}`);
+          // `String(err)` risks a fetch TypeError's `cause`, which can carry
+          // the webhook URL itself — only `.message` is safe to log.
+          console.log(`broadcast webhook failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }),
     );
