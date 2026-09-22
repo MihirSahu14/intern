@@ -114,7 +114,10 @@ export const graph = query({
     };
 
     for (const i of interns) {
-      const task = i.ownerId === viewer ? i.task : redactEmails(i.task);
+      // A question-resumed `task` quotes the answer; `displayTask` (the
+      // original ask) is what a non-owner sees instead — same rule as
+      // `interns.list`.
+      const task = i.ownerId === viewer ? i.task : redactEmails(i.displayTask ?? i.task);
       nodes.set(i._id, { id: i._id, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
       edges.push({ source: await person(i.ownerId), target: i._id, rel: "briefed" });
     }

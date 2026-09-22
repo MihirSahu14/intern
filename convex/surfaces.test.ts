@@ -209,6 +209,60 @@ test("answering a question files the answer owner-only and a resumed intern's ta
   expect(theirs?.task).not.toMatch(/phone number|555-0100/);
 });
 
+test("a resumed run's question and answer never show up in the graph or the feed", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "waiting", countsTowardCap: true }),
+  );
+  const questionId = await t.run((ctx) =>
+    ctx.db.insert("questions", { ownerId: a, internId, question: "What is Ann's phone number?", context: "c", status: "open" }),
+  );
+  await asUser(a).mutation(api.questions.answer, { questionId, answer: "555-0100" });
+
+  const leak = /phone number|555-0100/;
+  const graphForB = (await asUser(b).query(api.facts.graph, {})).nodes.map((n) => n.label).join("\n");
+  expect(graphForB).not.toMatch(leak);
+  const graphSignedOut = (await t.query(api.facts.graph, {})).nodes.map((n) => n.label).join("\n");
+  expect(graphSignedOut).not.toMatch(leak);
+
+  const feedForB = (await asUser(b).query(api.community.feed, {})).map((e) => e.text).join("\n");
+  expect(feedForB).not.toMatch(leak);
+  const feedSignedOut = (await t.query(api.community.feed, {})).map((e) => e.text).join("\n");
+  expect(feedSignedOut).not.toMatch(leak);
+});
+
+test("a resumed run files its facts owner-only even when recall found no private fact", async () => {
+  const { t, seedUser } = setup();
+  const a = await seedUser("a");
+  // Simulates recall's capped search missing the answer fact: `displayTask`
+  // is what marks this run private, not what it happened to recall.
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "You asked: What is Ann's phone number?\nThe answer is: 555-0100\n\nOriginal task: email ann@acme.com",
+      displayTask: "email ann@acme.com",
+      status: "running",
+      countsTowardCap: true,
+    }),
+  );
+  await t.mutation(internal.interns.noteRecall, { internId, recalled: [] });
+  await t.mutation(internal.interns.finish, {
+    internId,
+    report: "done",
+    tokensIn: 1,
+    tokensOut: 1,
+    latencyMs: 1,
+    facts: [{ title: "Ann's number is 555-0100", body: "confirmed", kind: "note" }],
+  });
+
+  const filed = await t.run((ctx) =>
+    ctx.db.query("facts").withIndex("by_ownerId", (q) => q.eq("ownerId", a)).collect(),
+  );
+  expect(filed.find((f) => f.title === "Ann's number is 555-0100")?.visibility).toBe("owner");
+});
+
 test("a run that recalled a private fact files its own facts owner-only", async () => {
   const { t, seedUser } = setup();
   const a = await seedUser("a");
@@ -247,7 +301,7 @@ test("a run that recalled a private fact files its own facts owner-only", async 
   expect(graph).not.toContain("Ann's renewal is $40k");
 });
 
-test("other people's interns show no error text and no recalledFactIds", async () => {
+test("other people's interns show no error text, no recalledFactIds and no recalledPrivate", async () => {
   const { t, seedUser, asUser } = setup();
   const a = await seedUser("a");
   const b = await seedUser("b");
@@ -261,6 +315,7 @@ test("other people's interns show no error text and no recalledFactIds", async (
       status: "failed",
       error: 'gemini rejected argument "body": "secret renewal terms"',
       recalledFactIds: [factId],
+      recalledPrivate: true,
       countsTowardCap: true,
     }),
   );
@@ -268,10 +323,12 @@ test("other people's interns show no error text and no recalledFactIds", async (
   const mine = (await asUser(a).query(api.interns.list, {})).find((i) => i._id === internId);
   expect(mine?.error).toMatch(/secret renewal terms/);
   expect(mine?.recalledFactIds).toEqual([factId]);
+  expect(mine?.recalledPrivate).toBe(true);
 
   const theirs = (await asUser(b).query(api.interns.list, {})).find((i) => i._id === internId);
   expect(theirs?.error).toBe("failed");
   expect(theirs?.recalledFactIds).toBeUndefined();
+  expect(theirs?.recalledPrivate).toBeUndefined();
 });
 
 test("signed-out visitors get only the reduced outbox and questions rows", async () => {

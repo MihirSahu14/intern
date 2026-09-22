@@ -160,8 +160,9 @@ export const list = query({
         // A brief is public, an address in it isn't — and a question-resumed
         // `task` can quote the owner's private facts, so it's swapped for
         // `displayTask` (the original ask) before redaction. The report
-        // (`summary`), the failure detail (`error`) and which private facts
-        // were recalled (`recalledFactIds`) are for the owner alone.
+        // (`summary`), the failure detail (`error`), which private facts were
+        // recalled (`recalledFactIds`) and whether this run touched anything
+        // private at all (`recalledPrivate`) are for the owner alone.
         ...(i.ownerId === viewer
           ? {}
           : {
@@ -169,6 +170,7 @@ export const list = query({
               summary: undefined,
               error: i.error ? "failed" : undefined,
               recalledFactIds: undefined,
+              recalledPrivate: undefined,
             }),
       })),
     );
@@ -228,12 +230,17 @@ export const noteRecall = internalMutation({
     recalled: v.array(v.object({ id: v.id("facts"), kind: factKind, visibility: v.optional(visibility) })),
   },
   handler: async (ctx, { internId, recalled }) => {
+    const intern = await ctx.db.get("interns", internId);
     await ctx.db.patch("interns", internId, {
       recalledFactIds: recalled.map((r) => r.id),
       recalledCorrection: recalled.some((r) => r.kind === "preference" || r.kind === "correction"),
       // Computed once here, not re-derived by `finish`: a private fact this
-      // run read from stays private in whatever it goes on to file.
-      recalledPrivate: recalled.some((r) => r.visibility === "owner"),
+      // run read from stays private in whatever it goes on to file. A
+      // question-resumed run (`displayTask` set) is private by construction —
+      // its `task` quotes the answer verbatim whether or not recall's capped
+      // search happened to also surface the fact it came from — and this
+      // runs on every attempt, including a retry, so that can't go stale.
+      recalledPrivate: !!intern?.displayTask || recalled.some((r) => r.visibility === "owner"),
     });
     return null;
   },

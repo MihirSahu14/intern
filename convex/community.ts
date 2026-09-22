@@ -15,7 +15,14 @@ export const feed = query({
       ctx.db.query("actions").withIndex("by_status", (q) => q.eq("status", "sent")).order("desc").take(15),
     ]);
     const events: { at: number; ownerId: (typeof interns)[number]["ownerId"]; text: string }[] = [
-      ...interns.map((i) => ({ at: i._creationTime, ownerId: i.ownerId, text: `briefed an intern: ${redactEmails(i.task).slice(0, 80)}` })),
+      // A question-resumed `task` quotes the answer; `displayTask` (the
+      // original ask) is what the feed shows instead — same rule as
+      // `interns.list` / `facts.graph`.
+      ...interns.map((i) => ({
+        at: i._creationTime,
+        ownerId: i.ownerId,
+        text: `briefed an intern: ${redactEmails(i.displayTask ?? i.task).slice(0, 80)}`,
+      })),
       ...facts
         .filter((f) => visibleTo(f, viewer))
         .flatMap((f) =>
