@@ -226,3 +226,38 @@ connected, the sandbox paragraph stays. `PROMPT_VERSION` changes, which is inten
 
 Discord as an outbound connector, calendar invites, reading whole inboxes into the brain,
 per-company private brains, notifications, and any paid service.
+
+## Changed during build
+
+Ledger rulings that replaced parts of this spec. The code follows these, not the
+sections above.
+
+- **Connect flow.** No `/composio/callback` route and no `state`-based finish. Connect
+  runs on Composio sessions with managed auth plus callback identity verification:
+  Composio sends the browser to the project's verifier URL (the cockpit), which calls
+  `connections.finish` as the signed-in member with the single-use `session_uri`, and
+  Composio refuses a member id that didn't consent. This closes OAuth session
+  fixation. `state` only keys the pending row until Composio's account id is known.
+- **The verifier gate.** A connector counts as configured only when
+  `COMPOSIO_VERIFIER_URL` (public HTTPS) is set alongside `COMPOSIO_API_KEY`. Without
+  it, Composio would activate consents that we never finish.
+- **Revoke only on disconnect and purge.** Retiring an older grant on reconnect, or
+  cleaning up a refused link, deletes the Composio account without revoking it,
+  because the same Google account would otherwise lose the grant it just gave.
+- **`unsure` status.** A send whose execute call gave no clear answer (network
+  throw, 5xx, 408/499, an unconfirmed 200) is `unsure`, not `failed`. It can't be
+  resent until the owner runs `outbox.confirmUnsent` after checking their Sent
+  folder. `resend` also stops after 3 attempts per draft.
+- **Gmail capture is opt-in, through a separate read-only grant.** The send grant is
+  `gmail.send` only and never reads mail. The `Intern` label is a second consent
+  through `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` (`gmail.readonly`), and it needs
+  `COMPOSIO_WEBHOOK_SECRET`. Its captures are owner-only.
+- **Private Slack captures are owner-only.** A 🧠 is public and broadcast only for
+  the member's own message in a channel Slack confirms is public (`channels:read`).
+  A DM, a private channel, someone else's message, or a failed lookup files it
+  owner-only.
+- **Sandbox drafts can't go out unchanged.** A draft written under the sandbox prompt
+  has placeholder recipients. `outbox.decide` refuses to send it for real unless the
+  member changes `to` in that approval, and the Outbox asks for that change.
+- **Learning facts from a draft** stay owner-only when the draft could reach a real
+  person or its run read anything private. Otherwise addresses are redacted.
