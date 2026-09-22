@@ -149,6 +149,152 @@ test("other people's interns: addresses redacted, report and streamed output wit
   expect(theirs?.summary).toBeUndefined();
 
   expect(await asUser(a).query(api.interns.logs, {})).toHaveLength(2);
-  expect((await asUser(b).query(api.interns.logs, {})).map((l) => l.text)).toEqual(["send failed: bad address [email]"]);
-  expect((await t.query(api.interns.logs, {})).map((l) => l.text)).toEqual(["send failed: bad address [email]"]);
+  // An `err` line can quote a rejected report (run.go's catch), so non-owners
+  // get a fixed string, never the raw message — see interns.logs.
+  expect((await asUser(b).query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
+  expect((await t.query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
+});
+
+test("a stuck intern's warn log names no text, only that it asked", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "running", countsTowardCap: true }),
+  );
+  await t.mutation(internal.interns.finish, {
+    internId,
+    report: "stuck",
+    tokensIn: 1,
+    tokensOut: 1,
+    latencyMs: 1,
+    facts: [],
+    question: { question: "What is Ann's phone number?", context: "drafting the email" },
+  });
+
+  const forB = (await asUser(b).query(api.interns.logs, {})).map((l) => l.text);
+  expect(forB.some((line) => line.includes("phone number"))).toBe(false);
+  expect(forB).toContain("asks a question");
+
+  const forA = (await asUser(a).query(api.interns.logs, {})).map((l) => l.text);
+  expect(forA).toContain("asks a question");
+});
+
+test("answering a question files the answer owner-only and a resumed intern's task shows only the original ask", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "waiting", countsTowardCap: true }),
+  );
+  const questionId = await t.run((ctx) =>
+    ctx.db.insert("questions", { ownerId: a, internId, question: "What is Ann's phone number?", context: "c", status: "open" }),
+  );
+
+  const { resumed } = await asUser(a).mutation(api.questions.answer, { questionId, answer: "555-0100" });
+  expect(resumed).toBe(true);
+
+  // The answer became a fact titled with the question — owner-only, like the
+  // question itself.
+  const forB = await t.query(internal.facts.recall, { task: "phone number", ownerId: b });
+  expect(forB.map((f) => f.title)).not.toContain("What is Ann's phone number?");
+  const forA = await t.query(internal.facts.recall, { task: "phone number", ownerId: a });
+  expect(forA.map((f) => f.title)).toContain("What is Ann's phone number?");
+
+  const resumedId = (
+    await t.run((ctx) => ctx.db.query("interns").withIndex("by_ownerId", (q) => q.eq("ownerId", a)).collect())
+  ).find((i) => i.resumes === internId)!._id;
+  const theirs = (await asUser(b).query(api.interns.list, {})).find((i) => i._id === resumedId);
+  expect(theirs?.task).toBe("email [email]");
+  expect(theirs?.task).not.toMatch(/phone number|555-0100/);
+});
+
+test("a run that recalled a private fact files its own facts owner-only", async () => {
+  const { t, seedUser } = setup();
+  const a = await seedUser("a");
+  const privateFactId = await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "emailed ann about the $40k renewal",
+      body: "",
+      kind: "note",
+      visibility: "owner",
+      ownerId: a,
+      text: "emailed ann about the $40k renewal\n",
+    }),
+  );
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "renewal status", status: "running", countsTowardCap: true }),
+  );
+  await t.mutation(internal.interns.noteRecall, {
+    internId,
+    recalled: [{ id: privateFactId, kind: "note", visibility: "owner" }],
+  });
+  await t.mutation(internal.interns.finish, {
+    internId,
+    report: "done",
+    tokensIn: 1,
+    tokensOut: 1,
+    latencyMs: 1,
+    facts: [{ title: "Ann's renewal is $40k", body: "confirmed", kind: "note" }],
+  });
+
+  const filed = await t.run((ctx) =>
+    ctx.db.query("facts").withIndex("by_ownerId", (q) => q.eq("ownerId", a)).collect(),
+  );
+  expect(filed.find((f) => f.title === "Ann's renewal is $40k")?.visibility).toBe("owner");
+
+  const graph = (await t.query(api.facts.graph, {})).nodes.map((n) => n.label);
+  expect(graph).not.toContain("Ann's renewal is $40k");
+});
+
+test("other people's interns show no error text and no recalledFactIds", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const factId = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "public fact", body: "", kind: "note", ownerId: a, text: "public fact\n" }),
+  );
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "t",
+      status: "failed",
+      error: 'gemini rejected argument "body": "secret renewal terms"',
+      recalledFactIds: [factId],
+      countsTowardCap: true,
+    }),
+  );
+
+  const mine = (await asUser(a).query(api.interns.list, {})).find((i) => i._id === internId);
+  expect(mine?.error).toMatch(/secret renewal terms/);
+  expect(mine?.recalledFactIds).toEqual([factId]);
+
+  const theirs = (await asUser(b).query(api.interns.list, {})).find((i) => i._id === internId);
+  expect(theirs?.error).toBe("failed");
+  expect(theirs?.recalledFactIds).toBeUndefined();
+});
+
+test("signed-out visitors get only the reduced outbox and questions rows", async () => {
+  const { t, seedUser, seedDraft } = setup();
+  const owner = await seedUser("owner");
+  const { actionId } = await seedDraft(owner);
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: owner, task: "t", status: "waiting", countsTowardCap: true }),
+  );
+  const questionId = await t.run((ctx) =>
+    ctx.db.insert("questions", { ownerId: owner, internId, question: "secret?", context: "c", status: "open" }),
+  );
+
+  const action = (await t.query(api.outbox.list, {})).find((r) => r._id === actionId);
+  expect(action).toEqual({
+    _id: actionId,
+    _creationTime: expect.any(Number),
+    kind: "email",
+    status: "pending",
+    ownerId: owner,
+    handle: "owner",
+  });
+
+  const question = (await t.query(api.questions.list, {})).find((q) => q._id === questionId);
+  expect(question).toEqual({ _id: questionId, _creationTime: expect.any(Number), ownerId: owner, internId, status: "open" });
 });

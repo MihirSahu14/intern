@@ -96,7 +96,10 @@ export default defineSchema({
 
   interns: defineTable({
     ownerId: v.id("users"),
+    /** The working prompt this run reads and recalls against — may quote a private Q&A. */
     task: v.string(),
+    /** The original ask, safe to show a non-owner in place of `task`. Set only when `task` was assembled from a question's answer. */
+    displayTask: v.optional(v.string()),
     status: internStatus,
     resumes: v.optional(v.id("interns")),
     summary: v.optional(v.string()),
@@ -109,6 +112,8 @@ export default defineSchema({
     promptVersion: v.optional(v.string()),
     recalledFactIds: v.optional(v.array(v.id("facts"))),
     recalledCorrection: v.optional(v.boolean()),
+    /** True when any recalled fact was owner-only — this run's own fact blocks then file owner-only too. */
+    recalledPrivate: v.optional(v.boolean()),
     tokensIn: v.optional(v.number()),
     tokensOut: v.optional(v.number()),
     latencyMs: v.optional(v.number()),

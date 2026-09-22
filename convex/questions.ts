@@ -39,16 +39,28 @@ export const answer = mutation({
     const answer = a.answer.trim().slice(0, 1000);
     if (!answer) throw new ConvexError("Type an answer first.");
 
-    await insertFact(ctx, { title: q.question, body: answer, kind: "answer", ownerId: user._id, internId: q.internId });
+    // The question is often asked because the answer is private (an address,
+    // an amount); filed public it would undo `questions.list`'s reduction.
+    await insertFact(ctx, {
+      title: q.question,
+      body: answer,
+      kind: "answer",
+      ownerId: user._id,
+      internId: q.internId,
+      visibility: "owner",
+    });
     const parked = await ctx.db.get("interns", q.internId);
     if (parked?.status === "waiting") await ctx.db.patch("interns", parked._id, { status: "done" });
 
     const task = `You asked: ${q.question}\nThe answer is: ${answer}\n\nOriginal task: ${parked?.task ?? ""}`.slice(0, MAX_BRIEF_CHARS);
+    // The composed `task` above can quote the answer; `displayTask` carries
+    // forward only the original, already-public-safe ask for non-owners.
+    const displayTask = parked?.displayTask ?? parked?.task;
     let resumedBy;
     let reason: string | null = null;
     try {
       // dispatch checks every cap before writing, so catching here leaves no partial intern.
-      resumedBy = await dispatch(ctx, user._id, task, q.internId);
+      resumedBy = await dispatch(ctx, user._id, task, q.internId, displayTask);
     } catch (err) {
       reason = err instanceof ConvexError ? String(err.data) : "could not resume";
     }

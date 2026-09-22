@@ -70,11 +70,13 @@ export const recall = internalQuery({
       : [];
 
     const seen = new Set<string>();
-    const out: { id: Id<"facts">; title: string; body: string; kind: FactKind }[] = [];
+    // `visibility` rides along so the caller can tell whether this run touched
+    // anything private, without a second query — see `interns.noteRecall`.
+    const out: { id: Id<"facts">; title: string; body: string; kind: FactKind; visibility: Doc<"facts">["visibility"] }[] = [];
     for (const f of [...lessons, ...hits]) {
       if (seen.has(f._id)) continue;
       seen.add(f._id);
-      out.push({ id: f._id, title: f.title, body: f.body.slice(0, 400), kind: f.kind });
+      out.push({ id: f._id, title: f.title, body: f.body.slice(0, 400), kind: f.kind, visibility: f.visibility });
     }
     return out;
   },
