@@ -126,6 +126,8 @@ export default defineSchema({
     latencyMs: v.optional(v.number()),
     /** "action" | "action_malformed:<why>" | "question" | "none" */
     parseOutcome: v.optional(v.string()),
+    /** Which of the owner's accounts a draft could go out through when this run started: the brief's live-or-sandbox switch. */
+    sendsFrom: v.optional(v.array(connectorKey)),
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_status", ["status"]),
@@ -151,6 +153,14 @@ export default defineSchema({
     sources: v.array(v.string()),
     /** Copied from the run: did it recall a preference/correction? Drives /stats. */
     recalledCorrection: v.boolean(),
+    /** Copied from the run: it read an owner-only fact, so the draft may quote one — and so may what's learned from it. */
+    recalledPrivate: v.optional(v.boolean()),
+    /**
+     * The run was briefed for real sending on this draft's account. Absent: it
+     * was drafted under the sandbox prompt, whose recipients are placeholders
+     * (#general, name@example.com) — see `outbox.decide`.
+     */
+    draftedLive: v.optional(v.boolean()),
     decision: v.optional(
       v.union(v.literal("approved_unedited"), v.literal("edited"), v.literal("rejected")),
     ),
@@ -163,6 +173,8 @@ export default defineSchema({
     sendError: v.optional(v.string()),
     /** Which connected account it went through. Counts toward SENDS_PER_DAY. */
     connector: v.optional(connectorKey),
+    /** Composio send calls made for this draft, the first included. `outbox.resend` stops at SEND_ATTEMPTS. */
+    attempts: v.optional(v.number()),
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_status", ["status"])
@@ -212,6 +224,7 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_userId_and_connector", ["userId", "connector"])
+    .index("by_userId_and_createdAt", ["userId", "createdAt"])
     .index("by_state", ["state"])
     .index("by_composioAccountId", ["composioAccountId"]),
 

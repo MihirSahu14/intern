@@ -12,7 +12,12 @@ export type BroadcastEvent =
   | { type: "drafted"; handle: string; kind: "email" | "slack" | "calendar" }
   | { type: "sent"; handle: string; connector: "gmail" | "slack" };
 
-const cut = (s: string) => s.slice(0, 120);
+/**
+ * A member's own words, trimmed, with every link swapped out: the community's
+ * channels would otherwise unfurl whatever a title points at.
+ * ponytail: scheme and www. only; a bare `evil.com` stays text (Slack may still link it).
+ */
+const cut = (s: string) => s.replace(/\b(?:https?:\/\/|www\.)\S+/gi, "[link]").slice(0, 120);
 
 export function broadcastText(e: BroadcastEvent, siteUrl: string): string {
   const what =

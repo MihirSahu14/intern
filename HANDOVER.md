@@ -10,7 +10,8 @@ gone from this branch; the sections below still talk about them.
 ## Public MVP
 
 What this is now: one public shared brain, GitHub sign-in, interns that run
-inside Convex on Gemini, and approvals that send nothing.
+inside Convex on Gemini, and approvals that send through the member's own
+Gmail or Slack once they connect it (sandbox until then).
 
 **The run path.** `interns.spawn` (mutation) checks the caps, inserts the row
 and schedules `internal.run.go` (action), which recalls facts, makes one
@@ -24,10 +25,22 @@ person per UTC day, 1 intern working at a time, 20 facts per person per day,
 $5 of model spend across everyone per day. A run that produced nothing billable
 (free-tier 429) doesn't cost a brief.
 
-**Approvals are a sandbox.** There is no connector, webhook or outbound path in
-the repo. Approving files the decision and the difference from the draft as a
-preference fact; rejecting files the reason as a correction. That is the whole
-learning loop, and `/stats` measures it from real runs.
+**Approvals send, once a member connects an account.** With Composio set up
+(`COMPOSIO_API_KEY` + `COMPOSIO_VERIFIER_URL`), approving an email or Slack
+draft sends it from the member's own connected Gmail/Slack (`outbox.decide` ->
+`send.go`, capped at 20 sends/day and 3 attempts per draft); without a
+connection it asks them to connect first and keeps their edits. Calendar
+drafts, and every draft on a deployment without Composio, stay sandboxed:
+approving sends nothing. A draft written before its account was connected was
+briefed with placeholder recipients (#general, name@example.com), so it can't
+go out until the member changes `to`. Inbound: a member's own 🧠 in Slack and
+an opt-in `Intern` Gmail label add facts through a signed webhook
+(`/composio/webhook`). Broadcasts post public one-liners to Discord/Slack
+webhooks. Either way, approving files the difference from the draft as a
+preference fact and rejecting files the reason as a correction — owner-only
+whenever the draft could reach a real person or its run read anything
+private, and address-redacted otherwise. That is the learning loop, and
+`/stats` measures it from real runs.
 
 **Admin** is the Convex dashboard's function runner — `users:ban
 {"handle":"x"}` bans and purges everything that person added. There is no admin
@@ -225,9 +238,11 @@ now: **always branch, then PR.**
 
 ## Next
 
-Nothing outbound. Whatever comes next should not quietly reintroduce a send
-path — the sandbox invariant is stated on every screen and in the consent gate,
-and the docs lied about it for a whole branch before anyone noticed.
+Outbound is real now (see the Public MVP section and "Community surfaces"
+below), and it is opt-in per member: nothing sends from an account the member
+didn't connect, and nothing sends without their approval. Keep every screen
+and the consent gate saying exactly that — the docs lied about the sandbox for
+a whole branch once before anyone noticed, and must not drift the other way.
 
 The open ones that survive the cut:
 
@@ -250,8 +265,11 @@ The open ones that survive the cut:
   private channel or group DM (`G…`), a channel reported private, or someone
   else's message is saved **owner-only**, never broadcast. If the channel
   lookup fails, the fact is owner-only too.
-- **Slack user scopes:** `reactions:read` and `channels:history` (public
-  channels) are enough. **Don't grant `groups:history`, `im:history` or
+- **Slack user scopes:** `reactions:read`, `channels:history` and
+  `channels:read` (public channels) are enough. `channels:read` is what
+  `SLACK_RETRIEVE_CONVERSATION_INFORMATION` needs to confirm a channel is
+  public; without it that lookup fails and **every 🧠 silently stays
+  owner-only**. **Don't grant `groups:history`, `im:history` or
   `mpim:history`** unless Mihir decides he wants private captures. They would
   let a member's 🧠 in private channels (`groups`), DMs (`im`) and group DMs
   (`mpim`) read that message's text through Composio into their own
@@ -294,9 +312,9 @@ never Vercel — every one is read server-side, in `convex/` or `lib/` that
 | `COMPOSIO_API_KEY` | Yes — unset means every connector shows "not set up yet" and outbox drafts stay sandboxed (approved, nothing sent) | `intern-dev` project's API key, Composio dashboard. **Scope it to Gmail + Slack toolkits only** (Composio's May 2026 breach — see Step 1 below) | `intern-prod` project's key, same scoping |
 | `COMPOSIO_VERIFIER_URL` | Yes, alongside the API key — `isConfigured` requires both, and it must start with `https://` or the connector reads as unconfigured | A public HTTPS URL that resolves to `/app` — Composio rejects localhost/private addresses on save, so this needs a tunnel to `localhost:3000` (e.g. an ngrok URL) or a Vercel preview URL, ending in `/app` | `https://intern-brain.vercel.app/app` |
 | `COMPOSIO_AUTH_CONFIG_GMAIL` | Optional, strongly recommended | A **send-only** Gmail auth config's `ac_…` id, Composio-managed auth, scope `gmail.send` only. Without it, Gmail connects through Composio's default managed scopes, which are **not publicly documented and may cover the whole mailbox** | same, `intern-prod`'s send-only config |
-| `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` | Optional — without it, the Gmail `Intern`-label toggle is hidden and `start({capture: true})` refuses | A **separate, read-only** Gmail auth config's `ac_…` id, scope `gmail.readonly` only. This is a second consent screen a member opts into; the send grant never reads mail | same, `intern-prod`'s capture config |
-| `COMPOSIO_AUTH_CONFIG_SLACK` | Optional but likely needed — whether Composio-managed Slack auth posts as the member (vs. as an app) is **unconfirmed** (Task 3 concern 2); test a throwaway connect first | A **custom** Slack auth config's `ac_…` id, backed by your own Slack app with **user scopes** `chat:write`, `reactions:read`, `channels:history`, `users:read` | same, `intern-prod`'s custom config, a separate Slack app or a separately-installed one |
-| `COMPOSIO_WEBHOOK_SECRET` | Optional — without it, every inbound webhook call gets a 401 and no 🧠/label trigger is ever created; sends and connects still work | `intern-dev` project's webhook signing secret, Composio dashboard | `intern-prod`'s webhook secret |
+| `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` | Optional — without it, **or without `COMPOSIO_WEBHOOK_SECRET`**, the Gmail `Intern`-label toggle is hidden and `start({capture: true})` refuses | A **separate, read-only** Gmail auth config's `ac_…` id, scope `gmail.readonly` only. This is a second consent screen a member opts into; the send grant never reads mail | same, `intern-prod`'s capture config |
+| `COMPOSIO_AUTH_CONFIG_SLACK` | Optional but likely needed — whether Composio-managed Slack auth posts as the member (vs. as an app) is **unconfirmed** (Task 3 concern 2); test a throwaway connect first | A **custom** Slack auth config's `ac_…` id, backed by your own Slack app with **user scopes** `chat:write`, `reactions:read`, `channels:history`, `channels:read`, `users:read` | same, `intern-prod`'s custom config, a separate Slack app or a separately-installed one |
+| `COMPOSIO_WEBHOOK_SECRET` | Optional (but the Gmail `Intern` label needs it: `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` does nothing without it) — without it, every inbound webhook call gets a 401 and no 🧠/label trigger is ever created; sends and connects still work | `intern-dev` project's webhook signing secret, Composio dashboard | `intern-prod`'s webhook secret |
 | `BROADCAST_DISCORD_WEBHOOK_URL` | Optional — unset means no Discord broadcasts | A **separate test channel's** webhook URL | Your real announcements channel's webhook URL |
 | `BROADCAST_SLACK_WEBHOOK_URL` | Optional — unset means no Slack broadcasts | A separate test channel's incoming-webhook URL | Real channel's incoming-webhook URL |
 | `SITE_URL` | Already set (Convex Auth) — reused to build the `/u/<handle>` link in every broadcast line | `http://localhost:3000` | `https://intern-brain.vercel.app` |
@@ -308,11 +326,14 @@ early with no log.
 
 ### Composio (~30 min)
 
-1. **Check Composio's trust page first.** Read `https://trust.composio.dev`
-   for the reported May 2026 incident before connecting any real member's
-   Gmail/Slack (unconfirmed, from a secondary source —
-   `composio.dev/blog/composio-may-2026-security-incident`). Decide whether
-   Composio may hold members' tokens before going further.
+1. **Read Composio's own incident post first.** The May 2026 breach is
+   confirmed by Composio itself:
+   https://composio.dev/blog/composio-may-2026-security-incident (Gmail
+   connections, GitHub tokens and API keys exposed; since remediated with
+   envelope encryption, scoped keys and an IP allowlist). Decide whether
+   Composio may hold members' tokens before going further; Mihir's ruling was
+   keep Composio and harden (scoped key, send-only Gmail, opt-in capture,
+   revoke on disconnect/purge).
 2. **Create two Composio projects**, `intern-dev` and `intern-prod`. For each,
    generate an API key **scoped to the Gmail and Slack toolkits only** — not a
    full-access key — given the breach in Step 1. That key is
@@ -336,7 +357,8 @@ early with no log.
    that no longer exists, and its `user_scopes` are only `chat:write` +
    `users:read`). Don't paste it as-is. Either edit it or set scopes by hand:
    **user scopes** `chat:write`, `reactions:read`, `channels:history`,
-   `users:read`. **Do not add `groups:history`, `im:history` or
+   `channels:read`, `users:read` (`channels:read` confirms a 🧠'd channel is
+   public; without it every 🧠 stays owner-only). **Do not add `groups:history`, `im:history` or
    `mpim:history`** unless you want 🧠 to capture private channels/DMs/group
    DMs — granting them lets a member's 🧠 there read that message's text into
    their own owner-only facts (never public); without them, that lookup is
@@ -386,19 +408,32 @@ Use a separate test channel for dev on both.
     `https://graceful-albatross-202.convex.site/composio/webhook`, prod
     `https://neighborly-peacock-427.convex.site/composio/webhook`. Copy each
     project's signing secret into `COMPOSIO_WEBHOOK_SECRET`.
-13. **Set every env var above**, from your own terminal, dev first:
-    `npx convex env set COMPOSIO_API_KEY …` (and so on for each var in the
-    table), then the same six/seven with `--prod` and the `intern-prod`
-    values.
-14. **Deploy backend first.** Push `connectors`, open a PR to `main`, then
-    `npx convex deploy` (prod). This is safe backend-first: the schema is
-    additive, and the cockpit already filters the outbox to your own rows.
-    Merge the PR once the backend is live; Vercel deploys `main`.
+13. **Dev env vars**, from your own terminal, on the deployment you'll test
+    with (see the checklist below — not the old dev deployment as it stands):
+    `npx convex env set COMPOSIO_API_KEY …` and so on for each var in the
+    table.
+14. **Deploy in this order.** The old cockpit on prod ignores `needsConnect`,
+    so setting the prod Composio vars while it is still live would turn its
+    "approve" into a silent no-op for anyone not connected.
+    1. Push `connectors`, open a PR to `main`, then `npx convex deploy` (prod)
+       **without** any `COMPOSIO_*` var set on prod yet. Safe: the schema is
+       additive, and with no Composio vars every draft stays sandboxed.
+    2. Merge the PR; wait for Vercel to deploy `main` and confirm the new
+       cockpit is live at `https://intern-brain.vercel.app` (the outbox header
+       shows `sandbox`/`live`, and the accounts rail is there).
+    3. Only then set the prod vars with `--prod` and the `intern-prod`
+       values: `COMPOSIO_*`, `BROADCAST_*`.
 
 ### First-live-connect checklist
 
-Run through this on dev first (`npm run dev`), then again on prod, with two
-GitHub accounts (the second one in a private window):
+Run through this on a dev deployment first, then again on prod, with two
+GitHub accounts (the second one in a private window). `npm run dev` is only
+`next dev`: it runs the frontend and never pushes Convex code. The existing dev
+deployment (`graceful-albatross-202`) still holds incompatible hackathon rows
+and needs a wipe before this schema will push, so test on a **fresh** dev
+deployment or a local one (`npx convex dev --local` in its own terminal,
+yours to run), pointed at by `.env.local`, with the frontend on a public
+HTTPS tunnel for the verifier URL.
 
 - [ ] Connect Gmail. On the connected account, check `requested_scopes` (via
       `GET /connected_accounts/{id}` in the Composio dashboard or API) —
@@ -424,4 +459,12 @@ GitHub accounts (the second one in a private window):
 else — there's no admin UI for them. `users:ban` still purges everything a
 banned member added, connections included: it revokes and deletes each active
 grant at Composio (`internal.connections.forget`, scheduled per row) as part
-of the purge.
+of the purge, and deletes any account a still-pending connect link had already
+made there.
+
+**The revoke-mid-purge edge.** `forget` is best-effort: if Composio is down or
+refuses while a purge runs, our row is already gone and nothing retries, so
+the grant lives on at Composio with no row pointing at it. The Convex logs say
+`composio delete ca_… failed`; delete that account by hand in the Composio
+dashboard. A connect the member finishes *while* their purge runs is refused
+(no row of theirs is left) and its account deleted without revoke.

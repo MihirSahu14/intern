@@ -189,6 +189,7 @@ export default function Cockpit({ me }: { me: Me }) {
               result: a.reason,
               connector: a.connector,
               sendError: a.sendError,
+              draftedLive: a.draftedLive,
             }]
           : [],
       ),

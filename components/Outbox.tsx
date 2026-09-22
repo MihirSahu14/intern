@@ -136,11 +136,18 @@ function Pending({
     body.trim() !== action.draft.body.trim() ? "body" : null,
   ].filter(Boolean) as (keyof Draft)[];
 
+  // Sent whenever edits were saved earlier too: reverting those to the
+  // original leaves `changed` empty, and sending nothing would let the server
+  // fall back to the saved edit the person just undid.
   const approve = () =>
     onDecide(action.id, {
       decision: "approve",
-      edits: changed.length ? { to: list(to), subject, body } : undefined,
+      edits: changed.length || action.accepted ? { to: list(to), subject, body } : undefined,
     });
+  // Drafted under the sandbox prompt, whose recipients are placeholders
+  // (#general, name@example.com): it can't go out for real until the person
+  // says who it's for. The server refuses it too (outbox.decide).
+  const needsRecipient = !!via && !action.draftedLive && !changed.includes("to");
 
   return (
     <article className="enter border-b border-line px-3 py-2">
@@ -157,10 +164,10 @@ function Pending({
 
       {!expanded ? (
         <>
-          <p className="mt-1 truncate text-dim" title={action.draft.to.join(", ")}>
-            → {action.draft.to.join(", ")}
+          <p className="mt-1 truncate text-dim" title={start.to.join(", ")}>
+            → {start.to.join(", ")}
           </p>
-          <p className="truncate text-fg">{action.draft.subject}</p>
+          <p className="truncate text-fg">{start.subject}</p>
           <p className="mt-1 text-faint">open it to read and edit before approving</p>
         </>
       ) : (
@@ -177,6 +184,11 @@ function Pending({
           <p className="text-faint leading-relaxed">{action.rationale}</p>
           {action.sources.length ? (
             <p className="text-faint">from: {action.sources.join(", ")}</p>
+          ) : null}
+          {needsRecipient ? (
+            <p className="border-l border-warn/50 pl-2 text-warn">
+              drafted before you connected {via}, so &ldquo;to&rdquo; is a placeholder · change it to send
+            </p>
           ) : null}
           {changed.length ? (
             <p className="border-l border-k-fact/50 pl-2 text-k-fact">
@@ -227,10 +239,13 @@ function Pending({
         <div className="mt-2 flex gap-px">
           <button
             type="button"
-            onClick={approve}
-            className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10"
+            onClick={needsRecipient ? (expanded ? undefined : onToggle) : approve}
+            disabled={needsRecipient && expanded}
+            className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10 disabled:opacity-40"
           >
-            {via
+            {needsRecipient
+              ? "change “to” to send"
+              : via
               ? `${changed.length ? "send with edits" : "approve & send"} via ${via}`
               : changed.length
                 ? "approve with edits"

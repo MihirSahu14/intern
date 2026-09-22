@@ -334,6 +334,8 @@ export type ProposedAction = {
   connector?: string;
   /** Composio's reason, when a send failed. */
   sendError?: string;
+  /** Written knowing it could really go out. False: its recipients are sandbox placeholders. */
+  draftedLive?: boolean;
 };
 
 /** What would actually go out: the person's version if they wrote one. */

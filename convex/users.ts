@@ -77,8 +77,10 @@ export const purge = internalMutation({
       .withIndex("by_userId_and_connector", (q) => q.eq("userId", userId))
       .take(BATCH);
     for (const r of connections) {
-      // Our row goes now; Composio's copy of the grant goes with it.
-      if (r.status === "active" && r.composioAccountId) {
+      // Our row goes now; Composio's copy of the grant goes with it — and so
+      // does an account a pending link already made there, which a consent
+      // after this point could otherwise turn into a grant nobody owns.
+      if ((r.status === "active" || r.status === "pending") && r.composioAccountId) {
         await ctx.scheduler.runAfter(0, internal.connections.forget, {
           composioAccountId: r.composioAccountId,
           triggerId: r.triggerId,

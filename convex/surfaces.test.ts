@@ -36,7 +36,8 @@ function setup() {
   const t = convexTest(schema, modules);
   const seedUser = (handle: string) => t.run((ctx) => ctx.db.insert("users", { handle, acceptedAt: Date.now() }));
   const asUser = (userId: Id<"users">) => t.withIdentity({ subject: `${userId}|session`, issuer: "https://local" });
-  const seedDraft = (ownerId: Id<"users">, kind: "email" | "slack" = "email") =>
+  // Drafted live unless a test says otherwise: most model a run briefed for real sending.
+  const seedDraft = (ownerId: Id<"users">, kind: "email" | "slack" = "email", extra: Partial<Doc<"actions">> = { draftedLive: true }) =>
     t.run(async (ctx) => {
       const internId = await ctx.db.insert("interns", {
         ownerId,
@@ -54,6 +55,7 @@ function setup() {
         rationale: "because",
         sources: [],
         recalledCorrection: false,
+        ...extra,
       });
       return { internId, actionId };
     });
@@ -1630,4 +1632,280 @@ test("a member page shows public work and nothing private", async () => {
   expect(await t.query(api.community.member, { handle: "nobody" })).toBeNull();
   await t.run((ctx) => ctx.db.insert("users", { handle: "lurker" }));
   expect(await t.query(api.community.member, { handle: "lurker" })).toBeNull();
+});
+
+// --- final review fix wave ---------------------------------------------------
+
+test("a lesson from a draft whose run read something private stays private, even with no connector", async () => {
+  broadcastEnv();
+  const f = stubFetch({});
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  // A send's write-back: owner-only, and exactly what a later draft can quote.
+  const writeBack = await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "emailed ann@acme.com about the renewal",
+      body: "$40k, signed Friday",
+      kind: "note",
+      visibility: "owner",
+      ownerId: a,
+      text: "emailed ann@acme.com about the renewal\n$40k, signed Friday",
+    }),
+  );
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "book the renewal call", status: "running", countsTowardCap: true }),
+  );
+  await t.mutation(internal.interns.noteRecall, { internId, recalled: [{ id: writeBack, kind: "note", visibility: "owner" }] });
+  await t.mutation(internal.interns.finish, {
+    internId,
+    report: "drafted",
+    tokensIn: 1,
+    tokensOut: 1,
+    latencyMs: 1,
+    facts: [],
+    action: {
+      kind: "calendar",
+      title: "renewal call",
+      draft: { to: ["ann@acme.com"], subject: "Renewal 40k", body: "Signing the 40k renewal" },
+      rationale: "because",
+      sources: [],
+    },
+  });
+  const action = await t.run((ctx) => ctx.db.query("actions").first());
+  expect(action?.recalledPrivate).toBe(true);
+  const broadcastsBefore = (await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count ?? 0;
+
+  await asUser(a).mutation(api.outbox.decide, { actionId: action!._id, decision: "reject", reason: "wrong day" });
+
+  const correction = (await allFacts(t)).find((x) => x.kind === "correction");
+  expect(correction).toMatchObject({ visibility: "owner", ownerId: a });
+  const forB = (await asUser(b).query(api.facts.graph, {})).nodes.map((n) => n.label).join("\n");
+  expect(forB).not.toMatch(/40k|do not send/);
+  const feed = (await asUser(b).query(api.community.feed, {})).map((e) => e.text).join("\n");
+  expect(feed).not.toMatch(/40k|do not send|ann@acme/);
+  const recalled = await t.query(internal.facts.recall, { task: "renewal 40k", ownerId: b });
+  expect(recalled.map((r) => r.id)).not.toContain(correction?._id);
+  expect((await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count ?? 0).toBe(broadcastsBefore);
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(JSON.stringify(f.mock.calls)).not.toMatch(/40k|do not send/);
+});
+
+test("a public lesson names no address, and its log line quotes none of the draft", async () => {
+  const { t, seedUser, asUser, seedDraft } = setup();
+  const a = await seedUser("a");
+  const { actionId, internId } = await seedDraft(a);
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "cc bob@acme.com instead" });
+  const [fact] = await allFacts(t);
+  expect(fact.visibility).toBeUndefined();
+  expect(`${fact.title}\n${fact.body}`).not.toMatch(/@acme\.com/);
+  expect(fact.body).toContain("[email]");
+  const lines = (
+    await t.run((ctx) => ctx.db.query("logs").withIndex("by_internId", (q) => q.eq("internId", internId)).collect())
+  ).map((l) => l.text);
+  expect(lines).toEqual(["rejected · learned a correction"]);
+});
+
+test("other people's interns carry no displayTask, parser verdict, lesson flag or connected accounts", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "follow up: the answer was ann@acme.com",
+      displayTask: "who owns pricing? ask ann@acme.com",
+      status: "done",
+      parseOutcome: "action_malformed:bad to",
+      recalledCorrection: true,
+      sendsFrom: ["gmail"],
+      countsTowardCap: true,
+    }),
+  );
+  const theirs = (await asUser(b).query(api.interns.list, {})).find((i) => i._id === internId);
+  expect(theirs?.task).toBe("who owns pricing? ask [email]");
+  expect(theirs?.displayTask).toBeUndefined();
+  expect(theirs?.parseOutcome).toBeUndefined();
+  expect(theirs?.recalledCorrection).toBeUndefined();
+  expect(theirs?.sendsFrom).toBeUndefined();
+  const mine = (await asUser(a).query(api.interns.list, {})).find((i) => i._id === internId);
+  expect(mine?.parseOutcome).toBe("action_malformed:bad to");
+});
+
+test("resend stops after three attempts in all", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const { actionId } = await seedDraft(a);
+  const f = stubFetch({ session_id: "trs_1" }, { error: "invalid_grant", data: {}, log_id: "log_1" });
+  vi.useFakeTimers();
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  for (let i = 0; i < 2; i++) {
+    await asUser(a).mutation(api.outbox.resend, { actionId });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+  }
+  expect(await t.run((ctx) => ctx.db.get("actions", actionId))).toMatchObject({ status: "failed", attempts: 3 });
+  const calls = f.mock.calls.length;
+
+  await expect(asUser(a).mutation(api.outbox.resend, { actionId })).rejects.toThrow(/tried 3 times/);
+  expect(f.mock.calls.length).toBe(calls);
+});
+
+test("a sandbox-drafted message can't go out unchanged once connected; with its recipient edited, it sends", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack");
+  const { actionId } = await seedDraft(a, "slack", {});
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/placeholders/);
+  // Retyping the same placeholder isn't choosing a recipient.
+  await expect(
+    asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { to: ["#general"] } }),
+  ).rejects.toThrow(/placeholders/);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
+  expect(f).not.toHaveBeenCalled();
+
+  expect(
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { to: ["#team-pricing"] } }),
+  ).toBe(null);
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).arguments.channel).toBe("#team-pricing");
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a draft is marked live only when its own kind's account was connected as the run started", async () => {
+  composioEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail");
+  const draftFrom = async (kind: "email" | "slack") => {
+    const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
+    await t.mutation(internal.interns.start, { internId });
+    await t.mutation(internal.interns.finish, {
+      internId,
+      report: "r",
+      tokensIn: 1,
+      tokensOut: 1,
+      latencyMs: 1,
+      facts: [],
+      action: { kind, title: "t", draft: { to: ["x"], subject: "s", body: "b" }, rationale: "r", sources: [] },
+    });
+    const row = await t.run((ctx) => ctx.db.query("actions").withIndex("by_internId", (q) => q.eq("internId", internId)).first());
+    return row?.draftedLive;
+  };
+  expect(await draftFrom("email")).toBe(true);
+  expect(await draftFrom("slack")).toBe(false);
+});
+
+test("a send's write-back doesn't use up the day's twenty facts", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 20; i++) {
+      await ctx.db.insert("facts", { title: `sent ${i}`, body: "", kind: "note", ownerId: a, visibility: "owner", source: `send:${i}`, text: "" });
+    }
+  });
+  await asUser(a).mutation(api.facts.teach, { title: "We ship Fridays", body: "", kind: "note" });
+  expect(await allFacts(t)).toHaveLength(21);
+});
+
+// --- metering Composio, and grants nobody owns ------------------------------
+
+// --- metering Composio, and grants nobody owns ------------------------------
+
+test("connect: a sixth link in an hour is refused before Composio is called", async () => {
+  composioEnv();
+  vi.useFakeTimers();
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  for (let i = 0; i < 5; i++) {
+    await t.run((ctx) =>
+      ctx.db.insert("connections", { userId: a, connector: "gmail", status: "failed", state: `s${i}`, createdAt: Date.now() }),
+    );
+  }
+  const f = stubFetch({ session_id: "trs_1" }, linked);
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/Too many connect attempts/);
+  expect(f).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(5);
+
+  // An hour on, the old attempts no longer count.
+  vi.setSystemTime(Date.now() + 61 * 60_000);
+  expect(await asUser(a).action(api.connections.start, { connector: "gmail" })).toBe(linked.redirect_url);
+});
+
+test("webhook: a repeated 🧠 or a full day makes no Composio call at all", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "x",
+      body: "",
+      kind: "note",
+      ownerId: a,
+      visibility: "owner",
+      source: "slack:C1:1726900000.000100",
+      text: "x\n",
+    }),
+  );
+  const f = stubSlack({ text: "hello" });
+  expect(await (await t.fetch("/composio/webhook", await signed(slackEvent(a)))).text()).toBe("duplicate");
+  expect(f).not.toHaveBeenCalled();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("connections", {
+      userId: b,
+      connector: "slack",
+      status: "active",
+      composioAccountId: "ca_2",
+      externalUserId: "U123",
+      state: "s",
+      createdAt: Date.now(),
+    });
+    for (let i = 0; i < 20; i++) await ctx.db.insert("facts", { title: `f${i}`, body: "", kind: "note", ownerId: b, text: `f${i}\n` });
+  });
+  expect(await (await t.fetch("/composio/webhook", await signed(slackEvent(b, { accountId: "ca_2" })))).text()).toBe("over the daily cap");
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("finish: if activation fails after Composio verified the grant, the account is deleted", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a);
+  let call = 0;
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => {
+    // Banned between Composio's answer and our write: `activate` refuses.
+    if (call++ === 0) await t.run((ctx) => ctx.db.patch("users", a, { bannedAt: Date.now() }));
+    return new Response(JSON.stringify(call === 1 ? completed : { success: true }));
+  });
+  vi.stubGlobal("fetch", f);
+  await expect(asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).rejects.toThrow(/blocked/);
+  expect(f.mock.calls[1][0]).toMatch(/\/connected_accounts\/ca_1$/);
+  expect(f.mock.calls[1][1]?.method).toBe("DELETE");
+});
+
+test("purge also deletes the account a still-pending link made at Composio", async () => {
+  composioEnv();
+  vi.useFakeTimers();
+  const { t, seedUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a, "slack", "s1", "ca_7");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "pending", state: "s2", createdAt: Date.now() }),
+  );
+  const f = stubFetch({ success: true });
+  await t.mutation(internal.users.purge, { userId: a });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/ca_7?revoke_on_delete=true"]);
 });

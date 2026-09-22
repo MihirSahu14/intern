@@ -19,12 +19,18 @@ export async function insertFact(
     ownerId?: Id<"users">;
     internId?: Id<"interns">;
     visibility?: Doc<"facts">["visibility"];
-    /** Where it came from outside Intern, e.g. `slack:C1:1726900000.000100`: one fact per source per owner. */
+    /**
+     * Where it came from, e.g. `slack:C1:1726900000.000100`: one fact per
+     * source per owner. `send:<actionId>` marks a send's write-back.
+     */
     source?: string;
   },
 ) {
   return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });
 }
+
+/** Marks the fact a successful send writes back: the brain noting it, not the person teaching it. */
+export const sendSource = (actionId: Id<"actions">) => `send:${actionId}`;
 
 /** The 20-facts/day rule for anything a person adds, from the cockpit or from their own tools. */
 export async function factCapBlocked(ctx: QueryCtx, ownerId: Id<"users">): Promise<string | null> {
@@ -35,8 +41,10 @@ export async function factCapBlocked(ctx: QueryCtx, ownerId: Id<"users">): Promi
   // Same guard as `dispatch`: run-filed facts, corrections and answers share
   // this window without counting, so an overflowed day can't be counted at
   // all — refuse rather than read the first fifty and call it twenty.
+  // Write-backs still fill the window above, so the overflow guard stays
+  // honest; they just aren't teaching, so they don't use up the twenty.
   if (today.length > DAY_WINDOW) return tooManyFacts;
-  return teachBlocked(today.length);
+  return teachBlocked(today.filter((f) => !f.source?.startsWith("send:")).length);
 }
 
 export const teach = mutation({
