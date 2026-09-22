@@ -41,3 +41,10 @@ test("the throttle counts per UTC hour, thirty to an hour", () => {
   assert.equal(hourKey(Date.UTC(2026, 8, 21, 15, 0)), "2026-09-21T15");
   assert.equal(BROADCASTS_PER_HOUR, 30);
 });
+
+test("a title's links never reach the community's channels", () => {
+  assert.equal(
+    broadcastText({ type: "taught", handle: "ann", title: "Free stuff at https://evil.test/x?y=1 and www.evil.test now" }, SITE),
+    "@ann taught the brain: Free stuff at [link] and [link] now · https://intern-brain.vercel.app/u/ann",
+  );
+});
