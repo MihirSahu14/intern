@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { TRIGGERS, gmailFact, readEnvelope, readHistoryText, readWhoami, slackFact, toCapture, verifyWebhook } from "./inbound.ts";
+import {
+  TRIGGERS,
+  gmailFact,
+  isPublicChannel,
+  mayBePublic,
+  readEnvelope,
+  readHistoryText,
+  readWhoami,
+  slackFact,
+  toCapture,
+  verifyWebhook,
+} from "./inbound.ts";
 
 const SECRET = "test-secret";
 /** Independent of lib/inbound.ts's own signer, so the scheme is checked, not echoed. */
@@ -77,7 +88,14 @@ test("a wrong secret, an edited body, a stale timestamp, a missing header or no 
 test("slack: a reaction maps to who reacted with what, on which message", () => {
   const e = readEnvelope(SLACK_EVENT);
   assert.deepEqual(e && { userId: e.userId, accountId: e.accountId, id: e.id }, { userId: "u1", accountId: "ca_1", id: "msg_abc123" });
-  assert.deepEqual(e && toCapture(e), { connector: "slack", reaction: "brain", reactor: "U123", channel: "C1", ts: "1726900000.000100" });
+  assert.deepEqual(e && toCapture(e), {
+    connector: "slack",
+    reaction: "brain",
+    reactor: "U123",
+    author: "U777",
+    channel: "C1",
+    ts: "1726900000.000100",
+  });
 });
 
 test("gmail: a labelled message maps to its id, subject and body", () => {
@@ -118,4 +136,20 @@ test("slack tool replies: the reacted message's own text, and the member's own i
   assert.equal(readHistoryText({}, "1.2"), null);
   assert.deepEqual(readWhoami({ ok: true, user_id: "U123", user: "ann", team: "acme" }), { userId: "U123", label: "@ann in acme" });
   assert.deepEqual(readWhoami({}), { userId: null, label: null });
+});
+
+test("slack: public only for the member's own message in a channel confirmed public", () => {
+  const info = (c: Record<string, unknown>) => ({ ok: true, channel: { id: "C1", ...c } });
+  const open = info({ is_private: false, is_im: false, is_mpim: false });
+  assert.equal(isPublicChannel(open), true);
+  assert.equal(isPublicChannel(info({ is_private: true, is_im: false, is_mpim: false })), false);
+  assert.equal(isPublicChannel(info({ is_private: false, is_im: false, is_mpim: true })), false);
+  // A flag missing, or the reply shaped some other way, is not a confirmation.
+  assert.equal(isPublicChannel(info({ is_private: false, is_im: false })), false);
+  assert.equal(isPublicChannel({ is_private: false, is_im: false, is_mpim: false }), false);
+  assert.equal(mayBePublic({ channel: "C1", author: "U123" }, "U123"), true);
+  assert.equal(mayBePublic({ channel: "D1", author: "U123" }, "U123"), false);
+  assert.equal(mayBePublic({ channel: "G1", author: "U123" }, "U123"), false);
+  assert.equal(mayBePublic({ channel: "C1", author: "U777" }, "U123"), false);
+  assert.equal(mayBePublic({ channel: "C1", author: null }, "U123"), false);
 });

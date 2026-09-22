@@ -1194,15 +1194,19 @@ async function signed(payload: unknown, secret = WEBHOOK_SECRET) {
 }
 
 // The V3 envelope with each trigger's documented `data` fields.
-const slackEvent = (userId: string, o: { reactor?: string; reaction?: string; accountId?: string } = {}) => ({
+const slackEvent = (
+  userId: string,
+  o: { reactor?: string; reaction?: string; accountId?: string; channel?: string; author?: string } = {},
+) => ({
   id: "msg_abc",
   type: "composio.trigger.message",
   metadata: { trigger_slug: TRIGGERS.slack.slug, trigger_id: "ti_s", user_id: userId, connected_account_id: o.accountId ?? "ca_1" },
   data: {
     reaction: o.reaction ?? "brain",
     user: o.reactor ?? "U123",
-    message_channel: "C1",
+    message_channel: o.channel ?? "C1",
     message_ts: "1726900000.000100",
+    message_user: o.author ?? "U123",
     event_ts: "1726900001.000200",
   },
   timestamp: "2026-09-21T12:00:00Z",
@@ -1216,11 +1220,35 @@ const gmailEvent = (userId: string, accountId = "ca_1") => ({
   timestamp: "2026-09-21T12:00:00Z",
 });
 
-/** What the history tool returns through a session: the session, then the execute reply. */
-const historyReply = (text: string, ts = "1726900000.000100"): [string, unknown][] => [
-  ["/execute", { data: { ok: true, messages: [{ type: "message", text, ts }] }, error: null, log_id: "log_1" }],
-  ["/tool_router/session", { session_id: "trs_1" }],
-];
+/** Slack's conversations.info for a public channel the member is in. */
+const PUBLIC_CHANNEL = { ok: true, channel: { id: "C1", is_channel: true, is_private: false, is_im: false, is_mpim: false } };
+
+/**
+ * Slack tools through a session, answered by tool slug: history returns
+ * `text` at `ts`; conversations.info returns `info`, or a 500 for "fail".
+ */
+function stubSlack(o: { text: string; ts?: string; info?: unknown }) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url, init) => {
+    if (url.includes("/execute")) {
+      const tool = JSON.parse(String(init?.body)).tool_slug;
+      if (tool === SLACK_TOOLS.history) {
+        const messages = [{ type: "message", text: o.text, ts: o.ts ?? "1726900000.000100" }];
+        return new Response(JSON.stringify({ data: { ok: true, messages }, error: null, log_id: "log_1" }));
+      }
+      if (tool === SLACK_TOOLS.info) {
+        if (o.info === "fail") return new Response(JSON.stringify({ error: { message: "boom" } }), { status: 500 });
+        return new Response(JSON.stringify({ data: o.info ?? PUBLIC_CHANNEL, error: null, log_id: "log_2" }));
+      }
+    }
+    if (url.includes("/tool_router/session")) return new Response(JSON.stringify({ session_id: "trs_1" }));
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+const toolsCalled = (f: ReturnType<typeof stubSlack>) =>
+  f.mock.calls.filter(([url]) => url.includes("/execute")).map(([, init]) => JSON.parse(String(init?.body)).tool_slug);
 
 const allFacts = (t: ReturnType<typeof setup>["t"]) => t.run((ctx) => ctx.db.query("facts").collect());
 const path = (url: string) => url.replace(/^.*\/api\/v3\.1/, "");
@@ -1401,7 +1429,7 @@ test("webhook: a bad signature, or no secret configured, is refused with 401 bef
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
   await seedActive(a, "slack", { externalUserId: "U123" });
-  const f = route(historyReply("hello"));
+  const f = stubSlack({ text: "hello" });
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(a), "wrong"))).status).toBe(401);
   expect((await t.fetch("/composio/webhook", { method: "POST", body: JSON.stringify(slackEvent(a)) })).status).toBe(401);
   vi.stubEnv("COMPOSIO_WEBHOOK_SECRET", "");
@@ -1410,20 +1438,20 @@ test("webhook: a bad signature, or no secret configured, is refused with 401 bef
   expect(await allFacts(t)).toHaveLength(0);
 });
 
-test("webhook: the member's own 🧠 puts the message in the public brain, once", async () => {
+test("webhook: the member's own 🧠 on their own message in a confirmed public channel is public and broadcast, once", async () => {
   inboundEnv();
   broadcastEnv();
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
   await seedActive(a, "slack", { externalUserId: "U123" });
-  const f = route(historyReply("We ship on Fridays\nbecause QA is Thursday"));
+  const f = stubSlack({ text: "We ship on Fridays\nbecause QA is Thursday" });
 
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(200);
-  const exec = f.mock.calls.find(([url]) => url.includes("/execute"));
-  expect(JSON.parse(String(exec?.[1]?.body))).toEqual({
-    tool_slug: SLACK_TOOLS.history,
-    arguments: { channel: "C1", latest: "1726900000.000100", inclusive: true, limit: 1 },
-  });
+  const exec = f.mock.calls.filter(([url]) => url.includes("/execute")).map(([, init]) => JSON.parse(String(init?.body)));
+  expect(exec).toEqual([
+    { tool_slug: SLACK_TOOLS.history, arguments: { channel: "C1", latest: "1726900000.000100", inclusive: true, limit: 1 } },
+    { tool_slug: SLACK_TOOLS.info, arguments: { channel: "C1" } },
+  ]);
   const rows = await allFacts(t);
   expect(rows).toEqual([expect.objectContaining({ title: "We ship on Fridays", body: "because QA is Thursday", ownerId: a, kind: "note" })]);
   expect(rows[0]?.visibility).toBeUndefined();
@@ -1442,13 +1470,13 @@ test("webhook: someone else's 🧠, another reaction, or a message that's gone c
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
   await seedActive(a, "slack", { externalUserId: "U123" });
-  const f = route(historyReply("nope"));
+  const f = stubSlack({ text: "nope" });
 
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(a, { reactor: "U999" })))).status).toBe(200);
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(a, { reaction: "thumbsup" })))).status).toBe(200);
   expect(f).not.toHaveBeenCalled();
 
-  route(historyReply("an older message", "1726899999.000000"));
+  stubSlack({ text: "an older message", ts: "1726899999.000000" });
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(a)))).status).toBe(200);
   expect(await allFacts(t)).toHaveLength(0);
 });
@@ -1459,7 +1487,7 @@ test("webhook: a payload's user id counts only through that user's own live conn
   const a = await seedUser("a");
   const b = await seedUser("b");
   await seedActive(a, "slack", { externalUserId: "U123" });
-  const f = route(historyReply("hello"));
+  const f = stubSlack({ text: "hello" });
 
   // b claims a's account; an account nobody has; not an id at all.
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(b)))).status).toBe(200);
@@ -1476,7 +1504,7 @@ test("webhook: banned or unconsented members capture nothing", async () => {
   const unconsented = await t.run((ctx) => ctx.db.insert("users", { handle: "u" }));
   await seedActive(banned, "slack", { externalUserId: "U123" });
   await seedActive(unconsented, "gmail", { composioAccountId: "ca_2", capture: true, triggerId: "ti_g" });
-  const f = route(historyReply("hello"));
+  const f = stubSlack({ text: "hello" });
   expect((await t.fetch("/composio/webhook", await signed(slackEvent(banned)))).status).toBe(200);
   expect((await t.fetch("/composio/webhook", await signed(gmailEvent(unconsented, "ca_2")))).status).toBe(200);
   expect(f).not.toHaveBeenCalled();
@@ -1519,4 +1547,59 @@ test("webhook: a full day captures nothing", async () => {
   });
   expect((await t.fetch("/composio/webhook", await signed(gmailEvent(a)))).status).toBe(200);
   expect(await allFacts(t)).toHaveLength(20);
+});
+
+/** A 🧠 that could reach the public brain, but for one reason is filed owner-only and never broadcast. */
+async function capturedPrivately(event: (a: string) => unknown, info?: unknown) {
+  inboundEnv();
+  broadcastEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  const f = stubSlack({ text: "Salary bands\nare private", info });
+  expect((await t.fetch("/composio/webhook", await signed(event(a)))).status).toBe(200);
+  expect(await allFacts(t)).toEqual([
+    expect.objectContaining({ title: "Salary bands", body: "are private", ownerId: a, visibility: "owner" }),
+  ]);
+  expect(await t.run((ctx) => ctx.db.query("broadcasts").collect())).toHaveLength(0);
+  return f;
+}
+
+test("webhook: a 🧠 in a DM is saved owner-only, without even asking Slack about the channel", async () => {
+  const f = await capturedPrivately((a) => slackEvent(a, { channel: "D0123" }));
+  expect(toolsCalled(f)).toEqual([SLACK_TOOLS.history]);
+});
+
+test("webhook: a 🧠 in a legacy private channel or group DM is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a, { channel: "G0123" }));
+});
+
+test("webhook: a 🧠 in a channel Slack reports private is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a), { ok: true, channel: { id: "C1", is_private: true, is_im: false, is_mpim: false } });
+});
+
+test("webhook: when the channel lookup fails, the 🧠 is saved owner-only", async () => {
+  const f = await capturedPrivately((a) => slackEvent(a), "fail");
+  expect(toolsCalled(f)).toEqual([SLACK_TOOLS.history, SLACK_TOOLS.info]);
+});
+
+test("webhook: a channel reply without the privacy flags counts as private", async () => {
+  await capturedPrivately((a) => slackEvent(a), { ok: true, channel: { id: "C1" } });
+});
+
+test("webhook: a 🧠 on someone else's message in a public channel is saved owner-only", async () => {
+  await capturedPrivately((a) => slackEvent(a, { author: "U777" }));
+});
+
+test("webhook: a Gmail event with no message id is dropped, not keyed on the delivery id", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail", { capture: true, triggerId: "ti_g" });
+  const e = gmailEvent(a);
+  const noId = { ...e, data: { subject: "Pricing decision", message_text: "We charge per seat." } };
+  // A re-poll delivers the same mail under a new delivery id.
+  expect((await t.fetch("/composio/webhook", await signed(noId))).status).toBe(200);
+  expect((await t.fetch("/composio/webhook", await signed({ ...noId, id: "msg_other" }))).status).toBe(200);
+  expect(await allFacts(t)).toHaveLength(0);
 });

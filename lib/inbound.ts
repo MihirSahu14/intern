@@ -9,7 +9,9 @@ import { MAX_FACT_CHARS } from "./caps.ts";
  *   /toolkits/slack.md → Triggers: SLACK_MESSAGE_REACTION_ADDED (SLACK_REACTION_ADDED
  *     is marked DEPRECATED there), config `emoji_name`, payload `reaction`, `user`,
  *     `message_channel`, `message_ts`. Tools: SLACK_TEST_AUTH ("tells you who you
- *     are"), SLACK_FETCH_CONVERSATION_HISTORY (`channel`, `latest`, `inclusive`, `limit`).
+ *     are"), SLACK_FETCH_CONVERSATION_HISTORY (`channel`, `latest`, `inclusive`, `limit`),
+ *     SLACK_RETRIEVE_CONVERSATION_INFORMATION (`channel`; "Retrieves metadata for a
+ *     Slack conversation by ID … excluding message content").
  *   /toolkits/gmail.md → Triggers: GMAIL_NEW_GMAIL_MESSAGE (poll), config `query` in
  *     Gmail search syntax ("labels (label:inbox)", and it "takes precedence over
  *     labelIds"), payload `id`, `message_id`, `subject`, `message_text`.
@@ -21,9 +23,11 @@ import { MAX_FACT_CHARS } from "./caps.ts";
  *   @composio/core 0.19.0's `verifyWebhookSignature` / `validateWebhookTimestamp`
  *     (the SDK those docs defer to): the timestamp is Unix seconds, and the header
  *     may carry several space-separated `v1,<sig>` entries; only `v1` counts.
- * Composio documents the two Slack tools' output only as `data`; the field names
- * read below are Slack's own auth.test / conversations.history responses
- * (docs.slack.dev/reference/methods/{auth.test,conversations.history}).
+ * Composio documents the Slack tools' output only as `data`; the field names
+ * read below are Slack's own auth.test / conversations.history /
+ * conversations.info responses
+ * (docs.slack.dev/reference/methods/{auth.test,conversations.history,conversations.info}).
+ * Where that shape decides privacy (`isPublicChannel`), anything else reads as private.
  */
 
 export const BRAIN_REACTION = "brain";
@@ -37,6 +41,7 @@ export const TRIGGERS = {
 export const SLACK_TOOLS = {
   whoami: "SLACK_TEST_AUTH",
   history: "SLACK_FETCH_CONVERSATION_HISTORY",
+  info: "SLACK_RETRIEVE_CONVERSATION_INFORMATION",
 };
 
 type Json = Record<string, unknown>;
@@ -95,7 +100,8 @@ export function readEnvelope(json: unknown): Envelope | null {
 }
 
 export type Capture =
-  | { connector: "slack"; reaction: string; reactor: string; channel: string; ts: string }
+  /** `author` is who wrote the message (`message_user`); Slack omits it for app and system posts. */
+  | { connector: "slack"; reaction: string; reactor: string; author: string | null; channel: string; ts: string }
   | { connector: "gmail"; messageId: string | null; subject: string; body: string };
 
 export function toCapture(e: Envelope): Capture | null {
@@ -106,7 +112,7 @@ export function toCapture(e: Envelope): Capture | null {
     const channel = str(d.message_channel);
     const ts = str(d.message_ts);
     if (!reaction || !reactor || !channel || !ts) return null;
-    return { connector: "slack", reaction, reactor, channel, ts };
+    return { connector: "slack", reaction, reactor, author: str(d.message_user) ?? null, channel, ts };
   }
   if (e.trigger === TRIGGERS.gmail.slug) {
     const subject = str(d.subject) ?? "";
@@ -142,6 +148,22 @@ export const slackHistoryArgs = (channel: string, ts: string): Json => ({ channe
 export function readHistoryText(data: Json, ts: string): string | null {
   const first = Array.isArray(data.messages) ? obj(data.messages[0]) : {};
   return first.ts === ts ? (str(first.text) ?? null) : null;
+}
+
+/**
+ * Whether a captured message may go public before asking Slack about the
+ * channel: the member wrote it, and it isn't in a DM (`D…`) or a legacy
+ * private channel / group DM (`G…`). Otherwise it's saved owner-only.
+ */
+export const mayBePublic = (c: { channel: string; author: string | null }, member: string) =>
+  c.author === member && !/^[DG]/.test(c.channel);
+
+export const slackInfoArgs = (channel: string): Json => ({ channel });
+
+/** conversations.info confirms a public channel: all three flags present and false. Anything else is private. */
+export function isPublicChannel(data: Json): boolean {
+  const c = obj(data.channel);
+  return c.is_private === false && c.is_im === false && c.is_mpim === false;
 }
 
 export function readWhoami(data: Json): { userId: string | null; label: string | null } {

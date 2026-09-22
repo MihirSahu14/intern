@@ -4,10 +4,13 @@ import {
   BRAIN_REACTION,
   SLACK_TOOLS,
   gmailFact,
+  isPublicChannel,
+  mayBePublic,
   readEnvelope,
   readHistoryText,
   slackFact,
   slackHistoryArgs,
+  slackInfoArgs,
   toCapture,
   verifyWebhook,
 } from "../lib/inbound.ts";
@@ -21,7 +24,10 @@ import { connectorKey, visibility } from "./schema";
 
 /**
  * POST /composio/webhook: members adding to the brain from their own tools.
- * 🧠 on a Slack message → a public fact (reacting is choosing to share it).
+ * 🧠 on a Slack message → a fact. Public (and broadcast) only for the
+ * member's own words in a channel Slack confirms is public; anything else
+ * they 🧠 (a DM, a private channel, someone else's message) is saved for
+ * them alone: they meant to keep it, not to publish it.
  * The `Intern` label on an email → an owner-only fact (it's their mail), and
  * only through the opt-in capture grant (see connections.ts).
  *
@@ -118,6 +124,7 @@ export const webhook = httpAction(async (ctx, req) => {
 
   let fact: { title: string; body: string } | null;
   let source: string;
+  let isPublic = false;
   if (cap.connector === "slack") {
     // Only the member's own 🧠 puts a message in the public brain.
     if (cap.reaction !== BRAIN_REACTION || !who.externalUserId || cap.reactor !== who.externalUserId) return done("ignored");
@@ -139,10 +146,27 @@ export const webhook = httpAction(async (ctx, req) => {
       console.log(`inbound: slack history lookup failed for ${who.userId}: ${String(err)}`);
       return done("lookup failed");
     }
+    if (fact && mayBePublic(cap, who.externalUserId)) {
+      try {
+        const info = await execute(apiKey, SLACK_TOOLS.info, {
+          userId: who.userId,
+          toolkit: "slack",
+          accountId: who.composioAccountId,
+          arguments: slackInfoArgs(cap.channel),
+        });
+        isPublic = isPublicChannel(info);
+      } catch (err) {
+        // Can't confirm the channel is public, so it isn't: saved owner-only.
+        console.log(`inbound: slack channel lookup failed for ${who.userId}: ${String(err)}`);
+      }
+    }
   } else {
-    const id = cap.messageId ?? envelope.id;
-    if (!id) return done("no message id");
-    source = `gmail:${id}`;
+    // Only Gmail's own id: a delivery id changes on every re-poll, so it can't dedupe the mail.
+    if (!cap.messageId) {
+      console.log(`inbound: gmail event ${envelope.id ?? "(no id)"} has no message id; dropped`);
+      return done("no message id");
+    }
+    source = `gmail:${cap.messageId}`;
     fact = gmailFact(cap);
   }
   if (!fact) return done("empty");
@@ -150,9 +174,9 @@ export const webhook = httpAction(async (ctx, req) => {
   const r: { stored: boolean; reason: string | null } = await ctx.runMutation(internal.inbound.capture, {
     userId: who.userId,
     ...fact,
-    visibility: cap.connector === "slack" ? "public" : "owner",
+    visibility: isPublic ? "public" : "owner",
     source,
   });
-  console.log(`inbound: ${envelope.trigger} for ${who.userId}: ${r.stored ? "captured" : r.reason}`);
+  console.log(`inbound: ${envelope.trigger} for ${who.userId}: ${r.stored ? `captured ${isPublic ? "public" : "owner-only"}` : r.reason}`);
   return done(r.stored ? "captured" : (r.reason ?? "dropped"));
 });
