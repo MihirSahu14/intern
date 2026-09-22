@@ -8,6 +8,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
+import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
 import { actionKind, draft, factKind, logLevel, visibility } from "./schema";
@@ -340,6 +341,7 @@ export const finish = internalMutation({
         recalledCorrection: intern.recalledCorrection ?? false,
       });
       await log("warn", `drafted a ${a.action.kind} · waiting for approval`);
+      await broadcast(ctx, { type: "drafted", handle: (await ownerView(ctx, intern.ownerId)).handle, kind: a.action.kind });
       parseOutcome = "action";
     } else if (a.actionError) {
       await log("err", `${a.actionError}. Nothing was queued.`);

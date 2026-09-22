@@ -5,6 +5,8 @@ import type { Draft } from "../lib/types.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { ownerView } from "./access";
+import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
 
@@ -132,6 +134,7 @@ export const finish = internalMutation({
     const fact = sentFact(c.key, action.accepted ?? action.draft, now);
     await insertFact(ctx, { ...fact, kind: "note", visibility: "owner", ownerId: action.ownerId, internId: action.internId });
     await log("ok", `Sent from your ${c.label}.`);
+    await broadcast(ctx, { type: "sent", handle: (await ownerView(ctx, action.ownerId)).handle, connector: c.key });
     return null;
   },
 });

@@ -15,6 +15,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type MutationCtx, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
+import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
 
@@ -188,6 +189,7 @@ export const decide = mutation({
       const c = correctionFromEdit(action.kind, action.draft, accepted, fields);
       await insertFact(ctx, { ...c, kind: "preference", visibility, ownerId: user._id, internId: action.internId });
       await log("ok", visibility ? "learned a preference from your edit, private to you" : `learned: ${c.title}`);
+      if (!visibility) await broadcast(ctx, { type: "learned", handle: user.handle ?? user.name ?? "someone", title: c.title });
     }
     if (live) {
       await ctx.scheduler.runAfter(0, internal.send.go, { actionId: action._id });

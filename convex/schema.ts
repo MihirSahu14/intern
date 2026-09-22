@@ -202,4 +202,10 @@ export default defineSchema({
     .index("by_userId_and_connector", ["userId", "connector"])
     .index("by_state", ["state"])
     .index("by_composioAccountId", ["composioAccountId"]),
+
+  /** One row per UTC hour: how many broadcasts went out. */
+  broadcasts: defineTable({
+    hour: v.string(),
+    count: v.number(),
+  }).index("by_hour", ["hour"]),
 });

@@ -3,6 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireMember } from "./access";
+import { broadcast } from "./broadcast";
 
 export const viewer = query({
   args: {},
@@ -24,8 +25,11 @@ export const accept = mutation({
   args: {},
   handler: async (ctx) => {
     const userId = await getAuthUserId(ctx);
-    if (!userId) throw new ConvexError("Sign in first.");
-    await ctx.db.patch("users", userId, { acceptedAt: Date.now() });
+    const user = userId ? await ctx.db.get("users", userId) : null;
+    if (!user) throw new ConvexError("Sign in first.");
+    if (user.acceptedAt) return null;
+    await ctx.db.patch("users", user._id, { acceptedAt: Date.now() });
+    if (!user.bannedAt) await broadcast(ctx, { type: "joined", handle: user.handle ?? user.name ?? "someone" });
     return null;
   },
 });
