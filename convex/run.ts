@@ -31,15 +31,15 @@ export const go = internalAction({
       const started = await ctx.runMutation(internal.interns.start, { internId });
       if (!started) return null;
 
-      const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task });
+      const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task, ownerId: started.ownerId });
       await ctx.runMutation(internal.interns.noteRecall, {
         internId,
-        recalled: recalled.map((f) => ({ id: f.id, kind: f.kind })),
+        recalled: recalled.map((f) => ({ id: f.id, kind: f.kind, visibility: f.visibility })),
       });
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
       await say("sys", "thinking · gemini");
 
-      const prompt = brief(started.task, recalled);
+      const prompt = brief(started.task, recalled, started.sendsFrom);
       let report = "";
       let pending = "";
       for await (const chunk of stream(prompt)) {

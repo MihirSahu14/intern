@@ -1,12 +1,13 @@
 "use client";
 
 import { useAuthActions } from "@convex-dev/auth/react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import type { Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction, Question } from "@/lib/types";
+import { CONNECTORS, connectorByKey, type ConnectorKey } from "@/lib/connectors";
+import type { ActionKind, Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction, Question } from "@/lib/types";
 import BrainGraph from "./BrainGraph";
 import BrainRail from "./BrainRail";
 import CommandBar, { HELP } from "./CommandBar";
@@ -31,12 +32,51 @@ const EXAMPLES = [
 const why = (err: unknown) =>
   err instanceof ConvexError ? String(err.data) : err instanceof Error ? err.message : String(err);
 
+const SESSION_URI = "intern.composio_session_uri";
+
+/**
+ * Moves Composio's verifier `session_uri` out of the URL into sessionStorage,
+ * so it survives a sign-in round trip in this tab. Gate calls it on every
+ * load, before anyone is signed in.
+ */
+export function stashSessionUri() {
+  const uri = new URL(window.location.href).searchParams.get("session_uri");
+  if (!uri) return;
+  try {
+    sessionStorage.setItem(SESSION_URI, uri);
+  } catch {
+    return; // Storage blocked: leave it in the URL for takeSessionUri.
+  }
+  dropFromUrl();
+}
+
+function dropFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("session_uri");
+  window.history.replaceState(null, "", url);
+}
+
+/** The stashed `session_uri`, once: it is single-use at Composio anyway. */
+function takeSessionUri(): string | null {
+  stashSessionUri();
+  let uri: string | null = null;
+  try {
+    uri = sessionStorage.getItem(SESSION_URI);
+    sessionStorage.removeItem(SESSION_URI);
+  } catch {
+    uri = new URL(window.location.href).searchParams.get("session_uri");
+  }
+  dropFromUrl();
+  return uri;
+}
+
 export default function Cockpit({ me }: { me: Me }) {
   const internRows = useQuery(api.interns.list, {});
   const logRows = useQuery(api.interns.logs, {});
   const actionRows = useQuery(api.outbox.list, {});
   const questionRows = useQuery(api.questions.list, {});
   const graphData = useQuery(api.facts.graph, {});
+  const connectorRows = useQuery(api.connections.mine, {});
 
   const spawnM = useMutation(api.interns.spawn);
   const cancelM = useMutation(api.interns.cancel);
@@ -46,6 +86,11 @@ export default function Cockpit({ me }: { me: Me }) {
   const dismissM = useMutation(api.questions.dismiss);
   const teachM = useMutation(api.facts.teach);
   const deleteMineM = useMutation(api.users.deleteMine);
+  const finishM = useAction(api.connections.finish);
+  const resendM = useMutation(api.outbox.resend);
+  const confirmUnsentM = useMutation(api.outbox.confirmUnsent);
+  const startConnectA = useAction(api.connections.start);
+  const disconnectA = useAction(api.connections.disconnect);
 
   const [local, setLocal] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
@@ -58,6 +103,26 @@ export default function Cockpit({ me }: { me: Me }) {
   const echo = useCallback((level: LogLevel, text: string) => {
     setLocal((prev) => [...prev, { id: -++localSeq.current, internId: null, ownerId: null, ts: Date.now(), level, text }]);
   }, []);
+
+  // --- back from Composio's consent screen -----------------------------------
+  // The project's verifier URL is this page: Composio sends the browser that
+  // consented here with a one-time session_uri, and redeeming it as the
+  // signed-in member is what makes the connection live (connections.finish).
+  const finishedOnce = useRef(false);
+  useEffect(() => {
+    if (finishedOnce.current) return;
+    finishedOnce.current = true;
+    const sessionUri = takeSessionUri();
+    if (!sessionUri) return;
+    echo("sys", "finishing the connection…");
+    finishM({ sessionUri })
+      .then((r) => {
+        const label = r.connector ? connectorByKey(r.connector).label : "account";
+        if (r.ok) echo("ok", `${label} connected`);
+        else echo("err", r.reason ?? `connecting ${label} didn't go through.`);
+      })
+      .catch((err) => echo("err", why(err)));
+  }, [echo, finishM]);
 
   // --- server rows → the shapes the existing components take ---------------
   const interns = useMemo<Intern[]>(
@@ -99,46 +164,53 @@ export default function Cockpit({ me }: { me: Me }) {
     [logRows, local],
   );
 
-  // Your own drafts and questions only: only you can act on them.
+  // Your own drafts and questions only: only you can act on them, and only
+  // your own rows carry their contents.
   const outbox = useMemo<ProposedAction[]>(
     () =>
-      (actionRows ?? [])
-        .filter((a) => a.ownerId === me.userId)
-        .map((a) => ({
-          id: a._id,
-          internId: a.internId,
-          ownerId: a.ownerId,
-          kind: a.kind,
-          status: a.status,
-          title: a.title,
-          draft: a.draft,
-          accepted: a.accepted,
-          editedFields: a.editedFields as ProposedAction["editedFields"],
-          rationale: a.rationale,
-          sources: a.sources,
-          createdAt: a._creationTime,
-          decidedAt: a.decidedAt,
-          decidedVia: "cockpit",
-          result: a.reason,
-        })),
+      (actionRows ?? []).flatMap((a) =>
+        "draft" in a && a.ownerId === me.userId
+          ? [{
+              id: a._id,
+              internId: a.internId,
+              ownerId: a.ownerId,
+              kind: a.kind,
+              status: a.status,
+              title: a.title,
+              draft: a.draft,
+              accepted: a.accepted,
+              editedFields: a.editedFields as ProposedAction["editedFields"],
+              rationale: a.rationale,
+              sources: a.sources,
+              createdAt: a._creationTime,
+              decidedAt: a.decidedAt,
+              decidedVia: "cockpit" as const,
+              result: a.reason,
+              connector: a.connector,
+              sendError: a.sendError,
+            }]
+          : [],
+      ),
     [actionRows, me.userId],
   );
 
   const questions = useMemo<Question[]>(
     () =>
-      (questionRows ?? [])
-        .filter((q) => q.ownerId === me.userId)
-        .map((q) => ({
-          id: q._id,
-          internId: q.internId,
-          ownerId: q.ownerId,
-          question: q.question,
-          context: q.context,
-          status: q.status,
-          answer: q.answer,
-          askedAt: q._creationTime,
-          resumedBy: q.resumedBy,
-        })),
+      (questionRows ?? []).flatMap((q) =>
+        "question" in q && q.ownerId === me.userId
+          ? [{
+              id: q._id,
+              internId: q.internId,
+              ownerId: q.ownerId,
+              question: q.question,
+              context: q.context,
+              status: q.status,
+              answer: q.answer,
+              askedAt: q._creationTime,
+              resumedBy: q.resumedBy,
+            }]
+          : [],
+      ),
     [questionRows, me.userId],
   );
 
@@ -154,6 +226,15 @@ export default function Cockpit({ me }: { me: Me }) {
 
   const selected = useMemo(() => graph.nodes.find((n) => n.id === selectedId) ?? null, [graph.nodes, selectedId]);
   const select = useCallback((node: GraphNode | null) => setSelectedId(node?.id ?? null), []);
+
+  // Which of the viewer's connected accounts each draft kind would really go out through.
+  const sendsVia = useMemo(
+    () =>
+      Object.fromEntries(
+        (connectorRows ?? []).filter((c) => c.configured && c.connected).map((c) => [c.forKind, c.label]),
+      ) as Partial<Record<ActionKind, string>>,
+    [connectorRows],
+  );
 
   // Running interns pulse, and so do the facts they recalled.
   const activeIds = useMemo(
@@ -198,12 +279,43 @@ export default function Cockpit({ me }: { me: Me }) {
     [cancelM, echo],
   );
 
+  const connect = useCallback(
+    async (key: ConnectorKey) => {
+      try {
+        window.location.href = await startConnectA({ connector: key });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [startConnectA, echo],
+  );
+
+  const disconnect = useCallback(
+    async (key: ConnectorKey) => {
+      try {
+        await disconnectA({ connector: key });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [disconnectA, echo],
+  );
+
   const decide = useCallback(
     async (id: string, d: Decision) => {
       try {
         if (d.decision === "approve") {
           const { to, cc, subject, body } = d.edits ?? {};
-          await decideM({ actionId: id as Id<"actions">, decision: "approve", edits: d.edits ? { to, cc, subject, body } : undefined });
+          const r = await decideM({
+            actionId: id as Id<"actions">,
+            decision: "approve",
+            edits: d.edits ? { to, cc, subject, body } : undefined,
+          });
+          if (r?.needsConnect) {
+            const label = CONNECTORS.find((c) => c.key === r.needsConnect)?.label ?? r.needsConnect;
+            echo("warn", `connect ${label} to send this. the draft waits here with your edits.`);
+            await connect(r.needsConnect);
+          }
         } else {
           await decideM({ actionId: id as Id<"actions">, decision: "reject", reason: d.reason });
         }
@@ -211,7 +323,29 @@ export default function Cockpit({ me }: { me: Me }) {
         echo("err", why(err));
       }
     },
-    [decideM, echo],
+    [decideM, connect, echo],
+  );
+
+  const resend = useCallback(
+    async (id: string) => {
+      try {
+        await resendM({ actionId: id as Id<"actions"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [resendM, echo],
+  );
+
+  const confirmUnsent = useCallback(
+    async (id: string) => {
+      try {
+        await confirmUnsentM({ actionId: id as Id<"actions"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [confirmUnsentM, echo],
   );
 
   const answer = useCallback(
@@ -348,7 +482,16 @@ export default function Cockpit({ me }: { me: Me }) {
       <div className="shrink-0 border-b border-warn/30 bg-warn/5 px-3 py-1 text-warn">{NOTICE}</div>
 
       <div className="flex min-h-0 flex-1">
-        <BrainRail graph={graph} hidden={hidden} onToggleKind={toggleKind} selected={selected} onSelect={select} />
+        <BrainRail
+          graph={graph}
+          hidden={hidden}
+          onToggleKind={toggleKind}
+          selected={selected}
+          onSelect={select}
+          connectors={connectorRows ?? []}
+          onConnect={(k) => void connect(k)}
+          onDisconnect={(k) => void disconnect(k)}
+        />
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
@@ -426,7 +569,13 @@ export default function Cockpit({ me }: { me: Me }) {
             onAnswer={answer}
             onDismiss={dismiss}
           />
-          <Outbox actions={outbox} onDecide={decide} />
+          <Outbox
+            actions={outbox}
+            sendsVia={sendsVia}
+            onDecide={decide}
+            onResend={(id) => void resend(id)}
+            onConfirmUnsent={(id) => void confirmUnsent(id)}
+          />
           <Feed />
           <InternRail
             interns={interns}

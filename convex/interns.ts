@@ -1,12 +1,16 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
 import { PROMPT_VERSION } from "../lib/brief.ts";
+import { CONNECTORS, isConfigured } from "../lib/connectors.ts";
+import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
+import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
-import { actionKind, draft, factKind, logLevel } from "./schema";
+import { actionKind, draft, factKind, logLevel, visibility } from "./schema";
 
 /**
  * Every rule about whether this person may start work right now. Shared by
@@ -37,12 +41,18 @@ async function assertWithinCaps(ctx: MutationCtx, ownerId: Id<"users">) {
   if (blocked) throw new ConvexError(blocked);
 }
 
-/** Caps, then insert, then schedule. Shared by spawn and by answering a question. */
+/**
+ * Caps, then insert, then schedule. Shared by spawn and by answering a
+ * question. `displayTask` is the safe-to-show version of `task` — set when
+ * `task` was assembled from a question and its answer, which can quote the
+ * owner's private facts; a fresh brief has nothing to hide behind it.
+ */
 export async function dispatch(
   ctx: MutationCtx,
   ownerId: Id<"users">,
   task: string,
   resumes?: Id<"interns">,
+  displayTask?: string,
 ): Promise<Id<"interns">> {
   if (!task) throw new ConvexError("Give the intern a task.");
   if (task.length > MAX_BRIEF_CHARS) {
@@ -53,6 +63,7 @@ export async function dispatch(
   const internId = await ctx.db.insert("interns", {
     ownerId,
     task,
+    displayTask,
     status: "queued",
     resumes,
     countsTowardCap: true,
@@ -142,14 +153,56 @@ export const cancel = mutation({
 export const list = query({
   args: {},
   handler: async (ctx) => {
+    const viewer = await getAuthUserId(ctx);
     const rows = await ctx.db.query("interns").order("desc").take(40);
-    return await Promise.all(rows.map(async (i) => ({ ...i, ...(await ownerView(ctx, i.ownerId)) })));
+    return await Promise.all(
+      rows.map(async (i) => ({
+        ...i,
+        ...(await ownerView(ctx, i.ownerId)),
+        // A brief is public, an address in it isn't — and a question-resumed
+        // `task` can quote the owner's private facts, so it's swapped for
+        // `displayTask` (the original ask) before redaction. The report
+        // (`summary`), the failure detail (`error`), which private facts were
+        // recalled (`recalledFactIds`) and whether this run touched anything
+        // private at all (`recalledPrivate`) are for the owner alone.
+        ...(i.ownerId === viewer
+          ? {}
+          : {
+              task: redactEmails(i.displayTask ?? i.task),
+              summary: undefined,
+              error: i.error ? "failed" : undefined,
+              recalledFactIds: undefined,
+              recalledPrivate: undefined,
+            }),
+      })),
+    );
   },
 });
 
+/**
+ * Oldest→newest, last 400. Other people's streamed output (`out`) is
+ * withheld: it carries the draft and whatever the intern recalled from its
+ * owner's private facts. An `err` line can likewise quote a rejected report
+ * (see `run.go`'s catch), so non-owners get a fixed string instead of the
+ * raw message. Their remaining lines come through with addresses redacted.
+ */
 export const logs = query({
   args: {},
-  handler: async (ctx) => (await ctx.db.query("logs").order("desc").take(400)).reverse(),
+  handler: async (ctx) => {
+    const viewer = await getAuthUserId(ctx);
+    const rows = (await ctx.db.query("logs").order("desc").take(400)).reverse();
+    const owners = new Map<Id<"interns">, Id<"users"> | null>();
+    const out: Doc<"logs">[] = [];
+    for (const l of rows) {
+      if (!owners.has(l.internId)) owners.set(l.internId, (await ctx.db.get("interns", l.internId))?.ownerId ?? null);
+      const owner = owners.get(l.internId);
+      if (viewer !== null && owner === viewer) out.push(l);
+      else if (l.level === "out") continue;
+      else if (l.level === "err") out.push({ ...l, text: "something went wrong" });
+      else out.push({ ...l, text: redactEmails(l.text) });
+    }
+    return out;
+  },
 });
 
 // --- called by run.go ------------------------------------------------------
@@ -168,17 +221,33 @@ export const start = internalMutation({
       }
       return null;
     }
+    // Which of the owner's accounts a draft from this run would really go out through.
+    const sendsFrom: string[] = [];
+    for (const c of CONNECTORS) {
+      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) sendsFrom.push(c.label);
+    }
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION });
-    return { task: i.task };
+    return { task: i.task, ownerId: i.ownerId, sendsFrom };
   },
 });
 
 export const noteRecall = internalMutation({
-  args: { internId: v.id("interns"), recalled: v.array(v.object({ id: v.id("facts"), kind: factKind })) },
+  args: {
+    internId: v.id("interns"),
+    recalled: v.array(v.object({ id: v.id("facts"), kind: factKind, visibility: v.optional(visibility) })),
+  },
   handler: async (ctx, { internId, recalled }) => {
+    const intern = await ctx.db.get("interns", internId);
     await ctx.db.patch("interns", internId, {
       recalledFactIds: recalled.map((r) => r.id),
       recalledCorrection: recalled.some((r) => r.kind === "preference" || r.kind === "correction"),
+      // Computed once here, not re-derived by `finish`: a private fact this
+      // run read from stays private in whatever it goes on to file. A
+      // question-resumed run (`displayTask` set) is private by construction —
+      // its `task` quotes the answer verbatim whether or not recall's capped
+      // search happened to also surface the fact it came from — and this
+      // runs on every attempt, including a retry, so that can't go stale.
+      recalledPrivate: !!intern?.displayTask || recalled.some((r) => r.visibility === "owner"),
     });
     return null;
   },
@@ -246,13 +315,19 @@ export const finish = internalMutation({
         status: "open",
       });
       await ctx.db.patch("interns", a.internId, { ...base, status: "waiting", parseOutcome: "question" });
-      await log("warn", `asks: ${a.question.question}`);
+      // The question text is owner-only (questions.list); the public log line
+      // never carries it.
+      await log("warn", "asks a question");
       return null;
     }
 
+    // A fact this run filed is owner-only whenever it recalled anything
+    // private: an intern that read a private fact can restate it in its own
+    // words, so the *filed* fact needs the same guard the recalled one had.
+    const factVisibility: Doc<"facts">["visibility"] = intern.recalledPrivate ? "owner" : undefined;
     for (const f of a.facts) {
-      await insertFact(ctx, { ...f, ownerId: intern.ownerId, internId: a.internId });
-      await log("ok", `filed · ${f.title}`);
+      await insertFact(ctx, { ...f, ownerId: intern.ownerId, internId: a.internId, visibility: factVisibility });
+      await log("ok", factVisibility ? "filed a private fact" : `filed · ${f.title}`);
     }
 
     let parseOutcome = "none";

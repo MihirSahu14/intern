@@ -21,3 +21,7 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
   const u = await ctx.db.get("users", id);
   return { handle: u?.handle ?? u?.name ?? "someone", image: u?.image ?? null };
 }
+
+/** Owner-only facts reach their owner alone. Absent means public. */
+export const visibleTo = (f: Doc<"facts">, viewer: Id<"users"> | null) =>
+  f.visibility !== "owner" || (viewer !== null && f.ownerId === viewer);

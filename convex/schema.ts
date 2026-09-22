@@ -3,8 +3,9 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * The public community brain. Everyone reads everything; each row has one
- * owner who alone can change it.
+ * The public community brain: private drafts, shared brain. Everyone reads
+ * the public rows; owner-only facts and every draft's contents reach their
+ * owner alone. Each row has one owner who alone can change it.
  */
 
 export const factKind = v.union(
@@ -16,6 +17,25 @@ export const factKind = v.union(
 );
 
 export const actionKind = v.union(v.literal("email"), v.literal("slack"), v.literal("calendar"));
+
+export const actionStatus = v.union(
+  v.literal("pending"),
+  v.literal("approved"),
+  v.literal("rejected"),
+  // Only a draft going out through a member's connected account reaches these.
+  v.literal("sending"),
+  v.literal("sent"),
+  v.literal("failed"),
+  // A `failed` whose second Composio call never gave a clear answer — the
+  // tool may already have run. Not resendable; `outbox.confirmUnsent` is the
+  // owner clearing it to `failed` after checking their Sent folder.
+  v.literal("unsure"),
+);
+
+export const connectorKey = v.union(v.literal("gmail"), v.literal("slack"));
+
+/** Absent means public: every fact written before connectors existed. */
+export const visibility = v.union(v.literal("public"), v.literal("owner"));
 
 export const draft = v.object({
   to: v.array(v.string()),
@@ -71,6 +91,7 @@ export default defineSchema({
     kind: factKind,
     ownerId: v.optional(v.id("users")),
     internId: v.optional(v.id("interns")),
+    visibility: v.optional(visibility),
     text: v.string(),
   })
     .index("by_ownerId", ["ownerId"])
@@ -79,7 +100,10 @@ export default defineSchema({
 
   interns: defineTable({
     ownerId: v.id("users"),
+    /** The working prompt this run reads and recalls against — may quote a private Q&A. */
     task: v.string(),
+    /** The original ask, safe to show a non-owner in place of `task`. Set only when `task` was assembled from a question's answer. */
+    displayTask: v.optional(v.string()),
     status: internStatus,
     resumes: v.optional(v.id("interns")),
     summary: v.optional(v.string()),
@@ -92,6 +116,8 @@ export default defineSchema({
     promptVersion: v.optional(v.string()),
     recalledFactIds: v.optional(v.array(v.id("facts"))),
     recalledCorrection: v.optional(v.boolean()),
+    /** True when any recalled fact was owner-only — this run's own fact blocks then file owner-only too. */
+    recalledPrivate: v.optional(v.boolean()),
     tokensIn: v.optional(v.number()),
     tokensOut: v.optional(v.number()),
     latencyMs: v.optional(v.number()),
@@ -111,7 +137,7 @@ export default defineSchema({
     ownerId: v.id("users"),
     internId: v.id("interns"),
     kind: actionKind,
-    status: v.union(v.literal("pending"), v.literal("approved"), v.literal("rejected")),
+    status: actionStatus,
     title: v.string(),
     /** What the intern proposed. Never overwritten. */
     draft,
@@ -128,10 +154,17 @@ export default defineSchema({
     editRatio: v.optional(v.number()),
     reason: v.optional(v.string()),
     decidedAt: v.optional(v.number()),
+    /** Set when a connected account accepted the send. */
+    sentAt: v.optional(v.number()),
+    /** Composio's reason, when a send failed. */
+    sendError: v.optional(v.string()),
+    /** Which connected account it went through. Counts toward SENDS_PER_DAY. */
+    connector: v.optional(connectorKey),
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_status", ["status"])
-    .index("by_internId", ["internId"]),
+    .index("by_internId", ["internId"])
+    .index("by_ownerId_and_decidedAt", ["ownerId", "decidedAt"]),
 
   questions: defineTable({
     ownerId: v.id("users"),
@@ -151,4 +184,22 @@ export default defineSchema({
     costUsd: v.number(),
     runs: v.number(),
   }).index("by_date", ["date"]),
+
+  /**
+   * A member's link to one account at Composio. `state` keys the row until
+   * Composio's account id is known; after that `finish` finds it by
+   * `composioAccountId`. The user id never comes from a URL.
+   */
+  connections: defineTable({
+    userId: v.id("users"),
+    connector: connectorKey,
+    composioAccountId: v.optional(v.string()),
+    accountLabel: v.optional(v.string()),
+    status: v.union(v.literal("pending"), v.literal("active"), v.literal("failed")),
+    state: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_userId_and_connector", ["userId", "connector"])
+    .index("by_state", ["state"])
+    .index("by_composioAccountId", ["composioAccountId"]),
 });
