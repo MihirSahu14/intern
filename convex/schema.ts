@@ -224,6 +224,7 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_userId_and_connector", ["userId", "connector"])
+    .index("by_userId_and_createdAt", ["userId", "createdAt"])
     .index("by_state", ["state"])
     .index("by_composioAccountId", ["composioAccountId"]),
 

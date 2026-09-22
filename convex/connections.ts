@@ -32,6 +32,12 @@ import { connectorKey } from "./schema";
 /** How long a connect link stays finishable. */
 const FINISH_WINDOW = 15 * 60_000;
 
+/**
+ * Connect links one member may start in an hour. Each is a Composio call on a
+ * tier the whole community shares.
+ */
+const STARTS_PER_HOUR = 5;
+
 /** The member's live grant for one connector, if any: the send grant, or with `capture`, Gmail's read-only one. */
 export async function activeConnection(
   ctx: QueryCtx,
@@ -118,13 +124,19 @@ export const begin = internalMutation({
   args: { connector: connectorKey, state: v.string(), capture: v.optional(v.literal(true)) },
   handler: async (ctx, a) => {
     const user = await requireMember(ctx);
+    const now = Date.now();
+    const recent = await ctx.db
+      .query("connections")
+      .withIndex("by_userId_and_createdAt", (q) => q.eq("userId", user._id).gte("createdAt", now - 60 * 60_000))
+      .take(STARTS_PER_HOUR);
+    if (recent.length >= STARTS_PER_HOUR) throw new ConvexError("Too many connect attempts this hour. Try again later.");
     await ctx.db.insert("connections", {
       userId: user._id,
       connector: a.connector,
       capture: a.capture,
       status: "pending",
       state: a.state,
-      createdAt: Date.now(),
+      createdAt: now,
     });
     return user._id;
   },
@@ -274,7 +286,18 @@ export const finish = action({
       return { ok: false, connector: null, reason: "Couldn't reach Composio. Try again." };
     }
 
-    const { result, forget, fresh } = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
+    let activated: { result: Finish; forget: Forget[]; fresh: Fresh | null };
+    try {
+      activated = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
+    } catch (err) {
+      // Composio already verified the grant; with no row of ours live, nobody
+      // would ever delete it. Not revoked: the member may hold another live
+      // grant on the same account.
+      console.log(`connections.finish: activate failed for ${userId}: ${String(err)}`);
+      await forgetAccount(accountId, { revoke: false });
+      throw err;
+    }
+    const { result, forget, fresh } = activated;
     await forgetAll(forget);
     if (!fresh) return result;
 

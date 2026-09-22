@@ -1818,3 +1818,94 @@ test("a send's write-back doesn't use up the day's twenty facts", async () => {
 });
 
 // --- metering Composio, and grants nobody owns ------------------------------
+
+// --- metering Composio, and grants nobody owns ------------------------------
+
+test("connect: a sixth link in an hour is refused before Composio is called", async () => {
+  composioEnv();
+  vi.useFakeTimers();
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  for (let i = 0; i < 5; i++) {
+    await t.run((ctx) =>
+      ctx.db.insert("connections", { userId: a, connector: "gmail", status: "failed", state: `s${i}`, createdAt: Date.now() }),
+    );
+  }
+  const f = stubFetch({ session_id: "trs_1" }, linked);
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/Too many connect attempts/);
+  expect(f).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(5);
+
+  // An hour on, the old attempts no longer count.
+  vi.setSystemTime(Date.now() + 61 * 60_000);
+  expect(await asUser(a).action(api.connections.start, { connector: "gmail" })).toBe(linked.redirect_url);
+});
+
+test("webhook: a repeated 🧠 or a full day makes no Composio call at all", async () => {
+  inboundEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedActive(a, "slack", { externalUserId: "U123" });
+  await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "x",
+      body: "",
+      kind: "note",
+      ownerId: a,
+      visibility: "owner",
+      source: "slack:C1:1726900000.000100",
+      text: "x\n",
+    }),
+  );
+  const f = stubSlack({ text: "hello" });
+  expect(await (await t.fetch("/composio/webhook", await signed(slackEvent(a)))).text()).toBe("duplicate");
+  expect(f).not.toHaveBeenCalled();
+
+  await t.run(async (ctx) => {
+    await ctx.db.insert("connections", {
+      userId: b,
+      connector: "slack",
+      status: "active",
+      composioAccountId: "ca_2",
+      externalUserId: "U123",
+      state: "s",
+      createdAt: Date.now(),
+    });
+    for (let i = 0; i < 20; i++) await ctx.db.insert("facts", { title: `f${i}`, body: "", kind: "note", ownerId: b, text: `f${i}\n` });
+  });
+  expect(await (await t.fetch("/composio/webhook", await signed(slackEvent(b, { accountId: "ca_2" })))).text()).toBe("over the daily cap");
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("finish: if activation fails after Composio verified the grant, the account is deleted", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a);
+  let call = 0;
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => {
+    // Banned between Composio's answer and our write: `activate` refuses.
+    if (call++ === 0) await t.run((ctx) => ctx.db.patch("users", a, { bannedAt: Date.now() }));
+    return new Response(JSON.stringify(call === 1 ? completed : { success: true }));
+  });
+  vi.stubGlobal("fetch", f);
+  await expect(asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).rejects.toThrow(/blocked/);
+  expect(f.mock.calls[1][0]).toMatch(/\/connected_accounts\/ca_1$/);
+  expect(f.mock.calls[1][1]?.method).toBe("DELETE");
+});
+
+test("purge also deletes the account a still-pending link made at Composio", async () => {
+  composioEnv();
+  vi.useFakeTimers();
+  const { t, seedUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a, "slack", "s1", "ca_7");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "pending", state: "s2", createdAt: Date.now() }),
+  );
+  const f = stubFetch({ success: true });
+  await t.mutation(internal.users.purge, { userId: a });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/ca_7?revoke_on_delete=true"]);
+});

@@ -16,7 +16,7 @@ import {
 } from "../lib/inbound.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { httpAction, internalMutation, internalQuery } from "./_generated/server";
+import { type QueryCtx, httpAction, internalMutation, internalQuery } from "./_generated/server";
 import { memberProblem, ownerView } from "./access";
 import { broadcast } from "./broadcast";
 import { factCapBlocked, insertFact } from "./facts";
@@ -58,19 +58,34 @@ export const member = internalQuery({
   },
 });
 
+/** Why this source can't become one more fact for this member, or null if it can. */
+async function refusal(ctx: QueryCtx, userId: Id<"users">, source: string): Promise<string | null> {
+  const dup = await ctx.db
+    .query("facts")
+    .withIndex("by_ownerId_and_source", (q) => q.eq("ownerId", userId).eq("source", source))
+    .first();
+  if (dup) return "duplicate";
+  return (await factCapBlocked(ctx, userId)) ? "over the daily cap" : null;
+}
+
+/**
+ * `capture`'s refusals, asked before any Composio call: a redelivered or
+ * repeated 🧠, or a full day, costs the shared tier nothing. `capture` asks
+ * again inside the write, where it counts.
+ */
+export const precheck = internalQuery({
+  args: { userId: v.id("users"), source: v.string() },
+  handler: async (ctx, { userId, source }): Promise<string | null> => await refusal(ctx, userId, source),
+});
+
 /** requireMember's rules, one fact per source, and the 20 facts/day cap, all inside the write. */
 export const capture = internalMutation({
   args: { userId: v.id("users"), title: v.string(), body: v.string(), visibility, source: v.string() },
   handler: async (ctx, a): Promise<{ stored: boolean; reason: string | null }> => {
     const problem = memberProblem(await ctx.db.get("users", a.userId));
     if (problem) return { stored: false, reason: problem };
-    const dup = await ctx.db
-      .query("facts")
-      .withIndex("by_ownerId_and_source", (q) => q.eq("ownerId", a.userId).eq("source", a.source))
-      .first();
-    if (dup) return { stored: false, reason: "duplicate" };
-    const blocked = await factCapBlocked(ctx, a.userId);
-    if (blocked) return { stored: false, reason: "over the daily cap" };
+    const refused = await refusal(ctx, a.userId, a.source);
+    if (refused) return { stored: false, reason: refused };
     await insertFact(ctx, {
       title: a.title,
       body: a.body,
@@ -122,15 +137,27 @@ export const webhook = httpAction(async (ctx, req) => {
     return done("not a member");
   }
 
+  // Only the member's own 🧠 puts a message in the brain.
+  if (cap.connector === "slack" && (cap.reaction !== BRAIN_REACTION || !who.externalUserId || cap.reactor !== who.externalUserId)) {
+    return done("ignored");
+  }
+  // Only Gmail's own id: a delivery id changes on every re-poll, so it can't dedupe the mail.
+  if (cap.connector === "gmail" && !cap.messageId) {
+    console.log(`inbound: gmail event ${envelope.id ?? "(no id)"} has no message id; dropped`);
+    return done("no message id");
+  }
+  const source = cap.connector === "slack" ? `slack:${cap.channel}:${cap.ts}` : `gmail:${cap.messageId}`;
+  const early: string | null = await ctx.runQuery(internal.inbound.precheck, { userId: who.userId, source });
+  if (early) {
+    console.log(`inbound: ${envelope.trigger} for ${who.userId}: ${early}`);
+    return done(early);
+  }
+
   let fact: { title: string; body: string } | null;
-  let source: string;
   let isPublic = false;
   if (cap.connector === "slack") {
-    // Only the member's own 🧠 puts a message in the public brain.
-    if (cap.reaction !== BRAIN_REACTION || !who.externalUserId || cap.reactor !== who.externalUserId) return done("ignored");
     const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) return done("not connected");
-    source = `slack:${cap.channel}:${cap.ts}`;
+    if (!apiKey || !who.externalUserId) return done("not connected");
     try {
       // Reaction events carry no text: read it with the member's own grant.
       const data = await execute(apiKey, SLACK_TOOLS.history, {
@@ -161,12 +188,6 @@ export const webhook = httpAction(async (ctx, req) => {
       }
     }
   } else {
-    // Only Gmail's own id: a delivery id changes on every re-poll, so it can't dedupe the mail.
-    if (!cap.messageId) {
-      console.log(`inbound: gmail event ${envelope.id ?? "(no id)"} has no message id; dropped`);
-      return done("no message id");
-    }
-    source = `gmail:${cap.messageId}`;
     fact = gmailFact(cap);
   }
   if (!fact) return done("empty");
