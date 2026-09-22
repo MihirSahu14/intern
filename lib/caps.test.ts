@@ -3,9 +3,11 @@ import { test } from "node:test";
 import {
   BRIEFS_PER_DAY,
   FACTS_PER_DAY,
+  SENDS_PER_DAY,
   costUsd,
   dayKey,
   dayStart,
+  sendBlocked,
   spawnBlocked,
   teachBlocked,
 } from "./caps.ts";
@@ -46,4 +48,11 @@ test("the community budget outranks everything", () => {
 test("facts cap at twenty a day", () => {
   assert.equal(teachBlocked(FACTS_PER_DAY - 1), null);
   assert.match(teachBlocked(FACTS_PER_DAY) ?? "", /20 facts/);
+});
+
+test("sends cap at twenty a day", () => {
+  assert.equal(SENDS_PER_DAY, 20);
+  assert.equal(sendBlocked(SENDS_PER_DAY - 1), null);
+  assert.match(sendBlocked(SENDS_PER_DAY) ?? "", /20 sends/);
+  assert.match(sendBlocked(SENDS_PER_DAY) ?? "", /00:00 UTC/);
 });

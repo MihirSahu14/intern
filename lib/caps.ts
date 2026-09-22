@@ -56,6 +56,12 @@ export function spawnBlocked(s: {
 export const teachBlocked = (factsToday: number): string | null =>
   factsToday >= FACTS_PER_DAY ? `You've added ${FACTS_PER_DAY} facts today. ${RESETS}` : null;
 
+export const SENDS_PER_DAY = 20;
+
+export const sendBlocked = (sendsToday: number): string | null =>
+  sendsToday >= SENDS_PER_DAY ? `You've used your ${SENDS_PER_DAY} sends for today. ${RESETS}` : null;
+
 /** Said when the day's window overflows and the counts above stop being trustworthy. */
 export const tooManyBriefs = `You've started too many interns today. ${RESETS}`;
 export const tooManyFacts = `You've written too many facts today. ${RESETS}`;
+export const tooManySends = `You've decided too many drafts today to count your sends. ${RESETS}`;
