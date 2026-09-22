@@ -5,6 +5,7 @@ import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalQuery, mutation, query } from "./_generated/server";
 import { requireMember, visibleTo } from "./access";
+import { broadcast } from "./broadcast";
 import { factKind } from "./schema";
 
 type FactKind = Doc<"facts">["kind"];
@@ -43,7 +44,9 @@ export const teach = mutation({
     if (today.length > DAY_WINDOW) throw new ConvexError(tooManyFacts);
     const blocked = teachBlocked(today.length);
     if (blocked) throw new ConvexError(blocked);
-    return await insertFact(ctx, { title, body, kind: args.kind, ownerId: user._id });
+    const id = await insertFact(ctx, { title, body, kind: args.kind, ownerId: user._id });
+    await broadcast(ctx, { type: "taught", handle: user.handle ?? user.name ?? "someone", title });
+    return id;
   },
 });
 

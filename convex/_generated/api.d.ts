@@ -10,6 +10,7 @@
 
 import type * as access from "../access.js";
 import type * as auth from "../auth.js";
+import type * as broadcast from "../broadcast.js";
 import type * as community from "../community.js";
 import type * as connections from "../connections.js";
 import type * as facts from "../facts.js";
@@ -31,6 +32,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   access: typeof access;
   auth: typeof auth;
+  broadcast: typeof broadcast;
   community: typeof community;
   connections: typeof connections;
   facts: typeof facts;

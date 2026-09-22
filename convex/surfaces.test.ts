@@ -3,6 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import { broadcast } from "./broadcast";
 import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
@@ -1043,3 +1044,68 @@ test("a lesson from a draft that could reach a real person stays private", async
     expect.objectContaining({ kind: "correction", visibility: "owner" }),
   ]);
 });
+
+function broadcastEnv() {
+  vi.stubEnv("BROADCAST_DISCORD_WEBHOOK_URL", "https://discord.test/hook");
+  vi.stubEnv("BROADCAST_SLACK_WEBHOOK_URL", "https://slack.test/hook");
+  vi.stubEnv("SITE_URL", "https://site.test");
+}
+
+test("broadcast: off when no webhook is set", async () => {
+  const { t } = setup();
+  await t.run((ctx) => broadcast(ctx, { type: "joined", handle: "a" }));
+  expect(await t.run((ctx) => ctx.db.query("broadcasts").collect())).toHaveLength(0);
+});
+
+test("broadcast: thirty an hour reach both webhooks, the thirty-first is dropped", async () => {
+  broadcastEnv();
+  const f = stubFetch({});
+  const { t } = setup();
+  for (let i = 0; i < 31; i++) await t.run((ctx) => broadcast(ctx, { type: "joined", handle: `m${i}` }));
+  expect((await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count).toBe(30);
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(f).toHaveBeenCalledTimes(60);
+  const calls = f.mock.calls.map(([url, init]) => [url, JSON.parse(String(init?.body))]);
+  expect(calls).toContainEqual([
+    "https://discord.test/hook",
+    { content: "@m0 joined the brain · https://site.test/u/m0", username: "Intern", allowed_mentions: { parse: [] } },
+  ]);
+  expect(calls).toContainEqual(["https://slack.test/hook", { text: "@m0 joined the brain · https://site.test/u/m0" }]);
+  expect(JSON.stringify(calls)).not.toContain("m30");
+});
+
+test("broadcast hooks: joining once and teaching post; accepting again does not", async () => {
+  broadcastEnv();
+  // A stub, drained below: an unfinished scheduled action's real timer would
+  // otherwise fire mid-way through a later test and reach that test's fetch.
+  stubFetch({});
+  const { t, asUser } = setup();
+  const a = await t.run((ctx) => ctx.db.insert("users", { handle: "ann" }));
+  await asUser(a).mutation(api.users.accept, {});
+  await asUser(a).mutation(api.users.accept, {});
+  await asUser(a).mutation(api.facts.teach, { title: "We ship Fridays", body: "", kind: "note" });
+  expect((await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count).toBe(2);
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+});
+
+test("a successful send broadcasts who sent, never to whom", async () => {
+  composioEnv();
+  broadcastEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const posts = f.mock.calls.filter(([url]) => url === "https://discord.test/hook").map(([, init]) => String(init?.body));
+  expect(posts).toEqual([JSON.stringify(discordLine("@a sent an email · https://site.test/u/a"))]);
+});
+
+const discordLine = (content: string) => ({ content, username: "Intern", allowed_mentions: { parse: [] } });
