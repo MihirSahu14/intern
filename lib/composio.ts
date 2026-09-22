@@ -13,9 +13,15 @@
  *   /reference/api-reference/tool-router/postToolRouterSession.md
  *   /reference/api-reference/tool-router/postToolRouterSessionBySessionIdLink.md
  *   /reference/api-reference/tool-router/postToolRouterSessionBySessionIdExecute.md
- *   /reference/api-reference/connected-accounts/getConnectedAccountsByNanoid.md
  *   /reference/api-reference/connected-accounts/deleteConnectedAccountsByNanoid.md
- *   /docs/authentication/manually-authenticating.md (callback's status, connected_account_id)
+ *   /reference/api-reference/connected-accounts.md#callback-identity-verification
+ *   /reference/api-reference/connected-accounts/postConnectedAccountsCompleteAuth.md
+ *
+ * Connections finish through callback identity verification: the project's
+ * verifier URL (dashboard setting) is our cockpit, Composio sends the browser
+ * that consented there with a single-use `session_uri`, and nothing activates
+ * until we redeem it with the signed-in member's id. A link's callback_url is
+ * not used once a verifier is set, so `connect` sends none.
  */
 
 export const COMPOSIO_API = "https://backend.composio.dev/api/v3.1";
@@ -26,13 +32,22 @@ export const PATHS = {
   link: (sessionId: string) => `/tool_router/session/${enc(sessionId)}/link`,
   execute: (sessionId: string) => `/tool_router/session/${enc(sessionId)}/execute`,
   account: (id: string) => `/connected_accounts/${enc(id)}`,
+  completeAuth: "/connected_accounts/complete_auth",
 };
 
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
-export class ComposioError extends Error {}
+export class ComposioError extends Error {
+  constructor(
+    message: string,
+    /** Composio's HTTP status, when it answered with one. */
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 
 /** Composio's own words for what went wrong, plus the id its support asks for. */
 function reason(j: Json): string | undefined {
@@ -42,7 +57,7 @@ function reason(j: Json): string | undefined {
   return msg && (id ? `${msg} (${id})` : msg);
 }
 
-async function call(apiKey: string, method: "GET" | "POST" | "DELETE", path: string, body?: Json): Promise<Json> {
+async function call(apiKey: string, method: "POST" | "DELETE", path: string, body?: Json): Promise<Json> {
   const res = await fetch(`${COMPOSIO_API}${path}`, {
     method,
     headers: body ? { "x-api-key": apiKey, "content-type": "application/json" } : { "x-api-key": apiKey },
@@ -55,7 +70,7 @@ async function call(apiKey: string, method: "GET" | "POST" | "DELETE", path: str
   } catch {
     // Not JSON: the raw text goes into the error below.
   }
-  if (!res.ok) throw new ComposioError(`composio ${res.status}: ${reason(json) ?? text.slice(0, 200)}`);
+  if (!res.ok) throw new ComposioError(`composio ${res.status}: ${reason(json) ?? text.slice(0, 200)}`, res.status);
   return json;
 }
 
@@ -68,34 +83,36 @@ async function session(apiKey: string, body: Json): Promise<string> {
 
 /**
  * Starts a connection for one of our users. Returns where to send the browser
- * and the account Composio created for it, which the callback must match.
+ * and the account Composio created for it, which `finish` must match.
  */
 export async function connect(
   apiKey: string,
-  a: { userId: string; toolkit: string; authConfigId?: string; callbackUrl: string },
+  a: { userId: string; toolkit: string; authConfigId?: string },
 ): Promise<{ redirectUrl: string; accountId: string }> {
   const id = await session(apiKey, {
     user_id: a.userId,
     ...(a.authConfigId ? { auth_configs: { [a.toolkit]: a.authConfigId } } : {}),
   });
-  const j = await call(apiKey, "POST", PATHS.link(id), { toolkit: a.toolkit, callback_url: a.callbackUrl });
+  const j = await call(apiKey, "POST", PATHS.link(id), { toolkit: a.toolkit });
   const redirectUrl = str(j.redirect_url);
   const accountId = str(j.connected_account_id);
   if (!redirectUrl || !accountId) throw new ComposioError("composio link returned no redirect_url or connected_account_id");
   return { redirectUrl, accountId };
 }
 
-/** `userId` is deprecated on this endpoint and may stop coming back. */
-export type Account = { id: string; status: string; toolkit: string; userId?: string };
-
-export async function getAccount(apiKey: string, id: string): Promise<Account> {
-  const j = await call(apiKey, "GET", PATHS.account(id));
-  return {
-    id: str(j.id) ?? "",
-    status: str(j.status) ?? "",
-    toolkit: (str(obj(j.toolkit).slug) ?? "").toLowerCase(),
-    ...(str(j.user_id) ? { userId: str(j.user_id) } : {}),
-  };
+/**
+ * Redeems the verifier's `session_uri` for the signed-in member. Composio
+ * activates the connection only if `userId` owns it: a mismatch is a 400 and
+ * fails the connection; a spent, expired or unknown session is a 404.
+ */
+export async function completeAuth(
+  apiKey: string,
+  a: { sessionUri: string; userId: string },
+): Promise<{ accountId: string; toolkit: string }> {
+  const j = await call(apiKey, "POST", PATHS.completeAuth, { session_uri: a.sessionUri, user_id: a.userId });
+  const accountId = str(j.connected_account_id);
+  if (!accountId) throw new ComposioError("composio complete_auth returned no connected_account_id");
+  return { accountId, toolkit: (str(j.toolkit_slug) ?? "").toLowerCase() };
 }
 
 export async function deleteAccount(apiKey: string, id: string): Promise<void> {

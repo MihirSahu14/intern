@@ -1,7 +1,7 @@
 "use client";
 
 import { useAuthActions } from "@convex-dev/auth/react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/convex/_generated/api";
@@ -47,7 +47,7 @@ export default function Cockpit({ me }: { me: Me }) {
   const dismissM = useMutation(api.questions.dismiss);
   const teachM = useMutation(api.facts.teach);
   const deleteMineM = useMutation(api.users.deleteMine);
-  const finishM = useMutation(api.connections.finish);
+  const finishM = useAction(api.connections.finish);
 
   const [local, setLocal] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
@@ -62,38 +62,27 @@ export default function Cockpit({ me }: { me: Me }) {
   }, []);
 
   // --- back from Composio's consent screen -----------------------------------
-  // The callback only hands us the link's state; finishing it as the signed-in
-  // member is what makes the connection live (connections.finish).
-  const [finishing, setFinishing] = useState<{ state: string; label: string } | null>(null);
-  const finishOutcome = useQuery(api.connections.outcome, finishing ? { state: finishing.state } : "skip");
+  // The project's verifier URL is this page: Composio sends the browser that
+  // consented here with a one-time session_uri, and redeeming it as the
+  // signed-in member is what makes the connection live (connections.finish).
   const finishedOnce = useRef(false);
   useEffect(() => {
     if (finishedOnce.current) return;
     finishedOnce.current = true;
     const url = new URL(window.location.href);
-    const state = url.searchParams.get("finish");
-    const failed = url.searchParams.has("connect_failed");
-    if (!state && !failed) return;
-    url.searchParams.delete("finish");
-    url.searchParams.delete("connect_failed");
+    const sessionUri = url.searchParams.get("session_uri");
+    if (!sessionUri) return;
+    url.searchParams.delete("session_uri");
     window.history.replaceState(null, "", url);
-    if (!state) return echo("err", "that connect link is unknown or was already used. try again.");
-    finishM({ state })
+    echo("sys", "finishing the connection…");
+    finishM({ sessionUri })
       .then((r) => {
         const label = r.connector ? connectorByKey(r.connector).label : "account";
-        if (!r.ok) return echo("err", r.reason ?? `connecting ${label} didn't go through.`);
-        echo("sys", `connecting ${label}…`);
-        setFinishing({ state, label });
+        if (r.ok) echo("ok", `${label} connected`);
+        else echo("err", r.reason ?? `connecting ${label} didn't go through.`);
       })
       .catch((err) => echo("err", why(err)));
   }, [echo, finishM]);
-  const reported = useRef<string | null>(null);
-  useEffect(() => {
-    if (!finishing || !finishOutcome || finishOutcome === "pending" || reported.current === finishing.state) return;
-    reported.current = finishing.state;
-    if (finishOutcome === "active") echo("ok", `${finishing.label} connected`);
-    else echo("err", `${finishing.label} didn't connect: Composio didn't confirm the account. try again.`);
-  }, [echo, finishing, finishOutcome]);
 
   // --- server rows → the shapes the existing components take ---------------
   const interns = useMemo<Intern[]>(
