@@ -127,27 +127,50 @@ export async function deleteAccount(apiKey: string, id: string, a: { revoke: boo
 }
 
 /**
- * Runs one tool as one member, on a session pinned to their account (Composio
- * refuses an account that isn't that user's: "Each account must exist ... and
- * belong to the same `user_id` as the session", `connected_accounts` in
- * /reference/api-reference/tool-router/postToolRouterSession.md). The session
- * can run only this one tool, with no workbench. Throws ComposioError carrying
- * Composio's reason and log id.
+ * Opens a session pinned to one member's account (Composio refuses an account
+ * that isn't that user's: "Each account must exist ... and belong to the same
+ * `user_id` as the session", `connected_accounts` in
+ * /reference/api-reference/tool-router/postToolRouterSession.md), scoped to
+ * run only this one tool, with no workbench. Split out from `runSendTool` so a
+ * caller can tell "the session never opened" (nothing was sent, always safe
+ * to retry) apart from "the tool call itself failed" (maybe sent) — see
+ * `convex/send.ts`'s `go`.
  * ponytail: a session per send; persist its id on the connection if volume grows.
  */
+export async function startSendSession(
+  apiKey: string,
+  a: { userId: string; toolkit: string; accountId: string; tool: string },
+): Promise<string> {
+  return await session(apiKey, {
+    user_id: a.userId,
+    connected_accounts: { [a.toolkit]: [a.accountId] },
+    toolkits: { enable: [a.toolkit] },
+    tools: { [a.toolkit]: { enable: [a.tool] } },
+    workbench: { enable: false },
+  });
+}
+
+/**
+ * Runs `tool` on a session `startSendSession` already opened. Throws
+ * ComposioError carrying Composio's reason, log id, and (when the request
+ * got an answer at all) the HTTP status: a `j.error` on an otherwise-2xx
+ * response is Composio's own clear "this didn't run", so it's tagged 200
+ * rather than left status-less like a dropped connection would be — status
+ * `undefined` or >= 500 is the only case a caller can't be sure the tool
+ * never ran.
+ */
+export async function runSendTool(apiKey: string, sessionId: string, tool: string, args: Json): Promise<Json> {
+  const j = await call(apiKey, "POST", PATHS.execute(sessionId), { tool_slug: tool, arguments: args });
+  if (j.error) throw new ComposioError(reason(j) ?? `${tool} failed`, 200);
+  return obj(j.data);
+}
+
+/** Convenience wrapper over `startSendSession` + `runSendTool` for callers that don't need to tell the two failure classes apart. */
 export async function execute(
   apiKey: string,
   tool: string,
   a: { userId: string; toolkit: string; accountId: string; arguments: Json },
 ): Promise<Json> {
-  const id = await session(apiKey, {
-    user_id: a.userId,
-    connected_accounts: { [a.toolkit]: [a.accountId] },
-    toolkits: { enable: [a.toolkit] },
-    tools: { [a.toolkit]: { enable: [tool] } },
-    workbench: { enable: false },
-  });
-  const j = await call(apiKey, "POST", PATHS.execute(id), { tool_slug: tool, arguments: a.arguments });
-  if (j.error) throw new ComposioError(reason(j) ?? `${tool} failed`);
-  return obj(j.data);
+  const id = await startSendSession(apiKey, { userId: a.userId, toolkit: a.toolkit, accountId: a.accountId, tool });
+  return await runSendTool(apiKey, id, tool, a.arguments);
 }

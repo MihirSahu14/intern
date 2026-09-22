@@ -711,12 +711,14 @@ test("approving with a connected account sends it and files an owner-only fact",
   ]);
 });
 
-test("a failed send keeps Composio's reason and can be retried", async () => {
+test("a failed send never shows Composio's raw reason — only a fixed, connector-labeled copy — and can be retried", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
   const a = await seedUser("a");
-  const { actionId } = await seedDraft(a);
+  const { actionId, internId } = await seedDraft(a);
   await seedActive(a);
+  // A dead-grant-shaped message: the owner should be told to reconnect, never
+  // shown Composio's own words.
   stubFetch({ session_id: "trs_1" }, { error: { message: "invalid_grant" } });
 
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
@@ -724,7 +726,10 @@ test("a failed send keeps Composio's reason and can be retried", async () => {
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   const failed = await t.run((ctx) => ctx.db.get("actions", actionId));
   expect(failed?.status).toBe("failed");
-  expect(failed?.sendError).toMatch(/invalid_grant/);
+  expect(failed?.sendError).toMatch(/gmail refused the send\. reconnect it and retry\./i);
+  expect(failed?.sendError).not.toMatch(/invalid_grant/);
+  const lines = (await t.run((ctx) => ctx.db.query("logs").withIndex("by_internId", (q) => q.eq("internId", internId)).collect())).map((l) => l.text);
+  expect(lines.join("\n")).not.toMatch(/invalid_grant/);
   expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
 
   stubFetch({ session_id: "trs_2" }, { successful: true, data: {} });
@@ -733,6 +738,168 @@ test("a failed send keeps Composio's reason and can be retried", async () => {
   const retried = await t.run((ctx) => ctx.db.get("actions", actionId));
   expect(retried?.status).toBe("sent");
   expect(retried?.sendError).toBeUndefined();
+});
+
+test("revert after needsConnect sends the original, not the discarded edit", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+
+  // Edited while not connected: saved as `accepted`, waiting for the account.
+  expect(
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } }),
+  ).toEqual({ needsConnect: "gmail" });
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.accepted?.body).toBe("Edited body");
+
+  await seedActive(a);
+  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+  // Approved again, this time restoring the intern's original body: no net edit.
+  expect(
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Secret body" } }),
+  ).toBe(null);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("sending");
+  expect(row?.accepted).toBeUndefined();
+  expect(row?.editedFields).toBeUndefined();
+  expect(row?.decision).toBe("approved_unedited");
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).arguments.body).toBe("Secret body");
+});
+
+test("an edited approval sends the edited text", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+
+  expect(
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } }),
+  ).toBe(null);
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.accepted?.body).toBe("Edited body");
+  expect(row?.decision).toBe("edited");
+
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).arguments.body).toBe("Edited body");
+  // Both the edit's preference fact and the send's write-back fact land, both owner-only.
+  const facts = await t.run((ctx) => ctx.db.query("facts").collect());
+  expect(facts).toHaveLength(2);
+  expect(facts).toContainEqual(expect.objectContaining({ kind: "preference", visibility: "owner", ownerId: a }));
+  expect(facts).toContainEqual(expect.objectContaining({ kind: "note", visibility: "owner", ownerId: a, body: expect.stringContaining("Edited body") }));
+});
+
+test("a 5xx on the execute call is `unsure`, not `failed`, and can't be resent until confirmed", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // The session opened; the execute call itself is the one that could have
+  // already reached Gmail before failing.
+  stubComposio({ session_id: "trs_1" }, status(502, "upstream timeout"));
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("unsure");
+  expect(row?.sendError).toMatch(/may have been sent/i);
+  expect(row?.sendError).not.toMatch(/upstream timeout/);
+
+  await expect(asUser(a).mutation(api.outbox.resend, { actionId })).rejects.toThrow(/Only a failed send/);
+
+  // Not the owner: can't confirm it either.
+  await expect(asUser(b).mutation(api.outbox.confirmUnsent, { actionId })).rejects.toThrow(/Only the person/);
+
+  await asUser(a).mutation(api.outbox.confirmUnsent, { actionId });
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("failed");
+  // Confirming again, now that it's `failed` not `unsure`, is refused.
+  await expect(asUser(a).mutation(api.outbox.confirmUnsent, { actionId })).rejects.toThrow(/Only an uncertain send/);
+
+  stubComposio({ session_id: "trs_2" }, { successful: true, data: {} });
+  await asUser(a).mutation(api.outbox.resend, { actionId });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a 4xx on the execute call is a definite `failed`, resendable right away", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  stubComposio({ session_id: "trs_1" }, status(400, "bad recipient"));
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("failed");
+  expect(row?.sendError).not.toMatch(/bad recipient/);
+
+  stubComposio({ session_id: "trs_2" }, { successful: true, data: {} });
+  await asUser(a).mutation(api.outbox.resend, { actionId });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("resend excludes the row being retried from today's send count", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const { actionId, internId } = await seedDraft(a);
+  // 19 other sends today; this row's own first (failed) attempt already
+  // carries a `connector` and today's `decidedAt` too. Counting it as well
+  // would read 20 and wrongly refuse the retry.
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 19; i++) {
+      await ctx.db.insert("actions", {
+        ownerId: a,
+        internId,
+        kind: "email",
+        status: "sent",
+        title: "t",
+        draft: { to: ["x@example.com"], subject: "s", body: "b" },
+        rationale: "because",
+        sources: [],
+        recalledCorrection: false,
+        decidedAt: Date.now(),
+        connector: "gmail",
+      });
+    }
+  });
+  stubFetch({ session_id: "trs_1" }, { error: { message: "invalid_grant" } });
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("failed");
+
+  stubFetch({ session_id: "trs_2" }, { successful: true, data: {} });
+  await asUser(a).mutation(api.outbox.resend, { actionId });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("deciding an already-decided draft is refused, either way", async () => {
+  const { seedUser, asUser, seedDraft } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/Already decided/);
+  await expect(
+    asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "x" }),
+  ).rejects.toThrow(/Already decided/);
 });
 
 test("the twenty-first send of the day is refused", async () => {

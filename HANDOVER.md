@@ -31,7 +31,15 @@ learning loop, and `/stats` measures it from real runs.
 
 **Admin** is the Convex dashboard's function runner — `users:ban
 {"handle":"x"}` bans and purges everything that person added. There is no admin
-UI and deliberately so.
+UI and deliberately so. A `sending` row that never reached `send.finish` (the
+action died mid-flight — a deploy, a crash) is stuck: clear it from the
+dashboard's data table by hand-patching its status to `unsure`, never straight
+to `failed`. `unsure` is the only status that owns up to not knowing whether
+Composio's second call already reached Gmail/Slack before whatever killed the
+process; patching straight to `failed` would let `outbox.resend` fire again
+uncontested and could send the same message twice. The owner still has to run
+`outbox.confirmUnsent` (after checking their Sent folder) before a resend is
+possible.
 
 **Tests**: `npm test` (pure logic), `npx vitest run` (the Convex functions via
 convex-test), `npm run eval` (20 fixed briefs through the live prompt — costs

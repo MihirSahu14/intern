@@ -14,6 +14,10 @@ const STATUS: Record<ActionStatus, { dot: string; text: string }> = {
   sending: { dot: "bg-k-action pulse-slow", text: "text-k-action" },
   sent: { dot: "bg-ok", text: "text-ok" },
   failed: { dot: "bg-err", text: "text-err" },
+  // Composio's execute call never gave a clear answer — it may already have
+  // sent. Not the same as `failed`: see outbox.confirmUnsent. Task 5 gives
+  // this its own retry/confirm affordance; this is the minimal render.
+  unsure: { dot: "bg-warn pulse-slow", text: "text-warn" },
 };
 
 export type Decision =
@@ -279,6 +283,9 @@ function Settled({
       ) : null}
       {action.status === "rejected" && action.result ? (
         <p className="mt-1.5 text-faint">“{action.result}”</p>
+      ) : null}
+      {(action.status === "failed" || action.status === "unsure") && action.sendError ? (
+        <p className={`mt-1.5 ${action.status === "unsure" ? "text-warn" : "text-err"}`}>{action.sendError}</p>
       ) : null}
     </article>
   );

@@ -26,6 +26,10 @@ export const actionStatus = v.union(
   v.literal("sending"),
   v.literal("sent"),
   v.literal("failed"),
+  // A `failed` whose second Composio call never gave a clear answer — the
+  // tool may already have run. Not resendable; `outbox.confirmUnsent` is the
+  // owner clearing it to `failed` after checking their Sent folder.
+  v.literal("unsure"),
 );
 
 export const connectorKey = v.union(v.literal("gmail"), v.literal("slack"));

@@ -89,12 +89,17 @@ export const list = query({
  * SENDS_PER_DAY, counted from drafts decided today that went through a
  * connected account. Same overflow rule as `dispatch`: a day that doesn't
  * fit the read window is refused rather than miscounted.
+ *
+ * `excludeActionId` is the row being retried: it already carries today's
+ * `decidedAt`/`connector` from its first attempt, so counting it here would
+ * charge the same send twice.
  */
-async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">) {
-  const today = await ctx.db
+async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">, excludeActionId?: Id<"actions">) {
+  const rows = await ctx.db
     .query("actions")
     .withIndex("by_ownerId_and_decidedAt", (q) => q.eq("ownerId", ownerId).gte("decidedAt", dayStart(Date.now())))
     .take(DAY_WINDOW + 1);
+  const today = rows.filter((a) => a._id !== excludeActionId);
   if (today.length > DAY_WINDOW) throw new ConvexError(tooManySends);
   const blocked = sendBlocked(today.filter((a) => a.connector).length);
   if (blocked) throw new ConvexError(blocked);
@@ -154,10 +159,16 @@ export const decide = mutation({
     // connect their account.
     const accepted = a.edits ? { ...action.draft, ...capEdits(a.edits) } : (action.accepted ?? action.draft);
     const fields = changedFields(action.draft, accepted);
+    // `fields` is recomputed from `action.draft` every call: if edits saved
+    // on an earlier `needsConnect` round are then approved with edits that
+    // restore the original, `fields` comes back empty here and any earlier
+    // `accepted`/`editedFields` must be cleared — left alone, `send.go` would
+    // still read the stale edit off the row.
+    const acceptedPatch = fields.length ? { accepted, editedFields: fields } : { accepted: undefined, editedFields: undefined };
 
     if (live && !connection) {
       // Approving is the intent; sending waits for the account.
-      if (fields.length) await ctx.db.patch("actions", action._id, { accepted, editedFields: fields });
+      await ctx.db.patch("actions", action._id, acceptedPatch);
       return { needsConnect: live.key };
     }
     if (live) await assertCanSend(ctx, user._id);
@@ -168,7 +179,7 @@ export const decide = mutation({
       editRatio: editRatio(action.draft, accepted),
       decidedAt: now,
       ...(live ? { connector: live.key } : {}),
-      ...(fields.length ? { accepted, editedFields: fields } : {}),
+      ...acceptedPatch,
     });
     if (fields.length) {
       const c = correctionFromEdit(action.kind, action.draft, accepted, fields);
@@ -194,15 +205,37 @@ export const resend = mutation({
     if (!action || action.ownerId !== user._id) {
       throw new ConvexError("Only the person who briefed this intern can send its draft.");
     }
+    // `unsure` never lands here: it isn't `failed`, so a plain retry can't
+    // double-send a message Composio already may have delivered.
     if (action.status !== "failed" || !action.connector) throw new ConvexError("Only a failed send can be retried.");
     const c = connectorByKey(action.connector);
     if (!isConfigured(c, process.env) || !(await activeConnection(ctx, user._id, c.key))) {
       throw new ConvexError(`Connect ${c.label} first.`);
     }
-    await assertCanSend(ctx, user._id);
+    await assertCanSend(ctx, user._id, actionId);
     await ctx.db.patch("actions", actionId, { status: "sending", sendError: undefined, decidedAt: Date.now() });
     await ctx.db.insert("logs", { internId: action.internId, level: "ok", text: `Retrying from your ${c.label}…` });
     await ctx.scheduler.runAfter(0, internal.send.go, { actionId });
+    return null;
+  },
+});
+
+/**
+ * The owner's word, after checking their Sent folder, that an `unsure` send
+ * never went out: clears it to an ordinary `failed`, which `resend` will
+ * take. There is no automatic path from `unsure` to `failed` — only the
+ * person who might have gotten a duplicate can say it's safe.
+ */
+export const confirmUnsent = mutation({
+  args: { actionId: v.id("actions") },
+  handler: async (ctx, { actionId }) => {
+    const user = await requireMember(ctx);
+    const action = await ctx.db.get("actions", actionId);
+    if (!action || action.ownerId !== user._id) {
+      throw new ConvexError("Only the person who briefed this intern can confirm this.");
+    }
+    if (action.status !== "unsure") throw new ConvexError("Only an uncertain send can be confirmed unsent.");
+    await ctx.db.patch("actions", actionId, { status: "failed" });
     return null;
   },
 });

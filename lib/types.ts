@@ -274,10 +274,14 @@ export const ACTION_KINDS: ActionKind[] = ["email", "slack", "calendar"];
 
 /**
  * What `actions.status` stores. A sandbox approval stops at `approved`;
- * `sending`/`sent`/`failed` exist only for a draft going out through a
- * member's connected account.
+ * `sending`/`sent`/`failed`/`unsure` exist only for a draft going out through
+ * a member's connected account. `unsure` is a `failed` whose second Composio
+ * call (the one that may have already reached Gmail/Slack) never gave a
+ * clear answer — a network drop or a 5xx — so it is never offered a plain
+ * retry; `outbox.confirmUnsent` is the owner saying they checked and it's
+ * safe to turn into an ordinary `failed`.
  */
-export type ActionStatus = "pending" | "approved" | "rejected" | "sending" | "sent" | "failed";
+export type ActionStatus = "pending" | "approved" | "rejected" | "sending" | "sent" | "failed" | "unsure";
 
 export type Draft = {
   /** Email addresses, or Slack channel ids/names for a slack action. */
