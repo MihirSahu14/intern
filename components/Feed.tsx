@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "convex/react";
+import Link from "next/link";
 import { api } from "@/convex/_generated/api";
 
 const ago = (at: number) => {
@@ -24,7 +25,10 @@ export default function Feed() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               {e.image ? <img src={e.image} alt="" className="mt-0.5 size-4 shrink-0 rounded-full" /> : null}
               <p className="min-w-0 text-dim leading-snug">
-                <span className="text-fg">@{e.handle}</span> {e.text}
+                <Link href={`/u/${encodeURIComponent(e.handle)}`} className="text-fg hover:underline">
+                  @{e.handle}
+                </Link>{" "}
+                {e.text}
                 <span className="ml-1 text-faint">· {ago(e.at)}</span>
               </p>
             </div>

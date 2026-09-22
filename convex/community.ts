@@ -1,4 +1,5 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
+import { v } from "convex/values";
 import { redactEmails } from "../lib/redact.ts";
 import { query } from "./_generated/server";
 import { ownerView, visibleTo } from "./access";
@@ -103,6 +104,44 @@ export const evals = query({
       withCorrection: recalled.length,
       editRateWithout: rate(cold),
       without: cold.length,
+    };
+  },
+});
+
+/**
+ * One member's public page: what they taught the brain and what their
+ * interns did. No private facts, drafts or recipients — this is what any
+ * signed-out visitor sees, so it never scopes by viewer. Unknown, unconsented
+ * or banned handles are null, and the page says so.
+ *
+ * ponytail: newest 200 facts filtered to 50 public ones; last 1,000 actions
+ * for the counts. Aggregate if anyone outgrows that.
+ */
+export const member = query({
+  args: { handle: v.string() },
+  handler: async (ctx, { handle }) => {
+    const u = await ctx.db.query("users").withIndex("by_handle", (q) => q.eq("handle", handle)).unique();
+    if (!u || !u.acceptedAt || u.bannedAt) return null;
+    const joinedAt = u.acceptedAt;
+    const [facts, interns, actions] = await Promise.all([
+      ctx.db.query("facts").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).order("desc").take(200),
+      ctx.db.query("interns").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).order("desc").take(50),
+      ctx.db.query("actions").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).take(1000),
+    ]);
+    return {
+      handle: u.handle ?? handle,
+      image: u.image ?? null,
+      joinedAt,
+      facts: facts
+        .filter((f) => f.visibility !== "owner")
+        .slice(0, 50)
+        .map((f) => ({ _id: f._id, title: f.title, kind: f.kind, at: f._creationTime })),
+      // A question-resumed `task` quotes its answer and can carry private
+      // facts, so it's swapped for `displayTask` before redaction — same rule
+      // as `interns.list` / `facts.graph`.
+      interns: interns.map((i) => ({ _id: i._id, task: redactEmails(i.displayTask ?? i.task), status: i.status, at: i._creationTime })),
+      approved: actions.filter((a) => a.decision === "approved_unedited" || a.decision === "edited").length,
+      sent: actions.filter((a) => a.status === "sent").length,
     };
   },
 });
