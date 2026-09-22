@@ -13,6 +13,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** Every env var the connect path reads, set to test values. Managed auth: no auth config. */
+function composioEnv() {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("SITE_URL", "https://site.test");
+  vi.stubEnv("CONVEX_SITE_URL", "https://deploy.convex.site");
+}
+
+/** Canned replies, one per outgoing request in order; the last repeats. No test reaches the network. */
+function stubFetch(...bodies: unknown[]) {
+  let i = 0;
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+    async () => new Response(JSON.stringify(bodies[Math.min(i++, bodies.length - 1)] ?? {})),
+  );
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
 /** engine.test.ts's setup, plus the rows this file keeps needing. */
 function setup() {
   const t = convexTest(schema, modules);
@@ -39,7 +56,11 @@ function setup() {
       });
       return { internId, actionId };
     });
-  return { t, seedUser, asUser, seedDraft };
+  const seedPending = (userId: Id<"users">, connector: "gmail" | "slack" = "gmail", state = "s1", composioAccountId = "ca_1") =>
+    t.run((ctx) =>
+      ctx.db.insert("connections", { userId, connector, status: "pending", state, composioAccountId, createdAt: Date.now() }),
+    );
+  return { t, seedUser, asUser, seedDraft, seedPending };
 }
 
 test("other people's drafts come back as a bare status, never the draft", async () => {
@@ -354,4 +375,171 @@ test("signed-out visitors get only the reduced outbox and questions rows", async
 
   const question = (await t.query(api.questions.list, {})).find((q) => q._id === questionId);
   expect(question).toEqual({ _id: questionId, _creationTime: expect.any(Number), ownerId: owner, internId, status: "open" });
+});
+
+const linked = { redirect_url: "https://connect.composio.dev/link/ln_1", connected_account_id: "ca_1" };
+
+test("connect: start writes a pending row and hands back Composio's link", async () => {
+  composioEnv();
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubFetch({ session_id: "trs_1" }, linked);
+
+  expect(await asUser(a).action(api.connections.start, { connector: "gmail" })).toBe(linked.redirect_url);
+  const row = await t.run((ctx) => ctx.db.query("connections").first());
+  expect(row).toMatchObject({ userId: a, connector: "gmail", status: "pending", composioAccountId: "ca_1" });
+  expect(JSON.parse(String(f.mock.calls[0][1]?.body))).toEqual({ user_id: a });
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body))).toEqual({
+    toolkit: "gmail",
+    callback_url: `https://deploy.convex.site/composio/callback?state=${row?.state}`,
+  });
+});
+
+test("connect: an auth-config override is config only", async () => {
+  composioEnv();
+  vi.stubEnv("COMPOSIO_AUTH_CONFIG_SLACK", "ac_slack");
+  const { seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubFetch({ session_id: "trs_1" }, linked);
+  await asUser(a).action(api.connections.start, { connector: "slack" });
+  expect(JSON.parse(String(f.mock.calls[0][1]?.body))).toEqual({ user_id: a, auth_configs: { slack: "ac_slack" } });
+});
+
+test("connect: a Composio failure leaves the row failed, not pending", async () => {
+  composioEnv();
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubFetch({ session_id: "trs_1" }, {});
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/Couldn't reach Composio/);
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+});
+
+test("connect: without Composio's key nothing is set up and nothing is written", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubFetch({});
+  await expect(asUser(a).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/not set up yet/);
+  expect(f).not.toHaveBeenCalled();
+  expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(0);
+  expect(await asUser(a).query(api.connections.mine, {})).toEqual([
+    expect.objectContaining({ key: "gmail", configured: false, connected: false }),
+    expect.objectContaining({ key: "slack", configured: false, connected: false }),
+  ]);
+});
+
+test("connect: a visitor who hasn't accepted the notice can't start one", async () => {
+  composioEnv();
+  const { t, asUser } = setup();
+  const u = await t.run((ctx) => ctx.db.insert("users", { handle: "new" }));
+  const f = stubFetch({});
+  await expect(asUser(u).action(api.connections.start, { connector: "gmail" })).rejects.toThrow(/Accept/);
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("callback: an unknown state is refused without calling Composio", async () => {
+  composioEnv();
+  const { t } = setup();
+  const f = stubFetch({});
+  const res = await t.fetch("/composio/callback?state=nope&status=success&connected_account_id=ca_1");
+  expect(res.status).toBe(400);
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("callback: an account other than the one we linked is refused", async () => {
+  composioEnv();
+  const { t, seedUser, seedPending } = setup();
+  await seedPending(await seedUser("a"));
+  const f = stubFetch({});
+  const res = await t.fetch("/composio/callback?state=s1&status=success&connected_account_id=ca_other");
+  expect(res.headers.get("location")).toBe("https://site.test/app?connect_failed=gmail");
+  expect(f).not.toHaveBeenCalled();
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+});
+
+test("callback: an account Composio says is someone else's is refused", async () => {
+  composioEnv();
+  const { t, seedUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedPending(a);
+  stubFetch({ id: "ca_1", user_id: b, status: "ACTIVE", toolkit: { slug: "gmail" } });
+
+  // The query string even claims to be a. Only our row and Composio's record count.
+  const res = await t.fetch(`/composio/callback?state=s1&status=success&connected_account_id=ca_1&user_id=${a}`);
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toBe("https://site.test/app?connect_failed=gmail");
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+});
+
+test("callback: a consent the member declined fails the row", async () => {
+  composioEnv();
+  const { t, seedUser, seedPending } = setup();
+  await seedPending(await seedUser("a"));
+  const f = stubFetch({});
+  const res = await t.fetch("/composio/callback?state=s1&status=failed&connected_account_id=ca_1");
+  expect(res.headers.get("location")).toBe("https://site.test/app?connect_failed=gmail");
+  expect(f).not.toHaveBeenCalled();
+});
+
+test("callback: a matching account goes active, and the link can't be replayed", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  await seedPending(a);
+  stubFetch({ id: "ca_1", user_id: a, status: "ACTIVE", toolkit: { slug: "gmail" } });
+
+  const res = await t.fetch("/composio/callback?state=s1&status=success&connected_account_id=ca_1");
+  expect(res.headers.get("location")).toBe("https://site.test/app?connected=gmail");
+  expect(await t.run((ctx) => ctx.db.query("connections").first())).toMatchObject({ status: "active", composioAccountId: "ca_1" });
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", configured: true, connected: true }),
+  );
+  expect((await t.fetch("/composio/callback?state=s1&status=success&connected_account_id=ca_1")).status).toBe(400);
+});
+
+test("callback: reconnecting retires the older grant here and at Composio", async () => {
+  composioEnv();
+  const { t, seedUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const old = await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "active", composioAccountId: "ca_0", state: "s0", createdAt: Date.now() }),
+  );
+  await seedPending(a);
+  const f = stubFetch({ id: "ca_1", status: "ACTIVE", toolkit: { slug: "GMAIL" } }, { success: true });
+
+  const res = await t.fetch("/composio/callback?state=s1&status=success&connected_account_id=ca_1");
+  expect(res.headers.get("location")).toBe("https://site.test/app?connected=gmail");
+  expect((await t.run((ctx) => ctx.db.get("connections", old)))?.status).toBe("failed");
+  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_0");
+  expect(f.mock.calls[1][1]?.method).toBe("DELETE");
+});
+
+test("disconnect marks the row failed and deletes the account at Composio", async () => {
+  composioEnv();
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "active", composioAccountId: "ca_1", state: "s0", createdAt: Date.now() }),
+  );
+  const f = stubFetch({ success: true });
+  await asUser(a).action(api.connections.disconnect, { connector: "gmail" });
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+  expect(f.mock.calls[0][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[0][1]?.method).toBe("DELETE");
+});
+
+test("purge deletes the member's connections and their accounts at Composio", async () => {
+  composioEnv();
+  vi.useFakeTimers();
+  const { t, seedUser } = setup();
+  const a = await seedUser("a");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", { userId: a, connector: "gmail", status: "active", composioAccountId: "ca_1", state: "s0", createdAt: Date.now() }),
+  );
+  const f = stubFetch({ success: true });
+  await t.mutation(internal.users.purge, { userId: a });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(0);
+  expect(f.mock.calls[0][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });

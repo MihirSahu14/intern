@@ -72,7 +72,13 @@ export const purge = internalMutation({
       .query("connections")
       .withIndex("by_userId_and_connector", (q) => q.eq("userId", userId))
       .take(BATCH);
-    for (const r of connections) await ctx.db.delete("connections", r._id);
+    for (const r of connections) {
+      // Our row goes now; Composio's copy of the grant goes with it.
+      if (r.status === "active" && r.composioAccountId) {
+        await ctx.scheduler.runAfter(0, internal.connections.forget, { composioAccountId: r.composioAccountId });
+      }
+      await ctx.db.delete("connections", r._id);
+    }
 
     more = [facts, actions, questions, interns, connections].some((rows) => rows.length === BATCH);
     if (more) await ctx.scheduler.runAfter(0, internal.users.purge, { userId });

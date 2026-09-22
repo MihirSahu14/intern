@@ -15,7 +15,7 @@ export type Connector = {
   label: string;
   /** Composio toolkit slug. */
   toolkit: string;
-  /** Env var holding the Composio auth config id. */
+  /** Optional env var naming a custom Composio auth config; unset means Composio-managed auth. */
   authConfigEnv: string;
   /** Composio tool slug that sends. */
   sendTool: string;
@@ -67,9 +67,11 @@ export function connectorByKey(key: ConnectorKey): Connector {
   return c;
 }
 
-/** The deployment has what this connector needs. Says nothing about whether *you* connected. */
-export const isConfigured = (c: Connector, env: Record<string, string | undefined>) =>
-  !!env.COMPOSIO_API_KEY && !!env[c.authConfigEnv];
+/**
+ * The deployment has what this connector needs. Says nothing about whether *you* connected.
+ * Both toolkits have Composio-managed OAuth, so the API key is enough.
+ */
+export const isConfigured = (_c: Connector, env: Record<string, string | undefined>) => !!env.COMPOSIO_API_KEY;
 
 const firstLine = (s: string) => s.split("\n").find((l) => l.trim())?.trim() ?? "";
 

@@ -33,12 +33,12 @@ test("slack posts to the channel and bolds a subject only when there is one", ()
   });
 });
 
-test("a connector is configured only with the API key and its own auth config", () => {
+test("the API key alone configures a connector: auth is Composio-managed unless overridden", () => {
   const gmail = connectorByKey("gmail");
   assert.equal(isConfigured(gmail, {}), false);
-  assert.equal(isConfigured(gmail, { COMPOSIO_API_KEY: "k" }), false);
-  assert.equal(isConfigured(gmail, { COMPOSIO_API_KEY: "k", COMPOSIO_AUTH_CONFIG_GMAIL: "ac_1" }), true);
-  assert.equal(isConfigured(connectorByKey("slack"), { COMPOSIO_API_KEY: "k", COMPOSIO_AUTH_CONFIG_GMAIL: "ac_1" }), false);
+  assert.equal(isConfigured(gmail, { COMPOSIO_AUTH_CONFIG_GMAIL: "ac_1" }), false);
+  assert.equal(isConfigured(gmail, { COMPOSIO_API_KEY: "k" }), true);
+  assert.equal(isConfigured(connectorByKey("slack"), { COMPOSIO_API_KEY: "k" }), true);
 });
 
 test("the write-back fact says who, what and when", () => {
