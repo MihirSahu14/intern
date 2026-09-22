@@ -17,6 +17,13 @@
  *   /reference/api-reference/connected-accounts.md#callback-identity-verification
  *   /reference/api-reference/connected-accounts/postConnectedAccountsCompleteAuth.md
  *
+ * Re-confirmed 2026-09-21 (Task 4 fix round 2), the execute response's exact
+ * shape: /reference/api-reference/tool-router/postToolRouterSessionBySessionIdExecute.md
+ * documents the HTTP-200 body as `{ data: object, error: string|null,
+ * log_id: string }` — `error: null` on a completed run, a non-null string
+ * when Composio/the provider refused to run the tool. There is no documented
+ * `successful` field for this endpoint. See `runSendTool`.
+ *
  * Connections finish through callback identity verification: the project's
  * verifier URL (dashboard setting) is our cockpit, Composio sends the browser
  * that consented there with a single-use `session_uri`, and nothing activates
@@ -151,17 +158,22 @@ export async function startSendSession(
 }
 
 /**
- * Runs `tool` on a session `startSendSession` already opened. Throws
- * ComposioError carrying Composio's reason, log id, and (when the request
- * got an answer at all) the HTTP status: a `j.error` on an otherwise-2xx
- * response is Composio's own clear "this didn't run", so it's tagged 200
- * rather than left status-less like a dropped connection would be — status
- * `undefined` or >= 500 is the only case a caller can't be sure the tool
- * never ran.
+ * Runs `tool` on a session `startSendSession` already opened. The documented
+ * response shape (see the header) gives exactly two definite answers —
+ * `error: null` (ran) and `error: "<message>"` (Composio/the provider
+ * refused it, tagged `status: 200` so a caller can tell it apart from a
+ * dropped connection) — and this throws ComposioError for anything short of
+ * those: a body `call` couldn't parse to JSON (it swallows that and returns
+ * `{}`), one missing `error` outright, or a stray field like
+ * `successful: false` with no `error`. That third case is a *statusless*
+ * ComposioError — Composio never gave either documented answer, so the tool
+ * may or may not have run — which `convex/send.ts` reads as `unsure`, never
+ * a confirmed send.
  */
 export async function runSendTool(apiKey: string, sessionId: string, tool: string, args: Json): Promise<Json> {
   const j = await call(apiKey, "POST", PATHS.execute(sessionId), { tool_slug: tool, arguments: args });
-  if (j.error) throw new ComposioError(reason(j) ?? `${tool} failed`, 200);
+  if (typeof j.error === "string") throw new ComposioError(reason(j) ?? `${tool} failed`, 200);
+  if (j.error !== null) throw new ComposioError(`${tool}: composio's response didn't confirm the tool ran`);
   return obj(j.data);
 }
 

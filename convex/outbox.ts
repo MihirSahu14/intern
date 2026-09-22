@@ -92,13 +92,16 @@ export const list = query({
  *
  * `excludeActionId` is the row being retried: it already carries today's
  * `decidedAt`/`connector` from its first attempt, so counting it here would
- * charge the same send twice.
+ * charge the same send twice. Reading `DAY_WINDOW + 2` rather than `+ 1`
+ * keeps the overflow check honest once that row is filtered back out: a day
+ * with more than `DAY_WINDOW + 1` real decisions must still read as an
+ * overflow, not lose one row of slack to the exclusion.
  */
 async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">, excludeActionId?: Id<"actions">) {
   const rows = await ctx.db
     .query("actions")
     .withIndex("by_ownerId_and_decidedAt", (q) => q.eq("ownerId", ownerId).gte("decidedAt", dayStart(Date.now())))
-    .take(DAY_WINDOW + 1);
+    .take(DAY_WINDOW + 2);
   const today = rows.filter((a) => a._id !== excludeActionId);
   if (today.length > DAY_WINDOW) throw new ConvexError(tooManySends);
   const blocked = sendBlocked(today.filter((a) => a.connector).length);

@@ -686,7 +686,7 @@ test("approving with a connected account sends it and files an owner-only fact",
   await seedActive(a);
   // execute() is two Composio calls: create the send-only session, then run
   // the tool on it — see lib/composio.ts.
-  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
 
   expect(await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).toBe(null);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sending");
@@ -719,7 +719,7 @@ test("a failed send never shows Composio's raw reason — only a fixed, connecto
   await seedActive(a);
   // A dead-grant-shaped message: the owner should be told to reconnect, never
   // shown Composio's own words.
-  stubFetch({ session_id: "trs_1" }, { error: { message: "invalid_grant" } });
+  stubFetch({ session_id: "trs_1" }, { error: "invalid_grant", data: {}, log_id: "log_1" });
 
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
   vi.useFakeTimers();
@@ -732,7 +732,7 @@ test("a failed send never shows Composio's raw reason — only a fixed, connecto
   expect(lines.join("\n")).not.toMatch(/invalid_grant/);
   expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
 
-  stubFetch({ session_id: "trs_2" }, { successful: true, data: {} });
+  stubFetch({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   const retried = await t.run((ctx) => ctx.db.get("actions", actionId));
@@ -753,7 +753,7 @@ test("revert after needsConnect sends the original, not the discarded edit", asy
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.accepted?.body).toBe("Edited body");
 
   await seedActive(a);
-  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
   // Approved again, this time restoring the intern's original body: no net edit.
   expect(
     await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Secret body" } }),
@@ -776,7 +776,7 @@ test("an edited approval sends the edited text", async () => {
   const a = await seedUser("a");
   const { actionId } = await seedDraft(a);
   await seedActive(a);
-  const f = stubFetch({ session_id: "trs_1" }, { successful: true, data: {} });
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
 
   expect(
     await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } }),
@@ -825,7 +825,7 @@ test("a 5xx on the execute call is `unsure`, not `failed`, and can't be resent u
   // Confirming again, now that it's `failed` not `unsure`, is refused.
   await expect(asUser(a).mutation(api.outbox.confirmUnsent, { actionId })).rejects.toThrow(/Only an uncertain send/);
 
-  stubComposio({ session_id: "trs_2" }, { successful: true, data: {} });
+  stubComposio({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
@@ -847,10 +847,96 @@ test("a 4xx on the execute call is a definite `failed`, resendable right away", 
   expect(row?.status).toBe("failed");
   expect(row?.sendError).not.toMatch(/bad recipient/);
 
-  stubComposio({ session_id: "trs_2" }, { successful: true, data: {} });
+  stubComposio({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a 408 on the execute call is `unsure` like a 5xx, not a definite failed", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  stubComposio({ session_id: "trs_1" }, status(408, "request timeout"));
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("unsure");
+  expect(row?.sendError).not.toMatch(/request timeout/);
+});
+
+test("a network throw during the execute call is unsure, never sent", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // The session opens fine; the execute request itself never comes back at all.
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      n++;
+      if (n === 1) return new Response(JSON.stringify({ session_id: "trs_1" }));
+      throw new TypeError("fetch failed");
+    }),
+  );
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("unsure");
+  expect(row?.sendError).toMatch(/may have been sent/i);
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
+});
+
+test("a non-JSON 200 on the execute call is unsure, never sent", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      n++;
+      return n === 1 ? new Response(JSON.stringify({ session_id: "trs_1" })) : new Response("<not json>");
+    }),
+  );
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("unsure");
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
+});
+
+test("a `successful: false` 200 with no `error` field is unsure, never sent", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // Not the documented shape (`error` missing) — never a positive success signal.
+  stubFetch({ session_id: "trs_1" }, { successful: false, data: {} });
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("unsure");
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(0);
 });
 
 test("resend excludes the row being retried from today's send count", async () => {
@@ -879,13 +965,13 @@ test("resend excludes the row being retried from today's send count", async () =
       });
     }
   });
-  stubFetch({ session_id: "trs_1" }, { error: { message: "invalid_grant" } });
+  stubFetch({ session_id: "trs_1" }, { error: "invalid_grant", data: {}, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
   vi.useFakeTimers();
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("failed");
 
-  stubFetch({ session_id: "trs_2" }, { successful: true, data: {} });
+  stubFetch({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");

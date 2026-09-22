@@ -52,13 +52,19 @@ function ownerMessage(err: unknown, label: string): string {
     : "The send didn't go through. Retry, or reconnect if it keeps failing.";
 }
 
+/** A gateway/request timeout: Composio (or what's in front of it) gave up on the response, not on the request. */
+const isTimeoutStatus = (status: number) => status === 408 || status === 499;
+
 /**
  * The two Composio calls are tried separately: a session that never opened
  * can't have reached Gmail/Slack, so any failure there is always a safe
  * `failed`. Only the execute call — the one that may have already run the
- * tool — can leave real doubt, and only when it never gave a clear answer
- * (no response at all, or a 5xx): a definite 4xx means Composio looked at
- * the request and refused it before running anything.
+ * tool — can leave real doubt: no answer at all (a network throw, or
+ * `runSendTool`'s statusless "didn't confirm" ComposioError — see
+ * `lib/composio.ts`), a 5xx, or a 408/499 timeout, all leave open that the
+ * tool call reached the provider before the failure. A definite 4xx other
+ * than a timeout means Composio looked at the request and refused it before
+ * running anything.
  */
 async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | undefined, job: Job): Promise<Outcome> {
   const fail = (err: unknown, unsure: boolean): Outcome => {
@@ -82,7 +88,7 @@ async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | u
     return { ok: true };
   } catch (err) {
     const status = err instanceof ComposioError ? err.status : undefined;
-    return fail(err, status === undefined || status >= 500);
+    return fail(err, status === undefined || status >= 500 || isTimeoutStatus(status));
   }
 }
 
