@@ -1603,3 +1603,31 @@ test("webhook: a Gmail event with no message id is dropped, not keyed on the del
   expect((await t.fetch("/composio/webhook", await signed({ ...noId, id: "msg_other" }))).status).toBe(200);
   expect(await allFacts(t)).toHaveLength(0);
 });
+
+test("a member page shows public work and nothing private", async () => {
+  const { t, seedUser, seedDraft } = setup();
+  const a = await seedUser("ann");
+  const { actionId } = await seedDraft(a);
+  await t.run(async (ctx) => {
+    await ctx.db.patch("actions", actionId, { status: "sent", decision: "approved_unedited", connector: "gmail", sentAt: Date.now() });
+    await ctx.db.insert("facts", { title: "We ship Fridays", body: "", kind: "note", ownerId: a, text: "We ship Fridays\n" });
+    await ctx.db.insert("facts", {
+      title: "emailed ann@acme.com about Pricing",
+      body: "",
+      kind: "note",
+      visibility: "owner",
+      ownerId: a,
+      text: "emailed ann@acme.com about Pricing\n",
+    });
+  });
+
+  const m = await t.query(api.community.member, { handle: "ann" });
+  expect(m?.facts.map((f) => f.title)).toEqual(["We ship Fridays"]);
+  expect(m?.interns.map((i) => i.task)).toEqual(["email [email] about pricing"]);
+  expect(m).toMatchObject({ handle: "ann", approved: 1, sent: 1 });
+  expect(JSON.stringify(m)).not.toMatch(/acme\.com|Secret body|Pricing/);
+
+  expect(await t.query(api.community.member, { handle: "nobody" })).toBeNull();
+  await t.run((ctx) => ctx.db.insert("users", { handle: "lurker" }));
+  expect(await t.query(api.community.member, { handle: "lurker" })).toBeNull();
+});
