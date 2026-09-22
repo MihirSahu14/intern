@@ -11,6 +11,7 @@ import {
 } from "../lib/caps.ts";
 import { type ConnectorKey, connectorByKey, connectorFor, isConfigured } from "../lib/connectors.ts";
 import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
+import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type MutationCtx, mutation, query } from "./_generated/server";
@@ -109,6 +110,13 @@ async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">, excludeActi
   if (blocked) throw new ConvexError(blocked);
 }
 
+/** Composio send calls one draft may cost, its first included: a dead grant can't be hammered through `resend`. */
+const SEND_ATTEMPTS = 3;
+
+/** Said when a draft written under the sandbox prompt is about to go out unchanged. */
+const placeholderRecipients =
+  "This was drafted before your account was connected, so its recipients are placeholders. Change who it goes to before sending.";
+
 /**
  * Approve (optionally edited) or reject. An edit becomes a preference fact and
  * a rejection becomes a correction fact, which the next intern recalls. That
@@ -146,16 +154,21 @@ export const decide = mutation({
     const connector = connectorFor(action.kind);
     const live = connector && isConfigured(connector, process.env) ? connector : null;
     const connection = live ? await activeConnection(ctx, user._id, live.key) : null;
-    // A draft that can reach a real person may name one, so what's learned
-    // from it stays with its owner. A sandbox draft only ever had placeholders.
-    const visibility = connection ? ("owner" as const) : undefined;
+    // The lesson quotes the draft: its recipients and its whole body. It stays
+    // with its owner when the draft could reach a real person, or when the run
+    // that wrote it read anything private (a calendar draft never has a
+    // connector, but can still quote a send write-back or a captured email).
+    const visibility = connection || action.recalledPrivate ? ("owner" as const) : undefined;
+    // A public lesson still names no address, and its log line quotes nothing.
+    const lesson = (c: { title: string; body: string }) =>
+      visibility ? c : { title: redactEmails(c.title), body: redactEmails(c.body) };
 
     if (a.decision === "reject") {
       const reason = (a.reason ?? "").trim().slice(0, 500) || "no reason given";
       await ctx.db.patch("actions", action._id, { status: "rejected", decision: "rejected", reason, decidedAt: now });
-      const c = correctionFromReject(action.kind, action.draft, reason);
+      const c = lesson(correctionFromReject(action.kind, action.draft, reason));
       await insertFact(ctx, { ...c, kind: "correction", visibility, ownerId: user._id, internId: action.internId });
-      await log("warn", visibility ? "rejected · learned a correction, private to you" : `rejected · learned: ${c.title}`);
+      await log("warn", visibility ? "rejected · learned a correction, private to you" : "rejected · learned a correction");
       return null;
     }
 
@@ -175,6 +188,12 @@ export const decide = mutation({
       await ctx.db.patch("actions", action._id, acceptedPatch);
       return { needsConnect: live.key };
     }
+    // The sandbox prompt tells the model to invent #general and
+    // name@example.com. Sent unchanged, that is a real post in the member's
+    // real #general: only recipients the member typed in this approval go.
+    if (live && !action.draftedLive && !(a.edits?.to && fields.includes("to"))) {
+      throw new ConvexError(placeholderRecipients);
+    }
     if (live) await assertCanSend(ctx, user._id);
 
     await ctx.db.patch("actions", action._id, {
@@ -182,11 +201,11 @@ export const decide = mutation({
       decision: fields.length ? "edited" : "approved_unedited",
       editRatio: editRatio(action.draft, accepted),
       decidedAt: now,
-      ...(live ? { connector: live.key } : {}),
+      ...(live ? { connector: live.key, attempts: 1 } : {}),
       ...acceptedPatch,
     });
     if (fields.length) {
-      const c = correctionFromEdit(action.kind, action.draft, accepted, fields);
+      const c = lesson(correctionFromEdit(action.kind, action.draft, accepted, fields));
       await insertFact(ctx, { ...c, kind: "preference", visibility, ownerId: user._id, internId: action.internId });
       await log("ok", visibility ? "learned a preference from your edit, private to you" : `learned: ${c.title}`);
       if (!visibility) await broadcast(ctx, { type: "learned", handle: user.handle ?? user.name ?? "someone", title: c.title });
@@ -201,7 +220,7 @@ export const decide = mutation({
   },
 });
 
-/** A failed send, tried again as it was approved. Costs a send like any other. */
+/** A failed send, tried again as it was approved. Costs a send like any other, up to SEND_ATTEMPTS in all. */
 export const resend = mutation({
   args: { actionId: v.id("actions") },
   handler: async (ctx, { actionId }) => {
@@ -217,8 +236,13 @@ export const resend = mutation({
     if (!isConfigured(c, process.env) || !(await activeConnection(ctx, user._id, c.key))) {
       throw new ConvexError(`Connect ${c.label} first.`);
     }
+    // Rows from before `attempts` existed had exactly one.
+    const attempts = action.attempts ?? 1;
+    if (attempts >= SEND_ATTEMPTS) {
+      throw new ConvexError(`This draft has been tried ${SEND_ATTEMPTS} times. Reconnect ${c.label}, or send it yourself.`);
+    }
     await assertCanSend(ctx, user._id, actionId);
-    await ctx.db.patch("actions", actionId, { status: "sending", sendError: undefined, decidedAt: Date.now() });
+    await ctx.db.patch("actions", actionId, { status: "sending", sendError: undefined, decidedAt: Date.now(), attempts: attempts + 1 });
     await ctx.db.insert("logs", { internId: action.internId, level: "ok", text: `Retrying from your ${c.label}…` });
     await ctx.scheduler.runAfter(0, internal.send.go, { actionId });
     return null;

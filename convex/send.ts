@@ -8,7 +8,7 @@ import { internalAction, internalMutation, internalQuery } from "./_generated/se
 import { ownerView } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
-import { insertFact } from "./facts";
+import { insertFact, sendSource } from "./facts";
 
 /**
  * One approved draft going out through its owner's own account. Plain fetch,
@@ -132,7 +132,14 @@ export const finish = internalMutation({
     await ctx.db.patch("actions", action._id, { status: "sent", sentAt: now });
     // The brain updates the moment it goes out. Owner-only: it's their account.
     const fact = sentFact(c.key, action.accepted ?? action.draft, now);
-    await insertFact(ctx, { ...fact, kind: "note", visibility: "owner", ownerId: action.ownerId, internId: action.internId });
+    await insertFact(ctx, {
+      ...fact,
+      kind: "note",
+      visibility: "owner",
+      ownerId: action.ownerId,
+      internId: action.internId,
+      source: sendSource(action._id),
+    });
     await log("ok", `Sent from your ${c.label}.`);
     await broadcast(ctx, { type: "sent", handle: (await ownerView(ctx, action.ownerId)).handle, connector: c.key });
     return null;

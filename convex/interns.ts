@@ -2,7 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
 import { PROMPT_VERSION } from "../lib/brief.ts";
-import { CONNECTORS, isConfigured } from "../lib/connectors.ts";
+import { CONNECTORS, type ConnectorKey, connectorFor, isConfigured } from "../lib/connectors.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -165,15 +165,22 @@ export const list = query({
         // `displayTask` (the original ask) before redaction. The report
         // (`summary`), the failure detail (`error`), which private facts were
         // recalled (`recalledFactIds`) and whether this run touched anything
-        // private at all (`recalledPrivate`) are for the owner alone.
+        // private at all (`recalledPrivate`) are for the owner alone. So is
+        // everything else the spread would carry that the rail doesn't need:
+        // `displayTask` unredacted, the parser's verdict, whether a lesson was
+        // recalled, and which accounts the owner has connected.
         ...(i.ownerId === viewer
           ? {}
           : {
               task: redactEmails(i.displayTask ?? i.task),
+              displayTask: undefined,
               summary: undefined,
               error: i.error ? "failed" : undefined,
               recalledFactIds: undefined,
               recalledPrivate: undefined,
+              recalledCorrection: undefined,
+              parseOutcome: undefined,
+              sendsFrom: undefined,
             }),
       })),
     );
@@ -223,11 +230,14 @@ export const start = internalMutation({
       return null;
     }
     // Which of the owner's accounts a draft from this run would really go out through.
-    const sendsFrom: string[] = [];
+    const live: ConnectorKey[] = [];
     for (const c of CONNECTORS) {
-      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) sendsFrom.push(c.label);
+      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) live.push(c.key);
     }
-    await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION });
+    // Kept on the run so `finish` can mark a draft briefed as sandbox — its
+    // placeholder recipients must never go out unchanged (see outbox.decide).
+    await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION, sendsFrom: live });
+    const sendsFrom = CONNECTORS.filter((c) => live.includes(c.key)).map((c) => c.label);
     return { task: i.task, ownerId: i.ownerId, sendsFrom };
   },
 });
@@ -333,12 +343,17 @@ export const finish = internalMutation({
 
     let parseOutcome = "none";
     if (a.action) {
+      const sendsVia = connectorFor(a.action.kind);
       await ctx.db.insert("actions", {
         ...a.action,
         ownerId: intern.ownerId,
         internId: a.internId,
         status: "pending",
         recalledCorrection: intern.recalledCorrection ?? false,
+        // What `outbox.decide` learns from this draft stays private if the
+        // run read anything private: the draft can quote it.
+        recalledPrivate: intern.recalledPrivate ?? false,
+        draftedLive: !!sendsVia && !!intern.sendsFrom?.includes(sendsVia.key),
       });
       await log("warn", `drafted a ${a.action.kind} · waiting for approval`);
       await broadcast(ctx, { type: "drafted", handle: (await ownerView(ctx, intern.ownerId)).handle, kind: a.action.kind });
