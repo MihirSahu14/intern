@@ -16,3 +16,15 @@ test("no recalled facts means no memory section", () => {
 test("prompt version is a stable short hash", () => {
   assert.match(PROMPT_VERSION, /^[0-9a-z]{4,8}$/);
 });
+
+test("a connected member's intern is told drafts go out for real", () => {
+  const text = brief("Email Ann", [], ["Gmail", "Slack"]);
+  assert.match(text, /Drafts go out for real from Gmail and Slack once the person approves\./);
+  assert.match(text, /Use real recipients only if the task names them; never invent an address\./);
+  assert.ok(!text.includes("public sandbox"));
+});
+
+test("with nothing connected the sandbox rule stays", () => {
+  assert.match(brief("x", [], []), /public sandbox/);
+  assert.ok(!brief("x", []).includes("go out for real"));
+});

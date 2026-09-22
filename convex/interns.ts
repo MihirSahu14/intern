@@ -2,11 +2,13 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
 import { PROMPT_VERSION } from "../lib/brief.ts";
+import { CONNECTORS, isConfigured } from "../lib/connectors.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
+import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
 import { actionKind, draft, factKind, logLevel, visibility } from "./schema";
 
@@ -219,8 +221,13 @@ export const start = internalMutation({
       }
       return null;
     }
+    // Which of the owner's accounts a draft from this run would really go out through.
+    const sendsFrom: string[] = [];
+    for (const c of CONNECTORS) {
+      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) sendsFrom.push(c.label);
+    }
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION });
-    return { task: i.task, ownerId: i.ownerId };
+    return { task: i.task, ownerId: i.ownerId, sendsFrom };
   },
 });
 

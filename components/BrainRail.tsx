@@ -3,7 +3,17 @@
 import { KIND_ORDER } from "./BrainGraph";
 import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
-import type { Graph, GraphNode, NodeKind } from "@/lib/types";
+import { COMPOSIO_DISCLOSURE, type ConnectorKey } from "@/lib/connectors";
+import type { ActionKind, Graph, GraphNode, NodeKind } from "@/lib/types";
+
+export type ConnectorRow = {
+  key: ConnectorKey;
+  label: string;
+  forKind: ActionKind;
+  configured: boolean;
+  connected: boolean;
+  accountLabel: string | null;
+};
 
 export default function BrainRail({
   graph,
@@ -11,12 +21,18 @@ export default function BrainRail({
   onToggleKind,
   selected,
   onSelect,
+  connectors,
+  onConnect,
+  onDisconnect,
 }: {
   graph: Graph;
   hidden: Set<NodeKind>;
   onToggleKind: (k: NodeKind) => void;
   selected: GraphNode | null;
   onSelect: (n: GraphNode | null) => void;
+  connectors: ConnectorRow[];
+  onConnect: (key: ConnectorKey) => void;
+  onDisconnect: (key: ConnectorKey) => void;
 }) {
   const counts = new Map<NodeKind, number>();
   for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
@@ -36,6 +52,30 @@ export default function BrainRail({
       <Section title="brain">
         <Row k="nodes"><span className="text-dim tabular-nums">{graph.nodes.length}</span></Row>
         <Row k="edges"><span className="text-dim tabular-nums">{graph.edges.length}</span></Row>
+      </Section>
+
+      <Section title="accounts">
+        {connectors.map((c) => (
+          <Row key={c.key} k={c.label.toLowerCase()}>
+            {!c.configured ? (
+              <span className="text-faint">not set up yet</span>
+            ) : c.connected ? (
+              <span className="text-dim">
+                connected as {c.accountLabel ?? c.label} ·{" "}
+                <button type="button" onClick={() => onDisconnect(c.key)} className="text-faint hover:text-err">
+                  disconnect
+                </button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => onConnect(c.key)} className="text-accent hover:underline">
+                connect
+              </button>
+            )}
+          </Row>
+        ))}
+        {connectors.some((c) => c.configured) ? (
+          <p className="pt-1 text-faint leading-snug">{COMPOSIO_DISCLOSURE}</p>
+        ) : null}
       </Section>
 
       <Section title="layers">

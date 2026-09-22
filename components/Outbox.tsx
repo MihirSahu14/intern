@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { CONNECTORS } from "@/lib/connectors";
 import type {
+  ActionKind,
   ActionStatus,
   Draft,
   ProposedAction,
@@ -26,12 +28,20 @@ export type Decision =
 
 export default function Outbox({
   actions,
+  sendsVia,
   onDecide,
+  onResend,
+  onConfirmUnsent,
 }: {
   actions: ProposedAction[];
+  /** The connected account each draft kind goes out through. Empty means sandbox. */
+  sendsVia: Partial<Record<ActionKind, string>>;
   onDecide: (id: string, decision: Decision) => void;
+  onResend: (id: string) => void;
+  onConfirmUnsent: (id: string) => void;
 }) {
   const [open, setOpen] = useState<string | null>(null);
+  const live = Object.keys(sendsVia).length > 0;
   const pending = actions.filter((a) => a.status === "pending");
   const rest = actions.filter((a) => a.status !== "pending");
   const shown = [...pending, ...rest.slice(0, 4)];
@@ -41,7 +51,11 @@ export default function Outbox({
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
         <h2 className="label">outbox</h2>
         <div className="flex items-center gap-2">
-          <span className="border border-warn/40 px-1 text-warn">sandbox</span>
+          {live ? (
+            <span className="border border-ok/40 px-1 text-ok">live</span>
+          ) : (
+            <span className="border border-warn/40 px-1 text-warn">sandbox</span>
+          )}
           <span
             className={`tabular-nums ${pending.length ? "text-k-action" : "text-faint"}`}
           >
@@ -53,8 +67,8 @@ export default function Outbox({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {shown.length === 0 ? (
           <p className="p-3 text-faint leading-relaxed">
-            nothing waiting. your interns&rsquo; drafts land here. approving never
-            sends anything, this is a sandbox.
+            nothing waiting. your interns&rsquo; drafts land here.{" "}
+            {live ? "approving sends from your connected account." : "approving never sends anything, this is a sandbox."}
           </p>
         ) : null}
 
@@ -66,6 +80,7 @@ export default function Outbox({
               expanded={open === a.id}
               onToggle={() => setOpen(open === a.id ? null : a.id)}
               onDecide={onDecide}
+              via={sendsVia[a.kind]}
             />
           ) : (
             <Settled
@@ -73,6 +88,8 @@ export default function Outbox({
               action={a}
               expanded={open === a.id}
               onToggle={() => setOpen(open === a.id ? null : a.id)}
+              onResend={onResend}
+              onConfirmUnsent={onConfirmUnsent}
             />
           ),
         )}
@@ -94,15 +111,19 @@ function Pending({
   expanded,
   onToggle,
   onDecide,
+  via,
 }: {
   action: ProposedAction;
   expanded: boolean;
   onToggle: () => void;
   onDecide: (id: string, decision: Decision) => void;
+  via?: string;
 }) {
-  const [to, setTo] = useState(action.draft.to.join(", "));
-  const [subject, setSubject] = useState(action.draft.subject);
-  const [body, setBody] = useState(action.draft.body);
+  // Start from any edits saved while the person went to connect their account.
+  const start = action.accepted ?? action.draft;
+  const [to, setTo] = useState(start.to.join(", "));
+  const [subject, setSubject] = useState(start.subject);
+  const [body, setBody] = useState(start.body);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
 
@@ -209,7 +230,11 @@ function Pending({
             onClick={approve}
             className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10"
           >
-            {changed.length ? "approve with edits" : "approve (sandbox)"}
+            {via
+              ? `${changed.length ? "send with edits" : "approve & send"} via ${via}`
+              : changed.length
+                ? "approve with edits"
+                : "approve (sandbox)"}
           </button>
           <button
             type="button"
@@ -229,14 +254,19 @@ function Settled({
   action,
   expanded,
   onToggle,
+  onResend,
+  onConfirmUnsent,
 }: {
   action: ProposedAction;
   expanded: boolean;
   onToggle: () => void;
+  onResend: (id: string) => void;
+  onConfirmUnsent: (id: string) => void;
 }) {
   const s = STATUS[action.status];
   const decided = action.accepted ?? action.draft;
   const edited = action.editedFields ?? [];
+  const via = CONNECTORS.find((c) => c.key === action.connector)?.label ?? "account";
 
   return (
     <article className="enter border-b border-line px-3 py-2">
@@ -278,14 +308,35 @@ function Settled({
         </div>
       ) : null}
 
-      {action.status === "approved" ? (
-        <p className="mt-1.5 text-faint">Approved. Sandbox: nothing was sent.</p>
-      ) : null}
+      {action.status === "approved" ? <p className="mt-1.5 text-faint">Approved. Sandbox: nothing was sent.</p> : null}
       {action.status === "rejected" && action.result ? (
         <p className="mt-1.5 text-faint">“{action.result}”</p>
       ) : null}
-      {(action.status === "failed" || action.status === "unsure") && action.sendError ? (
-        <p className={`mt-1.5 ${action.status === "unsure" ? "text-warn" : "text-err"}`}>{action.sendError}</p>
+      {action.status === "sending" ? <p className="mt-1.5 text-k-action">sending…</p> : null}
+      {action.status === "sent" ? <p className="mt-1.5 text-ok">Sent from your {via}.</p> : null}
+      {action.status === "failed" ? (
+        <div className="mt-1.5 space-y-1">
+          <p className="text-err">{action.sendError ?? "send failed"}</p>
+          <button
+            type="button"
+            onClick={() => onResend(action.id)}
+            className="w-full border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10"
+          >
+            retry send
+          </button>
+        </div>
+      ) : null}
+      {action.status === "unsure" ? (
+        <div className="mt-1.5 space-y-1">
+          <p className="text-warn">{action.sendError ?? "This may have been sent. Check your Sent folder before trying again."}</p>
+          <button
+            type="button"
+            onClick={() => onConfirmUnsent(action.id)}
+            className="w-full border border-warn/40 py-0.5 text-warn transition-colors hover:bg-warn/10"
+          >
+            confirm it wasn&rsquo;t sent
+          </button>
+        </div>
       ) : null}
     </article>
   );

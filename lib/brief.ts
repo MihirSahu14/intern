@@ -6,7 +6,15 @@
 
 export type Recalled = { id: string; title: string; body: string };
 
-export function brief(task: string, recalled: Recalled[]): string {
+const SANDBOX = `This is a public sandbox shared by everyone trying Intern. Nothing you draft is
+ever sent. Use plausible placeholders for recipients (#general, name@example.com)
+and never ask for or repeat anyone's real contact details.`;
+
+/** Said instead of SANDBOX once the member has connected an account a draft can go out through. */
+const live = (labels: string[]) =>
+  `Drafts go out for real from ${labels.join(" and ")} once the person approves. Use real recipients only if the task names them; never invent an address.`;
+
+export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = []): string {
   const learned = recalled.length
     ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources"):\n${recalled
         .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
@@ -17,9 +25,7 @@ export function brief(task: string, recalled: Recalled[]): string {
 
 TASK: ${task}
 ${learned}
-This is a public sandbox shared by everyone trying Intern. Nothing you draft is
-ever sent. Use plausible placeholders for recipients (#general, name@example.com)
-and never ask for or repeat anyone's real contact details.
+${sendsFrom.length ? live(sendsFrom) : SANDBOX}
 
 You have no browser and no tools. Work from what the brain gave you above and
 what you already know. Do not invent people, systems, dates or numbers. If a
@@ -66,4 +72,4 @@ function fnv(text: string): string {
   return (h >>> 0).toString(36);
 }
 
-export const PROMPT_VERSION = fnv(brief("{task}", []));
+export const PROMPT_VERSION = fnv(brief("{task}", []) + brief("{task}", [], ["{label}"]));

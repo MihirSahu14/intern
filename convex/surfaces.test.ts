@@ -1015,6 +1015,23 @@ test("the twenty-first send of the day is refused", async () => {
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
 });
 
+test("an intern whose owner connected Gmail is briefed to send for real", async () => {
+  composioEnv();
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: ["Gmail"] });
+});
+
+test("without Composio's env the intern stays in the sandbox", async () => {
+  const { t, seedUser, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a);
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: [] });
+});
+
 test("a lesson from a draft that could reach a real person stays private", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();

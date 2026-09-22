@@ -6,8 +6,8 @@ import { ConvexError } from "convex/values";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { connectorByKey } from "@/lib/connectors";
-import type { Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction, Question } from "@/lib/types";
+import { CONNECTORS, connectorByKey, type ConnectorKey } from "@/lib/connectors";
+import type { ActionKind, Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction, Question } from "@/lib/types";
 import BrainGraph from "./BrainGraph";
 import BrainRail from "./BrainRail";
 import CommandBar, { HELP } from "./CommandBar";
@@ -76,6 +76,7 @@ export default function Cockpit({ me }: { me: Me }) {
   const actionRows = useQuery(api.outbox.list, {});
   const questionRows = useQuery(api.questions.list, {});
   const graphData = useQuery(api.facts.graph, {});
+  const connectorRows = useQuery(api.connections.mine, {});
 
   const spawnM = useMutation(api.interns.spawn);
   const cancelM = useMutation(api.interns.cancel);
@@ -86,6 +87,10 @@ export default function Cockpit({ me }: { me: Me }) {
   const teachM = useMutation(api.facts.teach);
   const deleteMineM = useMutation(api.users.deleteMine);
   const finishM = useAction(api.connections.finish);
+  const resendM = useMutation(api.outbox.resend);
+  const confirmUnsentM = useMutation(api.outbox.confirmUnsent);
+  const startConnectA = useAction(api.connections.start);
+  const disconnectA = useAction(api.connections.disconnect);
 
   const [local, setLocal] = useState<LogLine[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
@@ -222,6 +227,15 @@ export default function Cockpit({ me }: { me: Me }) {
   const selected = useMemo(() => graph.nodes.find((n) => n.id === selectedId) ?? null, [graph.nodes, selectedId]);
   const select = useCallback((node: GraphNode | null) => setSelectedId(node?.id ?? null), []);
 
+  // Which of the viewer's connected accounts each draft kind would really go out through.
+  const sendsVia = useMemo(
+    () =>
+      Object.fromEntries(
+        (connectorRows ?? []).filter((c) => c.configured && c.connected).map((c) => [c.forKind, c.label]),
+      ) as Partial<Record<ActionKind, string>>,
+    [connectorRows],
+  );
+
   // Running interns pulse, and so do the facts they recalled.
   const activeIds = useMemo(
     () =>
@@ -265,12 +279,43 @@ export default function Cockpit({ me }: { me: Me }) {
     [cancelM, echo],
   );
 
+  const connect = useCallback(
+    async (key: ConnectorKey) => {
+      try {
+        window.location.href = await startConnectA({ connector: key });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [startConnectA, echo],
+  );
+
+  const disconnect = useCallback(
+    async (key: ConnectorKey) => {
+      try {
+        await disconnectA({ connector: key });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [disconnectA, echo],
+  );
+
   const decide = useCallback(
     async (id: string, d: Decision) => {
       try {
         if (d.decision === "approve") {
           const { to, cc, subject, body } = d.edits ?? {};
-          await decideM({ actionId: id as Id<"actions">, decision: "approve", edits: d.edits ? { to, cc, subject, body } : undefined });
+          const r = await decideM({
+            actionId: id as Id<"actions">,
+            decision: "approve",
+            edits: d.edits ? { to, cc, subject, body } : undefined,
+          });
+          if (r?.needsConnect) {
+            const label = CONNECTORS.find((c) => c.key === r.needsConnect)?.label ?? r.needsConnect;
+            echo("warn", `connect ${label} to send this. the draft waits here with your edits.`);
+            await connect(r.needsConnect);
+          }
         } else {
           await decideM({ actionId: id as Id<"actions">, decision: "reject", reason: d.reason });
         }
@@ -278,7 +323,29 @@ export default function Cockpit({ me }: { me: Me }) {
         echo("err", why(err));
       }
     },
-    [decideM, echo],
+    [decideM, connect, echo],
+  );
+
+  const resend = useCallback(
+    async (id: string) => {
+      try {
+        await resendM({ actionId: id as Id<"actions"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [resendM, echo],
+  );
+
+  const confirmUnsent = useCallback(
+    async (id: string) => {
+      try {
+        await confirmUnsentM({ actionId: id as Id<"actions"> });
+      } catch (err) {
+        echo("err", why(err));
+      }
+    },
+    [confirmUnsentM, echo],
   );
 
   const answer = useCallback(
@@ -415,7 +482,16 @@ export default function Cockpit({ me }: { me: Me }) {
       <div className="shrink-0 border-b border-warn/30 bg-warn/5 px-3 py-1 text-warn">{NOTICE}</div>
 
       <div className="flex min-h-0 flex-1">
-        <BrainRail graph={graph} hidden={hidden} onToggleKind={toggleKind} selected={selected} onSelect={select} />
+        <BrainRail
+          graph={graph}
+          hidden={hidden}
+          onToggleKind={toggleKind}
+          selected={selected}
+          onSelect={select}
+          connectors={connectorRows ?? []}
+          onConnect={(k) => void connect(k)}
+          onDisconnect={(k) => void disconnect(k)}
+        />
 
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
@@ -493,7 +569,13 @@ export default function Cockpit({ me }: { me: Me }) {
             onAnswer={answer}
             onDismiss={dismiss}
           />
-          <Outbox actions={outbox} onDecide={decide} />
+          <Outbox
+            actions={outbox}
+            sendsVia={sendsVia}
+            onDecide={decide}
+            onResend={(id) => void resend(id)}
+            onConfirmUnsent={(id) => void confirmUnsent(id)}
+          />
           <Feed />
           <InternRail
             interns={interns}
