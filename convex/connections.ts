@@ -1,7 +1,8 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
-import { ComposioError, completeAuth, connect, deleteAccount } from "../lib/composio.ts";
+import { ComposioError, completeAuth, connect, deleteAccount, deleteTrigger, execute, upsertTrigger } from "../lib/composio.ts";
 import { CONNECTORS, type ConnectorKey, connectorByKey, isConfigured } from "../lib/connectors.ts";
+import { SLACK_TOOLS, TRIGGERS, readWhoami } from "../lib/inbound.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type QueryCtx, action, internalAction, internalMutation, internalQuery, query } from "./_generated/server";
@@ -21,39 +22,66 @@ import { connectorKey } from "./schema";
  * the consenting browser ever sees, with the id of the member signed in
  * there. A victim who consents on an attacker's link redeems it as
  * themselves, Composio refuses the mismatch, and the grant never activates.
+ *
+ * Inbound (Task 7): a Slack grant subscribes to its member's 🧠 as it goes
+ * live. Gmail never reads mail on the send grant: the `Intern` label is an
+ * opt-in second grant (`capture`), through its own read-only auth config and
+ * its own consent screen, and switching it off deletes that grant.
  */
 
 /** How long a connect link stays finishable. */
 const FINISH_WINDOW = 15 * 60_000;
 
-/** The member's live grant for one connector, if any. */
+/** The member's live grant for one connector, if any: the send grant, or with `capture`, Gmail's read-only one. */
 export async function activeConnection(
   ctx: QueryCtx,
   userId: Id<"users">,
   connector: ConnectorKey,
+  capture = false,
 ): Promise<Doc<"connections"> | null> {
   return await ctx.db
     .query("connections")
     .withIndex("by_userId_and_connector", (q) => q.eq("userId", userId).eq("connector", connector))
     .order("desc")
-    .filter((q) => q.eq(q.field("status"), "active"))
+    .filter((q) => q.and(q.eq(q.field("status"), "active"), q.eq(q.field("capture"), capture ? true : undefined)))
     .first();
 }
 
 /**
- * Deletes the account at Composio. Best-effort: our own row is already failed
- * or gone. `revoke` only when the member is done with that account
- * (disconnect, purge); see deleteAccount.
+ * The Intern label can be offered: Gmail connects at all, the deployment has
+ * a read-only auth config for it, and a webhook secret to receive its events.
+ * Missing any of them, capture fails closed.
  */
-export async function forgetAccount(composioAccountId: string, a: { revoke: boolean }): Promise<void> {
+const captureConfigured = (env: Record<string, string | undefined>) =>
+  isConfigured(connectorByKey("gmail"), env) && !!env.COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE && !!env.COMPOSIO_WEBHOOK_SECRET;
+
+type Forget = { composioAccountId: string; triggerId?: string; revoke: boolean };
+
+/**
+ * Deletes the account at Composio, its trigger first. Best-effort: our own
+ * row is already failed or gone. `revoke` only when the member is done with
+ * that account (disconnect, purge); see deleteAccount.
+ */
+export async function forgetAccount(composioAccountId: string, a: { revoke: boolean; triggerId?: string }): Promise<void> {
   const apiKey = process.env.COMPOSIO_API_KEY;
   if (!apiKey) return;
+  if (a.triggerId) {
+    try {
+      await deleteTrigger(apiKey, a.triggerId);
+    } catch (err) {
+      console.log(`composio trigger delete ${a.triggerId} failed: ${String(err)}`);
+    }
+  }
   try {
-    await deleteAccount(apiKey, composioAccountId, a);
+    await deleteAccount(apiKey, composioAccountId, { revoke: a.revoke });
   } catch (err) {
     console.log(`composio delete ${composioAccountId} failed: ${String(err)}`);
   }
 }
+
+const forgetAll = async (rows: Forget[]) => {
+  for (const r of rows) await forgetAccount(r.composioAccountId, r);
+};
 
 /** One row per connector for the rail. */
 export const mine = query({
@@ -63,6 +91,7 @@ export const mine = query({
     return await Promise.all(
       CONNECTORS.map(async (c) => {
         const row = userId ? await activeConnection(ctx, userId, c.key) : null;
+        const offered = c.key === "gmail" && captureConfigured(process.env);
         return {
           key: c.key,
           label: c.label,
@@ -70,6 +99,8 @@ export const mine = query({
           configured: isConfigured(c, process.env),
           connected: !!row,
           accountLabel: row?.accountLabel ?? null,
+          /** The Intern label: null when not offered, else whether it's on. */
+          capture: offered ? !!(userId && (await activeConnection(ctx, userId, c.key, true))) : null,
         };
       }),
     );
@@ -84,12 +115,13 @@ export const member = internalQuery({
 
 /** The write behind `start`, so it goes through requireMember like every other write. */
 export const begin = internalMutation({
-  args: { connector: connectorKey, state: v.string() },
+  args: { connector: connectorKey, state: v.string(), capture: v.optional(v.literal(true)) },
   handler: async (ctx, a) => {
     const user = await requireMember(ctx);
     await ctx.db.insert("connections", {
       userId: user._id,
       connector: a.connector,
+      capture: a.capture,
       status: "pending",
       state: a.state,
       createdAt: Date.now(),
@@ -118,21 +150,29 @@ export const fail = internalMutation({
   },
 });
 
+/** `capture: true` is the Intern label's own consent: Gmail, read-only, never the send grant. */
 export const start = action({
-  args: { connector: connectorKey },
-  handler: async (ctx, { connector }): Promise<string> => {
+  args: { connector: connectorKey, capture: v.optional(v.boolean()) },
+  handler: async (ctx, { connector, capture }): Promise<string> => {
     const c = connectorByKey(connector);
     const apiKey = process.env.COMPOSIO_API_KEY;
     if (!apiKey || !isConfigured(c, process.env)) throw new ConvexError(`${c.label} is not set up yet.`);
+    if (capture && (c.key !== "gmail" || !captureConfigured(process.env))) {
+      throw new ConvexError(`The Intern label for ${c.label} is not set up yet.`);
+    }
 
     // Our key for the row while Composio's account id is still unknown.
     const state = crypto.randomUUID();
-    const userId: Id<"users"> = await ctx.runMutation(internal.connections.begin, { connector, state });
+    const userId: Id<"users"> = await ctx.runMutation(internal.connections.begin, {
+      connector,
+      state,
+      capture: capture ? true : undefined,
+    });
     try {
       const { redirectUrl, accountId } = await connect(apiKey, {
         userId,
         toolkit: c.toolkit,
-        authConfigId: process.env[c.authConfigEnv] || undefined,
+        authConfigId: (capture ? process.env.COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE : process.env[c.authConfigEnv]) || undefined,
       });
       await ctx.runMutation(internal.connections.attach, { state, composioAccountId: accountId });
       return redirectUrl;
@@ -144,7 +184,10 @@ export const start = action({
   },
 });
 
-type Finish = { ok: boolean; connector: ConnectorKey | null; reason?: string };
+type Finish = { ok: boolean; connector: ConnectorKey | null; capture?: true; reason?: string };
+
+/** A grant that just went live, for `finish` to subscribe. */
+type Fresh = { rowId: Id<"connections">; connector: ConnectorKey; capture: boolean };
 
 /**
  * After Composio confirmed `composioAccountId` for the signed-in member: adopt
@@ -154,7 +197,7 @@ type Finish = { ok: boolean; connector: ConnectorKey | null; reason?: string };
  */
 export const activate = internalMutation({
   args: { composioAccountId: v.string() },
-  handler: async (ctx, { composioAccountId }): Promise<{ result: Finish; forget: string[] }> => {
+  handler: async (ctx, { composioAccountId }): Promise<{ result: Finish; forget: Forget[]; fresh: Fresh | null }> => {
     const user = await requireMember(ctx);
     const row = await ctx.db
       .query("connections")
@@ -162,7 +205,8 @@ export const activate = internalMutation({
       .first();
     const refused = (reason: string) => ({
       result: { ok: false, connector: row?.connector ?? null, reason },
-      forget: [composioAccountId],
+      forget: [{ composioAccountId, revoke: false }],
+      fresh: null,
     });
     if (!row) return refused("That connect link isn't one of yours.");
     const c = connectorByKey(row.connector);
@@ -173,28 +217,33 @@ export const activate = internalMutation({
       console.log(`connections.activate: ${row._id} confirmed for a different member; failing it`);
       return refused("That connect link isn't one of yours.");
     }
-    if (row.status === "active") return { result: { ok: true, connector: c.key }, forget: [] };
+    if (row.status === "active") return { result: { ok: true, connector: c.key }, forget: [], fresh: null };
     if (row.status !== "pending" || Date.now() - row.createdAt > FINISH_WINDOW) {
       if (row.status === "pending") await ctx.db.patch("connections", row._id, { status: "failed" });
       return refused(`That ${c.label} link expired. Try again.`);
     }
 
-    // Newest first, active only: however many attempts came before, the live
+    // Newest first, active only, same kind of grant (a capture grant never
+    // retires the send grant): however many attempts came before, the live
     // grant can't fall outside the read.
-    const forget: string[] = [];
+    const forget: Forget[] = [];
     const older = await ctx.db
       .query("connections")
       .withIndex("by_userId_and_connector", (q) => q.eq("userId", user._id).eq("connector", c.key))
       .order("desc")
-      .filter((q) => q.eq(q.field("status"), "active"))
+      .filter((q) => q.and(q.eq(q.field("status"), "active"), q.eq(q.field("capture"), row.capture)))
       .take(10);
     for (const o of older) {
       await ctx.db.patch("connections", o._id, { status: "failed" });
       // No revoke on retire: same Google account, it would kill the grant just given.
-      if (o.composioAccountId) forget.push(o.composioAccountId);
+      if (o.composioAccountId) forget.push({ composioAccountId: o.composioAccountId, triggerId: o.triggerId, revoke: false });
     }
     await ctx.db.patch("connections", row._id, { status: "active" });
-    return { result: { ok: true, connector: c.key }, forget };
+    return {
+      result: row.capture ? { ok: true, connector: c.key, capture: true } : { ok: true, connector: c.key },
+      forget,
+      fresh: { rowId: row._id, connector: c.key, capture: !!row.capture },
+    };
   },
 });
 
@@ -225,37 +274,120 @@ export const finish = action({
       return { ok: false, connector: null, reason: "Couldn't reach Composio. Try again." };
     }
 
-    const { result, forget } = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
-    for (const id of forget) await forgetAccount(id, { revoke: false });
+    const { result, forget, fresh } = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
+    await forgetAll(forget);
+    if (!fresh) return result;
+
+    if (fresh.capture) {
+      // Capture is the trigger: a read grant without one is only a risk, so it goes.
+      try {
+        if (!process.env.COMPOSIO_WEBHOOK_SECRET) throw new Error("no COMPOSIO_WEBHOOK_SECRET");
+        const triggerId = await upsertTrigger(apiKey, TRIGGERS.gmail.slug, { userId, accountId, config: TRIGGERS.gmail.config });
+        await ctx.runMutation(internal.connections.settle, { rowId: fresh.rowId, triggerId });
+        return result;
+      } catch (err) {
+        console.log(`connections.finish: gmail trigger failed for ${userId}: ${String(err)}`);
+        await ctx.runMutation(internal.connections.retire, { rowId: fresh.rowId });
+        await forgetAccount(accountId, { revoke: false });
+        return { ok: false, connector: "gmail", reason: "Couldn't switch on the Intern label. Try again." };
+      }
+    }
+
+    // Slack names a reactor by Slack user id, so learn which one is this
+    // member, then subscribe to their 🧠. Best-effort: an account that can
+    // send but not listen is still worth connecting. No webhook secret, no
+    // subscription: its events could never be verified.
+    if (fresh.connector === "slack" && process.env.COMPOSIO_WEBHOOK_SECRET) {
+      try {
+        const who = readWhoami(await execute(apiKey, SLACK_TOOLS.whoami, { userId, toolkit: "slack", accountId, arguments: {} }));
+        const triggerId = who.userId
+          ? await upsertTrigger(apiKey, TRIGGERS.slack.slug, { userId, accountId, config: TRIGGERS.slack.config })
+          : undefined;
+        await ctx.runMutation(internal.connections.settle, {
+          rowId: fresh.rowId,
+          externalUserId: who.userId ?? undefined,
+          accountLabel: who.label ?? undefined,
+          triggerId,
+        });
+      } catch (err) {
+        console.log(`connections.finish: slack subscribe failed for ${userId}: ${String(err)}`);
+      }
+    }
     return result;
   },
 });
 
+/** What `finish` learned after a grant went live. Only onto a row that's still live. */
+export const settle = internalMutation({
+  args: {
+    rowId: v.id("connections"),
+    externalUserId: v.optional(v.string()),
+    accountLabel: v.optional(v.string()),
+    triggerId: v.optional(v.string()),
+  },
+  handler: async (ctx, { rowId, ...patch }) => {
+    const row = await ctx.db.get("connections", rowId);
+    if (row?.status === "active") await ctx.db.patch("connections", rowId, patch);
+    return null;
+  },
+});
+
+export const retire = internalMutation({
+  args: { rowId: v.id("connections") },
+  handler: async (ctx, { rowId }) => {
+    await ctx.db.patch("connections", rowId, { status: "failed" });
+    return null;
+  },
+});
+
+/**
+ * Every live grant for the connector, the Intern label's included: done with
+ * Gmail means done reading it too. With `capture`, only the Intern label's.
+ * The send grant is revoked; a capture grant is only deleted, since with the
+ * same OAuth app revoking one revokes both.
+ */
 export const drop = internalMutation({
-  args: { connector: connectorKey },
-  handler: async (ctx, { connector }) => {
+  args: { connector: connectorKey, capture: v.optional(v.literal(true)) },
+  handler: async (ctx, a): Promise<Forget[]> => {
     const user = await requireMember(ctx);
-    const row = await activeConnection(ctx, user._id, connector);
-    if (!row) return null;
-    await ctx.db.patch("connections", row._id, { status: "failed" });
-    return row.composioAccountId ?? null;
+    const rows = await ctx.db
+      .query("connections")
+      .withIndex("by_userId_and_connector", (q) => q.eq("userId", user._id).eq("connector", a.connector))
+      .order("desc")
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .take(10);
+    const forget: Forget[] = [];
+    for (const r of rows) {
+      if (a.capture && !r.capture) continue;
+      await ctx.db.patch("connections", r._id, { status: "failed" });
+      if (r.composioAccountId) forget.push({ composioAccountId: r.composioAccountId, triggerId: r.triggerId, revoke: !r.capture });
+    }
+    return forget;
   },
 });
 
 export const disconnect = action({
   args: { connector: connectorKey },
   handler: async (ctx, { connector }): Promise<null> => {
-    const accountId: string | null = await ctx.runMutation(internal.connections.drop, { connector });
-    if (accountId) await forgetAccount(accountId, { revoke: true });
+    await forgetAll(await ctx.runMutation(internal.connections.drop, { connector }));
+    return null;
+  },
+});
+
+/** Switches the Intern label off: its trigger and its read grant go; sending stays. */
+export const stopCapture = action({
+  args: {},
+  handler: async (ctx): Promise<null> => {
+    await forgetAll(await ctx.runMutation(internal.connections.drop, { connector: "gmail", capture: true }));
     return null;
   },
 });
 
 /** Scheduled by `users.purge` for each live grant it deletes. */
 export const forget = internalAction({
-  args: { composioAccountId: v.string() },
-  handler: async (_ctx, { composioAccountId }) => {
-    await forgetAccount(composioAccountId, { revoke: true });
+  args: { composioAccountId: v.string(), triggerId: v.optional(v.string()) },
+  handler: async (_ctx, { composioAccountId, triggerId }) => {
+    await forgetAccount(composioAccountId, { revoke: true, triggerId });
     return null;
   },
 });

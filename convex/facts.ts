@@ -3,7 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from "../lib/caps.ts";
 import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, internalQuery, mutation, query } from "./_generated/server";
+import { type MutationCtx, type QueryCtx, internalQuery, mutation, query } from "./_generated/server";
 import { requireMember, visibleTo } from "./access";
 import { broadcast } from "./broadcast";
 import { factKind } from "./schema";
@@ -19,9 +19,24 @@ export async function insertFact(
     ownerId?: Id<"users">;
     internId?: Id<"interns">;
     visibility?: Doc<"facts">["visibility"];
+    /** Where it came from outside Intern, e.g. `slack:C1:1726900000.000100`: one fact per source per owner. */
+    source?: string;
   },
 ) {
   return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });
+}
+
+/** The 20-facts/day rule for anything a person adds, from the cockpit or from their own tools. */
+export async function factCapBlocked(ctx: QueryCtx, ownerId: Id<"users">): Promise<string | null> {
+  const today = await ctx.db
+    .query("facts")
+    .withIndex("by_ownerId", (q) => q.eq("ownerId", ownerId).gte("_creationTime", dayStart(Date.now())))
+    .take(DAY_WINDOW + 1);
+  // Same guard as `dispatch`: run-filed facts, corrections and answers share
+  // this window without counting, so an overflowed day can't be counted at
+  // all — refuse rather than read the first fifty and call it twenty.
+  if (today.length > DAY_WINDOW) return tooManyFacts;
+  return teachBlocked(today.length);
 }
 
 export const teach = mutation({
@@ -34,15 +49,7 @@ export const teach = mutation({
     if (title.length + body.length > MAX_FACT_CHARS) {
       throw new ConvexError(`Keep a fact under ${MAX_FACT_CHARS} characters.`);
     }
-    const today = await ctx.db
-      .query("facts")
-      .withIndex("by_ownerId", (q) => q.eq("ownerId", user._id).gte("_creationTime", dayStart(Date.now())))
-      .take(DAY_WINDOW + 1);
-    // Same guard as `dispatch`: run-filed facts, corrections and answers share
-    // this window without counting, so an overflowed day can't be counted at
-    // all — refuse rather than read the first fifty and call it twenty.
-    if (today.length > DAY_WINDOW) throw new ConvexError(tooManyFacts);
-    const blocked = teachBlocked(today.length);
+    const blocked = await factCapBlocked(ctx, user._id);
     if (blocked) throw new ConvexError(blocked);
     const id = await insertFact(ctx, { title, body, kind: args.kind, ownerId: user._id });
     await broadcast(ctx, { type: "taught", handle: user.handle ?? user.name ?? "someone", title });

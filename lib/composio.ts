@@ -16,6 +16,8 @@
  *   /reference/api-reference/connected-accounts/deleteConnectedAccountsByNanoid.md (revoke_on_delete)
  *   /reference/api-reference/connected-accounts.md#callback-identity-verification
  *   /reference/api-reference/connected-accounts/postConnectedAccountsCompleteAuth.md
+ *   /reference/api-reference/triggers/postTriggerInstancesBySlugUpsert.md (Task 7)
+ *   /reference/api-reference/triggers/deleteTriggerInstancesManageByTriggerId.md (Task 7)
  *
  * Re-confirmed 2026-09-21 (Task 4 fix round 2), the execute response's exact
  * shape: /reference/api-reference/tool-router/postToolRouterSessionBySessionIdExecute.md
@@ -40,6 +42,8 @@ export const PATHS = {
   execute: (sessionId: string) => `/tool_router/session/${enc(sessionId)}/execute`,
   account: (id: string) => `/connected_accounts/${enc(id)}`,
   completeAuth: "/connected_accounts/complete_auth",
+  triggerUpsert: (slug: string) => `/trigger_instances/${enc(slug)}/upsert`,
+  trigger: (triggerId: string) => `/trigger_instances/manage/${enc(triggerId)}`,
 };
 
 type Json = Record<string, unknown>;
@@ -185,4 +189,29 @@ export async function execute(
 ): Promise<Json> {
   const id = await startSendSession(apiKey, { userId: a.userId, toolkit: a.toolkit, accountId: a.accountId, tool });
   return await runSendTool(apiKey, id, tool, a.arguments);
+}
+
+/**
+ * Subscribes one member's connected account to one trigger; its events go to
+ * the project's webhook. `user_id` rides along so Composio can check it owns
+ * the account. Returns the `ti_*` id, which is what deletes it later: the
+ * docs don't say deleting an account takes its triggers with it.
+ */
+export async function upsertTrigger(
+  apiKey: string,
+  slug: string,
+  a: { userId: string; accountId: string; config: Json },
+): Promise<string> {
+  const j = await call(apiKey, "POST", PATHS.triggerUpsert(slug), {
+    user_id: a.userId,
+    connected_account_id: a.accountId,
+    trigger_config: a.config,
+  });
+  const id = str(j.trigger_id);
+  if (!id) throw new ComposioError("composio trigger upsert returned no trigger_id");
+  return id;
+}
+
+export async function deleteTrigger(apiKey: string, triggerId: string): Promise<void> {
+  await call(apiKey, "DELETE", PATHS.trigger(triggerId));
 }

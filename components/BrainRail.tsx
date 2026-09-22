@@ -13,6 +13,8 @@ export type ConnectorRow = {
   configured: boolean;
   connected: boolean;
   accountLabel: string | null;
+  /** Gmail's `Intern` label: null when this deployment doesn't offer it, else whether it's on. */
+  capture: boolean | null;
 };
 
 export default function BrainRail({
@@ -24,6 +26,7 @@ export default function BrainRail({
   connectors,
   onConnect,
   onDisconnect,
+  onCapture,
 }: {
   graph: Graph;
   hidden: Set<NodeKind>;
@@ -33,6 +36,7 @@ export default function BrainRail({
   connectors: ConnectorRow[];
   onConnect: (key: ConnectorKey) => void;
   onDisconnect: (key: ConnectorKey) => void;
+  onCapture: (on: boolean) => void;
 }) {
   const counts = new Map<NodeKind, number>();
   for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
@@ -56,22 +60,41 @@ export default function BrainRail({
 
       <Section title="accounts">
         {connectors.map((c) => (
-          <Row key={c.key} k={c.label.toLowerCase()}>
-            {!c.configured ? (
-              <span className="text-faint">not set up yet</span>
-            ) : c.connected ? (
-              <span className="text-dim">
-                connected as {c.accountLabel ?? c.label} ·{" "}
-                <button type="button" onClick={() => onDisconnect(c.key)} className="text-faint hover:text-err">
-                  disconnect
+          <div key={c.key}>
+            <Row k={c.label.toLowerCase()}>
+              {!c.configured ? (
+                <span className="text-faint">not set up yet</span>
+              ) : c.connected ? (
+                <span className="text-dim">
+                  connected as {c.accountLabel ?? c.label} ·{" "}
+                  <button type="button" onClick={() => onDisconnect(c.key)} className="text-faint hover:text-err">
+                    disconnect
+                  </button>
+                </span>
+              ) : (
+                <button type="button" onClick={() => onConnect(c.key)} className="text-accent hover:underline">
+                  connect
                 </button>
-              </span>
-            ) : (
-              <button type="button" onClick={() => onConnect(c.key)} className="text-accent hover:underline">
-                connect
-              </button>
+              )}
+            </Row>
+            {c.capture === null ? null : (
+              // Off by default. On is its own read-only consent; the send grant never reads mail.
+              <Row k="">
+                <span className="text-dim">
+                  <code>Intern</code> label → private facts ·{" "}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={c.capture}
+                    onClick={() => onCapture(!c.capture)}
+                    className={c.capture ? "text-accent hover:text-err" : "text-faint hover:text-accent"}
+                  >
+                    {c.capture ? "on" : "off"}
+                  </button>
+                </span>
+              </Row>
             )}
-          </Row>
+          </div>
         ))}
         {connectors.some((c) => c.configured) ? (
           <p className="pt-1 text-faint leading-snug">{COMPOSIO_DISCLOSURE}</p>

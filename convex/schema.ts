@@ -92,9 +92,12 @@ export default defineSchema({
     ownerId: v.optional(v.id("users")),
     internId: v.optional(v.id("interns")),
     visibility: v.optional(visibility),
+    /** Set on facts captured from a member's own tools: the dedupe key for a redelivered event. */
+    source: v.optional(v.string()),
     text: v.string(),
   })
     .index("by_ownerId", ["ownerId"])
+    .index("by_ownerId_and_source", ["ownerId", "source"])
     .index("by_kind", ["kind"])
     .searchIndex("search_text", { searchField: "text" }),
 
@@ -195,6 +198,15 @@ export default defineSchema({
     connector: connectorKey,
     composioAccountId: v.optional(v.string()),
     accountLabel: v.optional(v.string()),
+    /** The member's own id inside the tool (Slack user id): who a 🧠 must come from. */
+    externalUserId: v.optional(v.string()),
+    /**
+     * A Gmail grant made only to read the `Intern` label, through its own
+     * read-only auth config and its own consent. Absent: the send grant.
+     */
+    capture: v.optional(v.boolean()),
+    /** The Composio trigger on this account, deleted with it. */
+    triggerId: v.optional(v.string()),
     status: v.union(v.literal("pending"), v.literal("active"), v.literal("failed")),
     state: v.string(),
     createdAt: v.number(),
