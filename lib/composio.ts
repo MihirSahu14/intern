@@ -116,16 +116,14 @@ export async function completeAuth(
 }
 
 /**
- * Deletes the account at Composio and revokes its credentials at the provider
- * (`revoke_on_delete=true`), so the Google/Slack grant dies with it rather
- * than sitting in Composio's store.
- * Trade-off: providers revoke per app grant, not per token, so revoking an
- * old Gmail account can also kill a newer grant the same person just gave
- * Composio's app for the same Google account (a reconnect). They then connect
- * once more; we accept that over leaving grants behind.
+ * Deletes the account at Composio. `revoke` also revokes its credentials at
+ * the provider (`revoke_on_delete=true`), so the Google/Slack grant dies with
+ * it. Providers revoke per app grant, not per token, so revoking can also kill
+ * a newer grant the same person gave Composio's app for the same account:
+ * revoke only when the member is done with the account, never on a reconnect.
  */
-export async function deleteAccount(apiKey: string, id: string): Promise<void> {
-  await call(apiKey, "DELETE", `${PATHS.account(id)}?revoke_on_delete=true`);
+export async function deleteAccount(apiKey: string, id: string, a: { revoke: boolean }): Promise<void> {
+  await call(apiKey, "DELETE", a.revoke ? `${PATHS.account(id)}?revoke_on_delete=true` : PATHS.account(id));
 }
 
 /**

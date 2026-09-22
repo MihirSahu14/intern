@@ -519,7 +519,7 @@ test("finish: a link older than 15 minutes is refused and its account deleted", 
 
   expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(false);
   expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
-  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[1][0]).toMatch(/\/connected_accounts\/ca_1$/);
   expect(f.mock.calls[1][1]?.method).toBe("DELETE");
 });
 
@@ -555,7 +555,8 @@ test("finish: reconnecting retires the older grant here and at Composio", async 
 
   expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(true);
   expect((await t.run((ctx) => ctx.db.get("connections", old)))?.status).toBe("failed");
-  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_0");
+  // Retire deletes without revoking: same Google account, the revoke would kill the new grant.
+  expect(f.mock.calls[1][0]).toMatch(/\/connected_accounts\/ca_0$/);
   expect(f.mock.calls[1][1]?.method).toBe("DELETE");
 });
 
@@ -569,7 +570,7 @@ test("disconnect marks the row failed and deletes the account at Composio", asyn
   const f = stubFetch({ success: true });
   await asUser(a).action(api.connections.disconnect, { connector: "gmail" });
   expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
-  expect(f.mock.calls[0][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[0][0]).toMatch(/\/connected_accounts\/ca_1\?revoke_on_delete=true$/);
   expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });
 
@@ -585,7 +586,7 @@ test("purge deletes the member's connections and their accounts at Composio", as
   await t.mutation(internal.users.purge, { userId: a });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect(await t.run((ctx) => ctx.db.query("connections").collect())).toHaveLength(0);
-  expect(f.mock.calls[0][0]).toContain("/connected_accounts/ca_1");
+  expect(f.mock.calls[0][0]).toMatch(/\/connected_accounts\/ca_1\?revoke_on_delete=true$/);
   expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });
 
@@ -642,7 +643,8 @@ test("finish: a member with more than 50 earlier attempts still connects, and th
   expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "gmail" });
   expect(await t.run((ctx) => ctx.db.query("connections").withIndex("by_composioAccountId", (q) => q.eq("composioAccountId", "ca_1")).unique())).toMatchObject({ status: "active" });
   expect((await t.run((ctx) => ctx.db.get("connections", old)))?.status).toBe("failed");
-  expect(f.mock.calls[1][0]).toContain("/connected_accounts/ca_0");
+  // Retire deletes without revoking: same Google account, the revoke would kill the new grant.
+  expect(f.mock.calls[1][0]).toMatch(/\/connected_accounts\/ca_0$/);
 });
 
 test("finish: Composio's own error text never reaches the client", async () => {

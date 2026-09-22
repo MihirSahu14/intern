@@ -44,10 +44,12 @@ test("a link reply without a URL or account is an error, not an empty redirect",
   await expect(connect("key", { userId: "u1", toolkit: "gmail" })).rejects.toBeInstanceOf(ComposioError);
 });
 
-test("deleteAccount deletes at Composio and revokes the grant upstream", async () => {
+test("deleteAccount revokes upstream only when asked", async () => {
   const f = replies([{ success: true }]);
-  await deleteAccount("key", "ca_1");
+  await deleteAccount("key", "ca_1", { revoke: true });
   expect(f.mock.calls[0][0]).toBe(`${COMPOSIO_API}${PATHS.account("ca_1")}?revoke_on_delete=true`);
+  await deleteAccount("key", "ca_1", { revoke: false });
+  expect(f.mock.calls[1][0]).toBe(`${COMPOSIO_API}${PATHS.account("ca_1")}`);
   expect(f.mock.calls[0][1]?.method).toBe("DELETE");
 });
 

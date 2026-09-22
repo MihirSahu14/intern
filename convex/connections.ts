@@ -40,12 +40,16 @@ export async function activeConnection(
     .first();
 }
 
-/** Deletes the account at Composio. Best-effort: our own row is already failed or gone. */
-export async function forgetAccount(composioAccountId: string): Promise<void> {
+/**
+ * Deletes the account at Composio. Best-effort: our own row is already failed
+ * or gone. `revoke` only when the member is done with that account
+ * (disconnect, purge); see deleteAccount.
+ */
+export async function forgetAccount(composioAccountId: string, a: { revoke: boolean }): Promise<void> {
   const apiKey = process.env.COMPOSIO_API_KEY;
   if (!apiKey) return;
   try {
-    await deleteAccount(apiKey, composioAccountId);
+    await deleteAccount(apiKey, composioAccountId, a);
   } catch (err) {
     console.log(`composio delete ${composioAccountId} failed: ${String(err)}`);
   }
@@ -146,7 +150,7 @@ type Finish = { ok: boolean; connector: ConnectorKey | null; reason?: string };
  * After Composio confirmed `composioAccountId` for the signed-in member: adopt
  * it only if it is on that member's own pending link from the last 15 minutes,
  * retiring any older grant. Checks the member itself rather than trusting the
- * caller. `forget` lists the Composio accounts to delete (and revoke).
+ * caller. `forget` lists the Composio accounts to delete, without revoking.
  */
 export const activate = internalMutation({
   args: { composioAccountId: v.string() },
@@ -186,6 +190,7 @@ export const activate = internalMutation({
       .take(10);
     for (const o of older) {
       await ctx.db.patch("connections", o._id, { status: "failed" });
+      // No revoke on retire: same Google account, it would kill the grant just given.
       if (o.composioAccountId) forget.push(o.composioAccountId);
     }
     await ctx.db.patch("connections", row._id, { status: "active" });
@@ -221,7 +226,7 @@ export const finish = action({
     }
 
     const { result, forget } = await ctx.runMutation(internal.connections.activate, { composioAccountId: accountId });
-    for (const id of forget) await forgetAccount(id);
+    for (const id of forget) await forgetAccount(id, { revoke: false });
     return result;
   },
 });
@@ -241,7 +246,7 @@ export const disconnect = action({
   args: { connector: connectorKey },
   handler: async (ctx, { connector }): Promise<null> => {
     const accountId: string | null = await ctx.runMutation(internal.connections.drop, { connector });
-    if (accountId) await forgetAccount(accountId);
+    if (accountId) await forgetAccount(accountId, { revoke: true });
     return null;
   },
 });
@@ -250,7 +255,7 @@ export const disconnect = action({
 export const forget = internalAction({
   args: { composioAccountId: v.string() },
   handler: async (_ctx, { composioAccountId }) => {
-    await forgetAccount(composioAccountId);
+    await forgetAccount(composioAccountId, { revoke: true });
     return null;
   },
 });
