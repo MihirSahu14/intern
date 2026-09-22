@@ -43,6 +43,8 @@ function capEdits(edits: Edits): Edits {
  * Signed-out callers just get the global window. `questions.list` does the
  * same, inlined rather than shared: one helper over both tables doesn't
  * survive Convex's generated index types.
+ *
+ * Other people's rows carry no draft, subject or recipient.
  */
 export const list = query({
   args: {},
@@ -59,7 +61,15 @@ export const list = query({
       rows.push(...mine.filter((m) => !seen.has(m._id)));
       rows.sort((a, b) => b._creationTime - a._creationTime);
     }
-    return await Promise.all(rows.map(async (a) => ({ ...a, handle: (await ownerView(ctx, a.ownerId)).handle })));
+    return await Promise.all(
+      rows.map(async (a) => {
+        const handle = (await ownerView(ctx, a.ownerId)).handle;
+        // Private drafts, shared brain: the owner gets the draft, everyone
+        // else only that one exists.
+        if (a.ownerId === userId) return { ...a, handle };
+        return { _id: a._id, _creationTime: a._creationTime, kind: a.kind, status: a.status, ownerId: a.ownerId, handle };
+      }),
+    );
   },
 });
 

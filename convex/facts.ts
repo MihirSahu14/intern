@@ -1,15 +1,24 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from "../lib/caps.ts";
+import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalQuery, mutation, query } from "./_generated/server";
-import { requireMember } from "./access";
+import { requireMember, visibleTo } from "./access";
 import { factKind } from "./schema";
 
 type FactKind = Doc<"facts">["kind"];
 
 export async function insertFact(
   ctx: MutationCtx,
-  f: { title: string; body: string; kind: FactKind; ownerId?: Id<"users">; internId?: Id<"interns"> },
+  f: {
+    title: string;
+    body: string;
+    kind: FactKind;
+    ownerId?: Id<"users">;
+    internId?: Id<"interns">;
+    visibility?: Doc<"facts">["visibility"];
+  },
 ) {
   return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });
 }
@@ -41,19 +50,23 @@ export const teach = mutation({
 /**
  * What an intern reads before it starts: the newest house-style lessons
  * (preferences and corrections, the learning loop), then the best full-text
- * matches for the task.
+ * matches for the task. Public facts plus the intern owner's own private ones.
+ *
+ * ponytail: over-read, then filter. Other people's private facts take slots
+ * in these windows; index by visibility if recall starts coming back thin.
  */
 export const recall = internalQuery({
-  args: { task: v.string() },
-  handler: async (ctx, { task }) => {
+  args: { task: v.string(), ownerId: v.id("users") },
+  handler: async (ctx, { task, ownerId }) => {
+    const usable = (rows: Doc<"facts">[], n: number) => rows.filter((f) => visibleTo(f, ownerId)).slice(0, n);
     const lessons = [
-      ...(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "preference")).order("desc").take(3)),
-      ...(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "correction")).order("desc").take(3)),
+      ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "preference")).order("desc").take(12), 3),
+      ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "correction")).order("desc").take(12), 3),
     ];
     // Convex search takes at most 16 terms.
     const terms = task.split(/\s+/).filter(Boolean).slice(0, 16).join(" ");
     const hits = terms
-      ? await ctx.db.query("facts").withSearchIndex("search_text", (q) => q.search("text", terms)).take(5)
+      ? usable(await ctx.db.query("facts").withSearchIndex("search_text", (q) => q.search("text", terms)).take(15), 5)
       : [];
 
     const seen = new Set<string>();
@@ -68,8 +81,10 @@ export const recall = internalQuery({
 });
 
 /**
- * The shared graph, shaped for BrainGraph. Public: the whole brain is public
- * by design. Only GitHub handle and avatar are shown for people.
+ * The shared graph, shaped for BrainGraph. Public, minus what is private:
+ * other people's owner-only facts are left out, and other people's drafts
+ * show only that they exist. Only GitHub handle and avatar are shown for
+ * people.
  *
  * ponytail: newest 400 facts / 60 interns / 60 drafts. Paginate if the
  * community outgrows one screen.
@@ -77,7 +92,8 @@ export const recall = internalQuery({
 export const graph = query({
   args: {},
   handler: async (ctx) => {
-    const facts = await ctx.db.query("facts").order("desc").take(400);
+    const viewer = await getAuthUserId(ctx);
+    const facts = (await ctx.db.query("facts").order("desc").take(400)).filter((f) => visibleTo(f, viewer));
     const interns = await ctx.db.query("interns").order("desc").take(60);
     const actions = await ctx.db.query("actions").order("desc").take(60);
 
@@ -96,7 +112,8 @@ export const graph = query({
     };
 
     for (const i of interns) {
-      nodes.set(i._id, { id: i._id, label: i.task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
+      const task = i.ownerId === viewer ? i.task : redactEmails(i.task);
+      nodes.set(i._id, { id: i._id, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
       edges.push({ source: await person(i.ownerId), target: i._id, rel: "briefed" });
     }
     for (const f of facts) {
@@ -109,7 +126,9 @@ export const graph = query({
       }
     }
     for (const a of actions) {
-      nodes.set(a._id, { id: a._id, label: `✉ ${a.draft.subject || a.title}`.slice(0, 56), kind: "action", weight: 4, detail: a.status });
+      const label =
+        a.ownerId === viewer ? `✉ ${a.draft.subject || a.title}`.slice(0, 56) : a.status === "sent" ? "✉ sent" : "✉ a draft";
+      nodes.set(a._id, { id: a._id, label, kind: "action", weight: 4, detail: a.status });
       if (nodes.has(a.internId)) edges.push({ source: a.internId, target: a._id, rel: "drafted" });
     }
 

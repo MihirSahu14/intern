@@ -11,6 +11,9 @@ const STATUS: Record<ActionStatus, { dot: string; text: string }> = {
   pending: { dot: "bg-k-action pulse-slow", text: "text-k-action" },
   approved: { dot: "bg-ok", text: "text-ok" },
   rejected: { dot: "bg-faint", text: "text-faint" },
+  sending: { dot: "bg-k-action pulse-slow", text: "text-k-action" },
+  sent: { dot: "bg-ok", text: "text-ok" },
+  failed: { dot: "bg-err", text: "text-err" },
 };
 
 export type Decision =

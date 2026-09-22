@@ -273,10 +273,11 @@ export type ActionKind = "email" | "slack" | "calendar";
 export const ACTION_KINDS: ActionKind[] = ["email", "slack", "calendar"];
 
 /**
- * Approvals are sandbox-only — nothing is ever sent — so there is no `sent` or
- * `failed` to reach. These three are exactly what `actions.status` stores.
+ * What `actions.status` stores. A sandbox approval stops at `approved`;
+ * `sending`/`sent`/`failed` exist only for a draft going out through a
+ * member's connected account.
  */
-export type ActionStatus = "pending" | "approved" | "rejected";
+export type ActionStatus = "pending" | "approved" | "rejected" | "sending" | "sent" | "failed";
 
 export type Draft = {
   /** Email addresses, or Slack channel ids/names for a slack action. */
@@ -325,6 +326,10 @@ export type ProposedAction = {
   decidedVia?: "voice" | "cockpit" | "graduated";
   /** What the executor reported back. */
   result?: string;
+  /** Which connected account it went out through, if it went out at all. */
+  connector?: string;
+  /** Composio's reason, when a send failed. */
+  sendError?: string;
 };
 
 /** What would actually go out: the person's version if they wrote one. */

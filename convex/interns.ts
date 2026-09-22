@@ -1,8 +1,10 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
 import { PROMPT_VERSION } from "../lib/brief.ts";
+import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
 import { insertFact } from "./facts";
@@ -142,14 +144,40 @@ export const cancel = mutation({
 export const list = query({
   args: {},
   handler: async (ctx) => {
+    const viewer = await getAuthUserId(ctx);
     const rows = await ctx.db.query("interns").order("desc").take(40);
-    return await Promise.all(rows.map(async (i) => ({ ...i, ...(await ownerView(ctx, i.ownerId)) })));
+    return await Promise.all(
+      rows.map(async (i) => ({
+        ...i,
+        ...(await ownerView(ctx, i.ownerId)),
+        // A brief is public, an address in it isn't. The report may quote the
+        // owner's private facts, so only the owner reads it.
+        ...(i.ownerId === viewer ? {} : { task: redactEmails(i.task), summary: undefined }),
+      })),
+    );
   },
 });
 
+/**
+ * Oldest→newest, last 400. Other people's streamed output (`out`) is withheld:
+ * it carries the draft and whatever the intern recalled from its owner's
+ * private facts. Their other lines come through with addresses redacted.
+ */
 export const logs = query({
   args: {},
-  handler: async (ctx) => (await ctx.db.query("logs").order("desc").take(400)).reverse(),
+  handler: async (ctx) => {
+    const viewer = await getAuthUserId(ctx);
+    const rows = (await ctx.db.query("logs").order("desc").take(400)).reverse();
+    const owners = new Map<Id<"interns">, Id<"users"> | null>();
+    const out: Doc<"logs">[] = [];
+    for (const l of rows) {
+      if (!owners.has(l.internId)) owners.set(l.internId, (await ctx.db.get("interns", l.internId))?.ownerId ?? null);
+      const owner = owners.get(l.internId);
+      if (viewer !== null && owner === viewer) out.push(l);
+      else if (l.level !== "out") out.push({ ...l, text: redactEmails(l.text) });
+    }
+    return out;
+  },
 });
 
 // --- called by run.go ------------------------------------------------------
@@ -169,7 +197,7 @@ export const start = internalMutation({
       return null;
     }
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION });
-    return { task: i.task };
+    return { task: i.task, ownerId: i.ownerId };
   },
 });
 

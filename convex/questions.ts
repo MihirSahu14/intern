@@ -12,15 +12,20 @@ export const list = query({
   handler: async (ctx) => {
     const rows = await ctx.db.query("questions").order("desc").take(30);
     const userId = await getAuthUserId(ctx);
-    if (!userId) return rows;
-    const mine = await ctx.db
-      .query("questions")
-      .withIndex("by_ownerId", (q) => q.eq("ownerId", userId))
-      .order("desc")
-      .take(15);
-    const seen = new Set(rows.map((r) => r._id));
-    rows.push(...mine.filter((m) => !seen.has(m._id)));
-    return rows.sort((a, b) => b._creationTime - a._creationTime);
+    if (userId) {
+      const mine = await ctx.db
+        .query("questions")
+        .withIndex("by_ownerId", (q) => q.eq("ownerId", userId))
+        .order("desc")
+        .take(15);
+      const seen = new Set(rows.map((r) => r._id));
+      rows.push(...mine.filter((m) => !seen.has(m._id)));
+      rows.sort((a, b) => b._creationTime - a._creationTime);
+    }
+    // A question can quote the owner's private facts; others see only that it exists.
+    return rows.map((q) =>
+      q.ownerId === userId ? q : { _id: q._id, _creationTime: q._creationTime, ownerId: q.ownerId, internId: q.internId, status: q.status },
+    );
   },
 });
 

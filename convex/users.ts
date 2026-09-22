@@ -68,7 +68,13 @@ export const purge = internalMutation({
       await ctx.db.delete("interns", r._id);
     }
 
-    more = [facts, actions, questions, interns].some((rows) => rows.length === BATCH);
+    const connections = await ctx.db
+      .query("connections")
+      .withIndex("by_userId_and_connector", (q) => q.eq("userId", userId))
+      .take(BATCH);
+    for (const r of connections) await ctx.db.delete("connections", r._id);
+
+    more = [facts, actions, questions, interns, connections].some((rows) => rows.length === BATCH);
     if (more) await ctx.scheduler.runAfter(0, internal.users.purge, { userId });
     return null;
   },

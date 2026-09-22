@@ -99,46 +99,53 @@ export default function Cockpit({ me }: { me: Me }) {
     [logRows, local],
   );
 
-  // Your own drafts and questions only: only you can act on them.
+  // Your own drafts and questions only: only you can act on them, and only
+  // your own rows carry their contents.
   const outbox = useMemo<ProposedAction[]>(
     () =>
-      (actionRows ?? [])
-        .filter((a) => a.ownerId === me.userId)
-        .map((a) => ({
-          id: a._id,
-          internId: a.internId,
-          ownerId: a.ownerId,
-          kind: a.kind,
-          status: a.status,
-          title: a.title,
-          draft: a.draft,
-          accepted: a.accepted,
-          editedFields: a.editedFields as ProposedAction["editedFields"],
-          rationale: a.rationale,
-          sources: a.sources,
-          createdAt: a._creationTime,
-          decidedAt: a.decidedAt,
-          decidedVia: "cockpit",
-          result: a.reason,
-        })),
+      (actionRows ?? []).flatMap((a) =>
+        "draft" in a && a.ownerId === me.userId
+          ? [{
+              id: a._id,
+              internId: a.internId,
+              ownerId: a.ownerId,
+              kind: a.kind,
+              status: a.status,
+              title: a.title,
+              draft: a.draft,
+              accepted: a.accepted,
+              editedFields: a.editedFields as ProposedAction["editedFields"],
+              rationale: a.rationale,
+              sources: a.sources,
+              createdAt: a._creationTime,
+              decidedAt: a.decidedAt,
+              decidedVia: "cockpit" as const,
+              result: a.reason,
+              connector: a.connector,
+              sendError: a.sendError,
+            }]
+          : [],
+      ),
     [actionRows, me.userId],
   );
 
   const questions = useMemo<Question[]>(
     () =>
-      (questionRows ?? [])
-        .filter((q) => q.ownerId === me.userId)
-        .map((q) => ({
-          id: q._id,
-          internId: q.internId,
-          ownerId: q.ownerId,
-          question: q.question,
-          context: q.context,
-          status: q.status,
-          answer: q.answer,
-          askedAt: q._creationTime,
-          resumedBy: q.resumedBy,
-        })),
+      (questionRows ?? []).flatMap((q) =>
+        "question" in q && q.ownerId === me.userId
+          ? [{
+              id: q._id,
+              internId: q.internId,
+              ownerId: q.ownerId,
+              question: q.question,
+              context: q.context,
+              status: q.status,
+              answer: q.answer,
+              askedAt: q._creationTime,
+              resumedBy: q.resumedBy,
+            }]
+          : [],
+      ),
     [questionRows, me.userId],
   );
 

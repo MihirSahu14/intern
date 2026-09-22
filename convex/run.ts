@@ -31,7 +31,7 @@ export const go = internalAction({
       const started = await ctx.runMutation(internal.interns.start, { internId });
       if (!started) return null;
 
-      const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task });
+      const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task, ownerId: started.ownerId });
       await ctx.runMutation(internal.interns.noteRecall, {
         internId,
         recalled: recalled.map((f) => ({ id: f.id, kind: f.kind })),
