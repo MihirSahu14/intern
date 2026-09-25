@@ -10,20 +10,77 @@ gone from this branch; the sections below still talk about them.
 ## Public MVP
 
 What this is now: one public shared brain, GitHub sign-in, interns that run
-inside Convex on Gemini, and approvals that send through the member's own
-Gmail or Slack once they connect it (sandbox until then).
+inside Convex on any OpenAI-compatible model (Groq by default — see **Model
+provider** below), and approvals that send through the member's own Gmail or
+Slack once they connect it (sandbox until then).
 
 **The run path.** `interns.spawn` (mutation) checks the caps, inserts the row
 and schedules `internal.run.go` (action), which recalls facts, makes one
-streamed Gemini call over plain `fetch`, parses the report, and calls
-`internal.interns.finish` (mutation) — facts, a draft *or* a question, in one
-transaction. A run that throws lands in `internal.interns.fail` instead, which
-still records what Google billed. No agent service, no Python, no queue.
+streamed model call over plain `fetch` (`lib/model.ts`), parses the report,
+and calls `internal.interns.finish` (mutation) — facts, a draft *or* a
+question, in one transaction. A run that throws lands in
+`internal.interns.fail` instead, which still records what the provider
+billed. No agent service, no Python, no queue.
 
 **Caps**, all in `lib/caps.ts`, all checked inside mutations: 5 briefs per
 person per UTC day, 1 intern working at a time, 20 facts per person per day,
 $5 of model spend across everyone per day. A run that produced nothing billable
-(free-tier 429) doesn't cost a brief.
+(the model was busy — 429/503/529) doesn't cost a brief.
+
+### Model provider
+
+`lib/model.ts` speaks the OpenAI-compatible `/chat/completions` streaming API
+over plain `fetch` — no SDK — so any provider that implements that shape works
+by changing env, no code. These are **Convex** env vars (`npx convex env set
+... `, on both the dev and prod deployments), plus the same three in
+`.env.local` for `npm run eval`, which is a plain node script and can't read
+the deployment's env (see `.env.local.example`).
+
+| Var | Default | What it is |
+|---|---|---|
+| `MODEL_BASE_URL` | `https://api.groq.com/openai/v1` | provider's OpenAI-compatible base URL |
+| `MODEL_NAME` | `openai/gpt-oss-20b` | model id, as that provider names it |
+| `MODEL_API_KEY` | none — required | provider API key; unset fails the run with the same busy-style copy, no brief charged |
+
+**Default: Groq, `openai/gpt-oss-20b`.** No card to sign up (console.groq.com),
+30 req/min · 1,000 req/day · 8,000 tokens/min per model — official docs,
+console.groq.com/docs/rate-limits, dated 2026-09-22 in
+`.superpowers/sdd/llm-providers-research.md`. That's why it replaced Gemini:
+Gemini's free tier rate-limits **per Google Cloud project**, not per key, so
+every visitor to the public demo shared one ~5 req/min bucket and 503s failed
+19 of 20 eval briefs. Get a key at console.groq.com.
+
+**Paid fallback: OpenAI, `gpt-5-nano`.**
+```
+MODEL_BASE_URL=https://api.openai.com/v1
+MODEL_NAME=gpt-5-nano
+MODEL_API_KEY=<your OpenAI key>
+```
+$0.05 / 1M input, $0.40 / 1M output — about $0.00175/run at this app's rough
+token shape (official pricing, developers.openai.com/api/docs/pricing).
+Requires a card on the OpenAI account.
+
+**Gemini stays reachable, through its own OpenAI-compatibility shim** (not the
+native `generateContent` API):
+```
+MODEL_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+MODEL_NAME=gemini-flash-latest
+MODEL_API_KEY=<your Gemini key>
+```
+Base URL, `Authorization: Bearer` auth and `stream: true` SSE confirmed
+against Google's own docs, ai.google.dev/gemini-api/docs/openai (fetched
+2026-09-25). Get a key at aistudio.google.com. This is the same per-project
+rate limit that motivated the move to Groq — keep it as a fallback, not the
+default.
+
+**Pricing for the $5/day cap** is env-configurable too: `MODEL_USD_PER_M_IN`
+and `MODEL_USD_PER_M_OUT` (both `lib/caps.ts`), defaulting to Groq's *paid*
+`gpt-oss-20b` list price ($0.075 in / $0.30 out per 1M) so the cap stays
+meaningful if this moves off the free tier. On the free tier itself nothing is
+billed, so the cap just bounds runs/day rather than dollars — see the
+`ponytail:` comment in `lib/caps.ts`.
+
+`GEMINI_API_KEY` / `GEMINI_MODEL` are gone — nothing reads them anymore.
 
 **Approvals send, once a member connects an account.** With Composio set up
 (`COMPOSIO_API_KEY` + `COMPOSIO_VERIFIER_URL`), approving an email or Slack

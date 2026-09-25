@@ -349,7 +349,7 @@ test("other people's interns show no error text, no recalledFactIds and no recal
       ownerId: a,
       task: "t",
       status: "failed",
-      error: 'gemini rejected argument "body": "secret renewal terms"',
+      error: 'model rejected argument "body": "secret renewal terms"',
       recalledFactIds: [factId],
       recalledPrivate: true,
       countsTowardCap: true,
@@ -1155,7 +1155,9 @@ test("an edited sandbox approval does broadcast the lesson it learns", async () 
   broadcastEnv();
   const { t, seedUser, asUser, seedDraft } = setup();
   const a = await seedUser("a");
-  const { actionId } = await seedDraft(a);
+  // A real sandbox draft is never draftedLive: interns.ts only sets it true
+  // when a connector was configured and connected as the run started.
+  const { actionId } = await seedDraft(a, "email", { draftedLive: false });
   const f = stubFetch({});
 
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } });
@@ -1693,10 +1695,56 @@ test("a lesson from a draft whose run read something private stays private, even
   expect(JSON.stringify(f.mock.calls)).not.toMatch(/40k|do not send/);
 });
 
+test("a lesson from a draft drafted live stays owner-only even after the member disconnects", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const connId = await seedActive(a, "gmail");
+  const { actionId } = await seedDraft(a, "email", { draftedLive: true, recalledPrivate: false });
+  // Disconnected before the decision: no live connection at decide time, so
+  // `connection` alone would read this as safe to make public.
+  await t.run((ctx) => ctx.db.patch("connections", connId, { status: "failed" }));
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "changed my mind" });
+
+  const correction = (await allFacts(t)).find((x) => x.kind === "correction");
+  expect(correction).toMatchObject({ visibility: "owner", ownerId: a });
+});
+
+test("an action row with no recalledPrivate field falls back to its intern's recalledPrivate", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  // Modeled on a row from before `actions.recalledPrivate` existed: the
+  // intern carries it, the action doesn't carry the field at all (not `false`).
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "t", status: "done", countsTowardCap: true, recalledPrivate: true }),
+  );
+  const actionId = await t.run((ctx) =>
+    ctx.db.insert("actions", {
+      ownerId: a,
+      internId,
+      kind: "email",
+      status: "pending",
+      title: "email to ann@acme.com — Pricing",
+      draft: { to: ["ann@acme.com"], subject: "Pricing", body: "Secret body" },
+      rationale: "because",
+      sources: [],
+      recalledCorrection: false,
+    }),
+  );
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "wrong person" });
+
+  const correction = (await allFacts(t)).find((x) => x.kind === "correction");
+  expect(correction).toMatchObject({ visibility: "owner", ownerId: a });
+});
+
 test("a public lesson names no address, and its log line quotes none of the draft", async () => {
   const { t, seedUser, asUser, seedDraft } = setup();
   const a = await seedUser("a");
-  const { actionId, internId } = await seedDraft(a);
+  // A real sandbox draft is never draftedLive: interns.ts only sets it true
+  // when a connector was configured and connected as the run started.
+  const { actionId, internId } = await seedDraft(a, "email", { draftedLive: false });
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "cc bob@acme.com instead" });
   const [fact] = await allFacts(t);
   expect(fact.visibility).toBeUndefined();

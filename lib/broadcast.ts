@@ -15,9 +15,14 @@ export type BroadcastEvent =
 /**
  * A member's own words, trimmed, with every link swapped out: the community's
  * channels would otherwise unfurl whatever a title points at.
+ *
+ * No leading `\b`: a URL glued directly onto a word character (`_https://…`,
+ * `xhttps://…`) has no word boundary right before `https`, so `\b` let it
+ * escape the strip entirely. `https?://` and `www.` are themselves enough of
+ * an anchor.
  * ponytail: scheme and www. only; a bare `evil.com` stays text (Slack may still link it).
  */
-const cut = (s: string) => s.replace(/\b(?:https?:\/\/|www\.)\S+/gi, "[link]").slice(0, 120);
+const cut = (s: string) => s.replace(/(?:https?:\/\/|www\.)\S+/gi, "[link]").slice(0, 120);
 
 export function broadcastText(e: BroadcastEvent, siteUrl: string): string {
   const what =

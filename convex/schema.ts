@@ -113,7 +113,7 @@ export default defineSchema({
     error: v.optional(v.string()),
     startedAt: v.optional(v.number()),
     endedAt: v.optional(v.number()),
-    /** False when the run died on Gemini's free-tier 429, so it isn't charged. */
+    /** False when the run died on the model being busy (429/503/529), so it isn't charged. */
     countsTowardCap: v.boolean(),
     // Eval fields, one row per run.
     promptVersion: v.optional(v.string()),

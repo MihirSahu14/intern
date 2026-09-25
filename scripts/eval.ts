@@ -6,14 +6,15 @@
  *
  *   npm run eval
  *
- * About $0.10 per run on paid Gemini; free tier works but paces at 6s/brief.
+ * Reads MODEL_* from .env.local (see .env.local.example). Cents per run on
+ * Groq's free tier; paces at 6s/brief to stay under its 30 req/min.
  * Exits 1 if the action parse rate is under 90%, if more than a quarter of the
  * briefs errored, or if every attempt errored out before producing anything to
- * rate — a Gemini outage, whole or partial, can't look like a pass.
+ * rate — a model outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
 import { PROMPT_VERSION, brief } from "../lib/brief.ts";
-import { stream } from "../lib/gemini.ts";
+import { stream } from "../lib/model.ts";
 import { parseQuestionBlock } from "../lib/parse.ts";
 
 type Expect = "action" | "question" | "any";

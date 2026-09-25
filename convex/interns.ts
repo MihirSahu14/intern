@@ -221,7 +221,7 @@ export const start = internalMutation({
     const i = await ctx.db.get("interns", internId);
     if (!i) return null;
     if (i.status !== "queued") {
-      // Cancelled before its scheduled run ever reached Gemini: no tokens
+      // Cancelled before its scheduled run ever reached the model: no tokens
       // were spent, but dispatch's active check still needs a terminal
       // endedAt to release the concurrency slot.
       if (i.status === "cancelled" && i.endedAt === undefined) {
