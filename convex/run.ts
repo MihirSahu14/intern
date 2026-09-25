@@ -1,12 +1,13 @@
 import { v } from "convex/values";
 import { parseActionBlock } from "../lib/action-block.ts";
 import { brief } from "../lib/brief.ts";
-import { describe, stream } from "../lib/model.ts";
+import { NOT_CONFIGURED, describe, stream } from "../lib/model.ts";
 import { parseFactBlocks, parseQuestionBlock } from "../lib/parse.ts";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 
 const BUSY = "The model is busy, try again in a minute.";
+const NOT_SET_UP = "The model isn't set up yet.";
 
 /**
  * One intern run: recall, one streamed model call, parse, finish.
@@ -102,9 +103,13 @@ export const go = internalAction({
       // an overloaded model that returned zero output tokens produced
       // nothing billable, so it shouldn't cost a brief.
       const busy = ["429", "503", "529"].some((code) => message.startsWith(`model ${code}`));
+      // Matched on model.ts's own exported marker, not by comparing this
+      // whole message — an unset key is a setup problem, not the model
+      // being busy, and telling the member that is more honest.
+      const notConfigured = message === NOT_CONFIGURED;
       await ctx.runMutation(internal.interns.fail, {
         internId,
-        error: busy ? BUSY : message.slice(0, 500),
+        error: notConfigured ? NOT_SET_UP : busy ? BUSY : message.slice(0, 500),
         countsTowardCap: usage.out > 0,
         tokensIn: usage.in,
         tokensOut: usage.out,

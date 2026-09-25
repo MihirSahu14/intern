@@ -42,6 +42,13 @@ export const available = () => Boolean(key());
 
 export const describe = () => modelName();
 
+/**
+ * The exact message `stream()` throws when `MODEL_API_KEY` is unset — a
+ * stable marker callers (run.ts) match on, rather than comparing the whole
+ * error message, so it stays a reliable signal even if this wording changes.
+ */
+export const NOT_CONFIGURED = "MODEL_API_KEY unset";
+
 type Chunk = { text?: string; usage?: { in: number; out: number }; done?: boolean };
 
 /**
@@ -55,7 +62,7 @@ export async function* stream(
   opts: { signal?: AbortSignal; temperature?: number } = {},
 ): AsyncGenerator<Chunk> {
   const apiKey = key();
-  if (!apiKey) throw new Error("MODEL_API_KEY unset");
+  if (!apiKey) throw new Error(NOT_CONFIGURED);
 
   const res = await fetch(`${baseUrl()}/chat/completions`, {
     method: "POST",

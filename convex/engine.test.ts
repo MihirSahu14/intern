@@ -1,10 +1,15 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { DAILY_BUDGET_USD, DAY_WINDOW, costUsd, dayKey } from "../lib/caps.ts";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -80,6 +85,31 @@ test("a failed run on a busy model does not consume a brief", async () => {
     tokensOut: 5,
   });
   expect(await briefsToday()).toBe(2);
+});
+
+test("a missing MODEL_API_KEY fails the run through run.go with setup copy, no brief charged", async () => {
+  vi.stubEnv("MODEL_API_KEY", "");
+  // stream() must throw on the missing key before ever calling fetch — a
+  // stray call here would be a real network attempt, which this test (and
+  // the task's own rules) must never make.
+  const f = vi.fn(async () => {
+    throw new Error("run.go must not make a real network call");
+  });
+  vi.stubGlobal("fetch", f);
+
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "t", status: "queued", countsTowardCap: true }),
+  );
+
+  await t.action(internal.run.go, { internId });
+
+  const row = await t.run((ctx) => ctx.db.get("interns", internId));
+  expect(row?.status).toBe("failed");
+  expect(row?.error).toBe("The model isn't set up yet.");
+  expect(row?.countsTowardCap).toBe(false);
+  expect(f).not.toHaveBeenCalled();
 });
 
 test("the global budget stops everyone", async () => {
