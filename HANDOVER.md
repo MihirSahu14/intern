@@ -411,6 +411,8 @@ never Vercel — every one is read server-side, in `convex/` or `lib/` that
 | `BROADCAST_SLACK_WEBHOOK_URL` | Optional — unset means no Slack broadcasts | A separate test channel's incoming-webhook URL | Real channel's incoming-webhook URL |
 | `SITE_URL` | Already set (Convex Auth) — reused to build the `/u/<handle>` link in every broadcast line | `http://localhost:3000` | `https://intern-brain.vercel.app` |
 | `CAP_EXEMPT_HANDLES` | Optional — unset means nobody is exempt | Your own GitHub handle(s), comma-separated, for your own testing; exempt members still spend the shared budget | Unset unless you're testing on prod yourself |
+| `COMMUNITY_SLACK_TEAM_ID` | Optional — unset means a member may connect any Slack workspace. Set, a connect from any other workspace (or one whose `auth.test` fails) is refused and its grant revoked | Your test workspace's `T…` id (see "Community Slack" below) | The community workspace's `T…` id |
+| `COMMUNITY_SLACK_INVITE_URL` | Optional — unset (or not `https://`) means no "Join the community Slack first" link in the rail | The test workspace's invite link | The community workspace's never-expiring invite link |
 
 Unset `COMPOSIO_API_KEY`/`COMPOSIO_VERIFIER_URL` together means the whole app
 runs in sandbox (drafts approve but nothing sends, nothing captures). Unset
@@ -465,6 +467,25 @@ early with no log.
    App-Level Token (`xapp-…`, scope `authorizations:read`) on it; Composio
    gives back a `webhook_url`. Paste that URL into the Slack app's Event
    Subscriptions → Request URL, and subscribe to `reaction_added`.
+
+### Community Slack (~15 min)
+
+The demo's one public workspace: members join it, connect their own Slack
+through Composio, and approved Slack drafts post as them there
+(`as_user: true`), nowhere else.
+
+- **Create the workspace:** slack.com → Create a workspace, on the free plan.
+- **Never-expiring invite link:** Invite people → Copy invite link → Edit link
+  settings → Never expires. That link is `COMMUNITY_SLACK_INVITE_URL`; the
+  rail shows it to anyone who hasn't connected Slack yet.
+- **Team ID:** open the workspace in a browser; the URL is
+  `app.slack.com/client/T…/…`, and the `T…` segment is the team ID.
+- **Set both on prod** (your terminal, not an agent's):
+  `npx convex env set --prod COMMUNITY_SLACK_TEAM_ID T…` and
+  `npx convex env set --prod COMMUNITY_SLACK_INVITE_URL https://join.slack.com/…`.
+- **App approval:** on a free workspace, members can install apps by default.
+  If "App management" is restricted, the workspace owner has to
+  approve Composio (or your custom Slack app) before anyone can connect.
 
 ### Gmail (~30 min)
 
