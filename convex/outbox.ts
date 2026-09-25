@@ -154,11 +154,20 @@ export const decide = mutation({
     const connector = connectorFor(action.kind);
     const live = connector && isConfigured(connector, process.env) ? connector : null;
     const connection = live ? await activeConnection(ctx, user._id, live.key) : null;
+    // A row from before `recalledPrivate` existed on `actions` carries no
+    // field at all (not `false`) — fall back to the intern row's own value
+    // rather than reading a missing field as "nothing private happened".
+    const recalledPrivate = action.recalledPrivate ?? (await ctx.db.get("interns", action.internId))?.recalledPrivate ?? false;
     // The lesson quotes the draft: its recipients and its whole body. It stays
-    // with its owner when the draft could reach a real person, or when the run
-    // that wrote it read anything private (a calendar draft never has a
+    // with its owner when the draft could reach a real person right now
+    // (`connection`), when it was drafted for real sending on a deployment
+    // that still has this kind's connector configured — so it names a real
+    // person even after the member personally disconnects (`live &&
+    // action.draftedLive`; on a deployment with no connector at all, nothing
+    // this draft names was ever going out for real) — or when the run that
+    // wrote it read anything private (a calendar draft never has a
     // connector, but can still quote a send write-back or a captured email).
-    const visibility = connection || action.recalledPrivate ? ("owner" as const) : undefined;
+    const visibility = connection || recalledPrivate || (live && action.draftedLive) ? ("owner" as const) : undefined;
     // A public lesson still names no address, and its log line quotes nothing.
     const lesson = (c: { title: string; body: string }) =>
       visibility ? c : { title: redactEmails(c.title), body: redactEmails(c.body) };
