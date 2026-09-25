@@ -1155,7 +1155,9 @@ test("an edited sandbox approval does broadcast the lesson it learns", async () 
   broadcastEnv();
   const { t, seedUser, asUser, seedDraft } = setup();
   const a = await seedUser("a");
-  const { actionId } = await seedDraft(a);
+  // A real sandbox draft is never draftedLive: interns.ts only sets it true
+  // when a connector was configured and connected as the run started.
+  const { actionId } = await seedDraft(a, "email", { draftedLive: false });
   const f = stubFetch({});
 
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Edited body" } });
@@ -1740,7 +1742,9 @@ test("an action row with no recalledPrivate field falls back to its intern's rec
 test("a public lesson names no address, and its log line quotes none of the draft", async () => {
   const { t, seedUser, asUser, seedDraft } = setup();
   const a = await seedUser("a");
-  const { actionId, internId } = await seedDraft(a);
+  // A real sandbox draft is never draftedLive: interns.ts only sets it true
+  // when a connector was configured and connected as the run started.
+  const { actionId, internId } = await seedDraft(a, "email", { draftedLive: false });
   await asUser(a).mutation(api.outbox.decide, { actionId, decision: "reject", reason: "cc bob@acme.com instead" });
   const [fact] = await allFacts(t);
   expect(fact.visibility).toBeUndefined();
