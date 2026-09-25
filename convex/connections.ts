@@ -107,6 +107,7 @@ export const mine = query({
           accountLabel: row?.accountLabel ?? null,
           /** The Intern label: null when not offered, else whether it's on. */
           capture: offered ? !!(userId && (await activeConnection(ctx, userId, c.key, true))) : null,
+          disclosure: c.disclosure,
         };
       }),
     );

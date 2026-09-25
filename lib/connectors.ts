@@ -22,6 +22,8 @@ export type Connector = {
   /** Which draft kind it sends. */
   forKind: ActionKind;
   toArguments(draft: Draft): Record<string, unknown>;
+  /** Shown under the connect control: what this grant actually lets Composio do. */
+  disclosure: string;
 };
 
 // Tool slugs and argument names confirmed against docs.composio.dev/toolkits/{gmail,slack} on 2026-09-21 (Task 1 Step 1).
@@ -43,6 +45,12 @@ export const CONNECTORS: Connector[] = [
       subject: d.subject,
       body: d.body,
     }),
+    // Google blocks a `gmail.send`-only auth config on Composio's shared app,
+    // so this connects through Composio's default managed config instead —
+    // full mailbox access (`https://mail.google.com/`), not send-only. Say
+    // so; see HANDOVER.md's "Model provider" section for the least-privilege
+    // alternative (Mihir's own Google OAuth app).
+    disclosure: "Composio holds this connection. It can read and send your mail; Intern only ever sends what you approve.",
   },
   {
     key: "slack",
@@ -55,6 +63,7 @@ export const CONNECTORS: Connector[] = [
       channel: d.to[0],
       markdown_text: d.subject ? `*${d.subject}*\n${d.body}` : d.body,
     }),
+    disclosure: "Composio holds this connection. Intern only posts what you approve.",
   },
 ];
 
@@ -77,9 +86,6 @@ export function connectorByKey(key: ConnectorKey): Connector {
  */
 export const isConfigured = (_c: Connector, env: Record<string, string | undefined>) =>
   !!env.COMPOSIO_API_KEY && !!env.COMPOSIO_VERIFIER_URL?.startsWith("https://");
-
-/** Shown by the connect buttons: who actually holds the member's grant. */
-export const COMPOSIO_DISCLOSURE = "Composio holds this connection for Intern.";
 
 const firstLine = (s: string) => s.split("\n").find((l) => l.trim())?.trim() ?? "";
 
