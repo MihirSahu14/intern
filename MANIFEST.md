@@ -33,8 +33,10 @@ npx convex env set KEY value
 
 | Key | Unlocks | Set by |
 |---|---|---|
-| `GEMINI_API_KEY` | interns thinking at all — without it every run fails | you, from AI Studio |
-| `GEMINI_MODEL` | optional override; defaults to `gemini-flash-latest` | you |
+| `MODEL_API_KEY` | interns thinking at all — without it every run fails | you, from the provider (Groq's console by default) |
+| `MODEL_BASE_URL` | optional override; defaults to Groq, `https://api.groq.com/openai/v1` | you |
+| `MODEL_NAME` | optional override; defaults to `openai/gpt-oss-20b` | you |
+| `MODEL_USD_PER_M_IN` / `MODEL_USD_PER_M_OUT` | optional override of the $5/day cap's per-token price; defaults to Groq's paid gpt-oss-20b rate | you |
 | `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` | GitHub sign-in, the only way in | a GitHub OAuth App |
 | `SITE_URL` | where the OAuth callback returns to | you |
 | `JWKS` / `JWT_PRIVATE_KEY` | session tokens | `npx @convex-dev/auth`, once |

@@ -19,13 +19,14 @@ npx convex dev     # the backend (one watcher at a time)
 
 ```
 spawn (mutation)          caps checked, row inserted, action scheduled
-  → internal.run.go       recall → one streamed Gemini call → parse
+  → internal.run.go       recall → one streamed model call → parse
       → finish (mutation) facts, a draft, or a question — one transaction
 ```
 
 There is no separate agent service. The whole run is a Convex action calling
-Gemini over plain `fetch` (`lib/gemini.ts`), so the API key lives on the Convex
-deployment and never reaches a browser.
+any OpenAI-compatible model over plain `fetch` (`lib/model.ts`; Groq by
+default), so the API key lives on the Convex deployment and never reaches a
+browser.
 
 An intern ends its report with a fenced ` ```action ` or ` ```question ` block.
 `lib/action-block.ts` and `lib/parse.ts` parse them, and say *why* a block was
@@ -86,7 +87,7 @@ more than a quarter of the briefs errored, so an outage can't read as a pass.
 
 ```
 convex/interns.ts   spawn, cancel, and every write a finished run makes
-convex/run.ts       the action: recall → Gemini → parse → finish
+convex/run.ts       the action: recall → the model → parse → finish
 convex/facts.ts     teach, recall, and the graph the cockpit draws
 convex/outbox.ts    approve/reject, and the fact each decision leaves behind
 convex/questions.ts what interns are parked on, and resuming them
@@ -94,7 +95,7 @@ convex/community.ts the feed, the landing counts, /stats
 convex/users.ts     consent, delete-my-stuff, ban
 
 lib/caps.ts         every limit, as pure arithmetic
-lib/gemini.ts       streamed generateContent over fetch, no SDK
+lib/model.ts        streamed OpenAI-compatible chat completions over fetch, no SDK
 lib/brief.ts        the prompt, versioned
 lib/action-block.ts the action block an intern ends its report with
 
