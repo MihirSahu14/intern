@@ -405,7 +405,7 @@ never Vercel — every one is read server-side, in `convex/` or `lib/` that
 | `COMPOSIO_VERIFIER_URL` | Yes, alongside the API key — `isConfigured` requires both, and it must start with `https://` or the connector reads as unconfigured | A public HTTPS URL that resolves to `/app` — Composio rejects localhost/private addresses on save, so this needs a tunnel to `localhost:3000` (e.g. an ngrok URL) or a Vercel preview URL, ending in `/app` | `https://intern-brain.vercel.app/app` |
 | `COMPOSIO_AUTH_CONFIG_GMAIL` | Optional — unset means Gmail connects through Composio's own default managed config instead (see "Gmail scope" above) | Not set on `intern-dev`/`intern-prod`: Google blocks a `gmail.send`-only Composio-managed auth config on Composio's shared app, so prod uses the default managed config (`userinfo.email`, `userinfo.profile`, `https://mail.google.com/` — **not send-only**). Set this only if you build a **custom** auth config backed by your own Google OAuth app, scoped to `gmail.send` only (see "Gmail scope") | same — unset unless you've built the custom least-privilege config |
 | `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` | Optional — without it, **or without `COMPOSIO_WEBHOOK_SECRET`**, the Gmail `Intern`-label toggle is hidden and `start({capture: true})` refuses | A **separate, read-only** Gmail auth config's `ac_…` id, scope `gmail.readonly` only. This is a second consent screen a member opts into; redundant on the current send config (which can already read) but kept because it's opt-in and harmless | same, `intern-prod`'s capture config |
-| `COMPOSIO_AUTH_CONFIG_SLACK` | Optional but likely needed — whether Composio-managed Slack auth posts as the member (vs. as an app) is **unconfirmed** (Task 3 concern 2); test a throwaway connect first | A **custom** Slack auth config's `ac_…` id, backed by your own Slack app with **user scopes** `chat:write`, `reactions:read`, `channels:history`, `channels:read`, `users:read` | same, `intern-prod`'s custom config, a separate Slack app or a separately-installed one |
+| `COMPOSIO_AUTH_CONFIG_SLACK` | Optional — sends pass `as_user: true` (Composio's documented way to post as the authenticated user), so Composio-managed auth should post as the member, not as an app; confirm with one live send before the demo | A **custom** Slack auth config's `ac_…` id, backed by your own Slack app with **user scopes** `chat:write`, `reactions:read`, `channels:history`, `channels:read`, `users:read` | same, `intern-prod`'s custom config, a separate Slack app or a separately-installed one |
 | `COMPOSIO_WEBHOOK_SECRET` | Optional (but the Gmail `Intern` label needs it: `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` does nothing without it) — without it, every inbound webhook call gets a 401 and no 🧠/label trigger is ever created; sends and connects still work | `intern-dev` project's webhook signing secret, Composio dashboard | `intern-prod`'s webhook secret |
 | `BROADCAST_DISCORD_WEBHOOK_URL` | Optional — unset means no Discord broadcasts | A **separate test channel's** webhook URL | Your real announcements channel's webhook URL |
 | `BROADCAST_SLACK_WEBHOOK_URL` | Optional — unset means no Slack broadcasts | A separate test channel's incoming-webhook URL | Real channel's incoming-webhook URL |
@@ -442,9 +442,10 @@ early with no log.
 
 ### Slack (~30–45 min)
 
-4. **Decide managed vs. custom auth.** Connect a throwaway Slack account
-   through Composio-managed auth first and confirm a test send posts *as that
-   person*, not as an app/bot. If it does, `COMPOSIO_AUTH_CONFIG_SLACK` can
+4. **Decide managed vs. custom auth.** Sends pass `as_user: true`, which
+   Composio documents as posting as the authenticated user. Still, before the
+   demo, connect a throwaway Slack account through Composio-managed auth and
+   confirm one live send posts *as that person*, not as an app/bot. If it does, `COMPOSIO_AUTH_CONFIG_SLACK` can
    stay unset. If not (or you want the 🧠 capture trigger, which needs a
    custom app regardless — see Step 5), build a custom Slack app.
 5. **Custom Slack app, if used:** `slack-app-manifest.yml` in the repo root is

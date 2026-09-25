@@ -1319,7 +1319,7 @@ test("community Slack: the community workspace connects", async () => {
   expect(await t.run((ctx) => ctx.db.query("connections").first())).toMatchObject({ status: "active", externalUserId: "U123" });
 });
 
-test("community Slack: another workspace is refused, retired and revoked", async () => {
+test("community Slack: another workspace is refused and revoked, and never goes live", async () => {
   composioEnv();
   vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
   const { t, seedUser, asUser, seedPending } = setup();
@@ -1331,10 +1331,25 @@ test("community Slack: another workspace is refused, retired and revoked", async
     connector: "slack",
     reason: "Connect the Intern community Slack, not another workspace.",
   });
-  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+  // Checked before activate: the link never goes live.
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("pending");
   const del = f.mock.calls.find(([, init]) => init?.method === "DELETE");
   expect(del?.[0]).toMatch(/\/connected_accounts\/ca_1\?revoke_on_delete=true$/);
   expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(expect.objectContaining({ key: "slack", connected: false }));
+});
+
+test("community Slack: another workspace never costs the member their live community grant", async () => {
+  composioEnv();
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
+  const { t, seedUser, asUser, seedPending, seedActive } = setup();
+  const a = await seedUser("a");
+  const live = await seedActive(a, "slack", { composioAccountId: "ca_0", externalUserId: "U123" });
+  await seedPending(a, "slack");
+  const f = slackConnect("T_OTHER");
+  expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(false);
+  expect((await t.run((ctx) => ctx.db.get("connections", live)))?.status).toBe("active");
+  expect(f.mock.calls.some(([url]) => url.includes("/connected_accounts/ca_0"))).toBe(false);
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(expect.objectContaining({ key: "slack", connected: true }));
 });
 
 test("community Slack: a workspace that can't be checked is refused too", async () => {
@@ -1344,9 +1359,11 @@ test("community Slack: a workspace that can't be checked is refused too", async 
   const a = await seedUser("a");
   await seedPending(a, "slack");
   // auth.test never answers: the session and execute calls 404.
-  route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "slack" }]]);
+  const f = route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "slack" }]]);
   expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(false);
-  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("failed");
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.status).toBe("pending");
+  // Deleted, not revoked: an unchecked workspace might be the community one.
+  expect(f.mock.calls.find(([, init]) => init?.method === "DELETE")?.[0]).toMatch(/\/connected_accounts\/ca_1$/);
 });
 
 test("community Slack: the invite link reaches the rail only when it's https", async () => {

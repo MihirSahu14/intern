@@ -282,8 +282,9 @@ export const finish = action({
     }
 
     let accountId: string;
+    let toolkit: string;
     try {
-      ({ accountId } = await completeAuth(apiKey, { sessionUri, userId }));
+      ({ accountId, toolkit } = await completeAuth(apiKey, { sessionUri, userId }));
     } catch (err) {
       const status = err instanceof ComposioError ? err.status : undefined;
       console.log(`connections.finish: complete_auth failed for ${userId}: ${String(err)}`);
@@ -291,6 +292,27 @@ export const finish = action({
       if (status === 400) return { ok: false, connector: null, reason: "Composio refused that link: it was started from another account." };
       if (status === 404) return { ok: false, connector: null, reason: "That connect link expired or was already used." };
       return { ok: false, connector: null, reason: "Couldn't reach Composio. Try again." };
+    }
+
+    // Slack names a reactor by Slack user id, so learn which one is this
+    // member, and in which workspace. Before `activate`: with
+    // COMMUNITY_SLACK_TEAM_ID set, another workspace (or one we couldn't
+    // check) is refused without retiring the member's live grant. Revoked
+    // only when it's known to be another workspace: providers revoke per app
+    // grant, so an unchecked one might be the community grant itself.
+    const community = process.env.COMMUNITY_SLACK_TEAM_ID;
+    const refuseSlack = async (revoke: boolean): Promise<Finish> => {
+      await forgetAccount(accountId, { revoke });
+      return { ok: false, connector: "slack", reason: "Connect the Intern community Slack, not another workspace." };
+    };
+    let who: ReturnType<typeof readWhoami> | null = null;
+    if (toolkit === "slack") {
+      try {
+        who = readWhoami(await execute(apiKey, SLACK_TOOLS.whoami, { userId, toolkit: "slack", accountId, arguments: {} }));
+      } catch (err) {
+        console.log(`connections.finish: slack whoami failed for ${userId}: ${String(err)}`);
+      }
+      if (community && who?.teamId !== community) return await refuseSlack(!!who?.teamId);
     }
 
     let activated: { result: Finish; forget: Forget[]; fresh: Fresh | null };
@@ -323,41 +345,30 @@ export const finish = action({
       }
     }
 
-    // Slack names a reactor by Slack user id, so learn which one is this
-    // member, and in which workspace. With COMMUNITY_SLACK_TEAM_ID set, any
-    // other workspace (or one we couldn't check) is refused and revoked: the
-    // member is done with it. Otherwise best-effort: an account that can send
-    // but not listen is still worth connecting.
     if (fresh.connector === "slack") {
-      let who: ReturnType<typeof readWhoami> | null = null;
-      try {
-        who = readWhoami(await execute(apiKey, SLACK_TOOLS.whoami, { userId, toolkit: "slack", accountId, arguments: {} }));
-      } catch (err) {
-        console.log(`connections.finish: slack whoami failed for ${userId}: ${String(err)}`);
-      }
-      const community = process.env.COMMUNITY_SLACK_TEAM_ID;
-      if (community && who?.teamId !== community) {
+      // Composio named another toolkit, so the workspace was never checked: fail closed.
+      if (community && !who) {
         await ctx.runMutation(internal.connections.retire, { rowId: fresh.rowId });
-        await forgetAccount(accountId, { revoke: true });
-        return { ok: false, connector: "slack", reason: "Connect the Intern community Slack, not another workspace." };
+        return await refuseSlack(false);
       }
+      // Then subscribe to their 🧠. Best-effort: an account that can send but
+      // not listen is still worth connecting. No webhook secret, no
+      // subscription: its events could never be verified.
       if (who) {
-        // Then subscribe to their 🧠. No webhook secret, no subscription: its
-        // events could never be verified.
-        let triggerId: string | undefined;
-        if (who.userId && process.env.COMPOSIO_WEBHOOK_SECRET) {
-          try {
-            triggerId = await upsertTrigger(apiKey, TRIGGERS.slack.slug, { userId, accountId, config: TRIGGERS.slack.config });
-          } catch (err) {
-            console.log(`connections.finish: slack subscribe failed for ${userId}: ${String(err)}`);
-          }
+        try {
+          const triggerId =
+            who.userId && process.env.COMPOSIO_WEBHOOK_SECRET
+              ? await upsertTrigger(apiKey, TRIGGERS.slack.slug, { userId, accountId, config: TRIGGERS.slack.config })
+              : undefined;
+          await ctx.runMutation(internal.connections.settle, {
+            rowId: fresh.rowId,
+            externalUserId: who.userId ?? undefined,
+            accountLabel: who.label ?? undefined,
+            triggerId,
+          });
+        } catch (err) {
+          console.log(`connections.finish: slack subscribe failed for ${userId}: ${String(err)}`);
         }
-        await ctx.runMutation(internal.connections.settle, {
-          rowId: fresh.rowId,
-          externalUserId: who.userId ?? undefined,
-          accountLabel: who.label ?? undefined,
-          triggerId,
-        });
       }
     }
     return result;
