@@ -166,8 +166,9 @@ export function isPublicChannel(data: Json): boolean {
   return c.is_private === false && c.is_im === false && c.is_mpim === false;
 }
 
-export function readWhoami(data: Json): { userId: string | null; label: string | null } {
+/** Slack's auth.test: who connected, and in which workspace (`team_id`, `T…`). */
+export function readWhoami(data: Json): { userId: string | null; teamId: string | null; label: string | null } {
   const user = str(data.user);
   const team = str(data.team);
-  return { userId: str(data.user_id) ?? null, label: user && team ? `@${user} in ${team}` : null };
+  return { userId: str(data.user_id) ?? null, teamId: str(data.team_id) ?? null, label: user && team ? `@${user} in ${team}` : null };
 }
