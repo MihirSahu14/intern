@@ -99,3 +99,9 @@ export function collapseBlocks(lines: LogLine[]): LogLine[] {
   }
   return out;
 }
+
+/** A brain fact id the model cited inline, e.g. `[k97cqmxm3y4dykfba1x47t8n018f2h4e]`. */
+const CITE = /\s?\[[a-z0-9]{20,}\]/g;
+
+/** Inline fact-id citations are for the outbox's sources, not for reading. */
+export const stripCites = (text: string) => text.replace(CITE, "");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { collapseBlocks } from "./log-view.ts";
+import { collapseBlocks, stripCites } from "./log-view.ts";
 import type { LogLine } from "./types.ts";
 
 let nextId = 1;
@@ -147,4 +147,12 @@ test("a fence that never closes ends at the intern's next non-output line", () =
     assert.deepEqual(texts.slice(-2), ["(structured output)", "finished in 12s"], `size ${size}`);
     assert.ok(!texts.some((t) => t.includes("```")), `size ${size}`);
   }
+});
+
+test("inline fact-id citations are dropped, ordinary brackets kept", () => {
+  assert.equal(
+    stripCites("send hi to #all-intern-community [k97cqmxm3y4dykfba1x47t8n018f2h4e]. I have access [k971x6rpvpmeht5k8fvzfj83d18f2sfw], so"),
+    "send hi to #all-intern-community. I have access, so",
+  );
+  assert.equal(stripCites("see [note] and [a1]"), "see [note] and [a1]");
 });
