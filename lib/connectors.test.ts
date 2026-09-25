@@ -33,6 +33,13 @@ test("slack posts to the channel as the member and bolds a subject only when the
   });
 });
 
+test("every connector has disclosure and enables copy for the rail", () => {
+  for (const c of CONNECTORS) {
+    assert.ok(c.disclosure.length > 0);
+    assert.ok(c.enables.length > 0);
+  }
+});
+
 test("a connector needs the API key and a verifier URL; auth is Composio-managed unless overridden", () => {
   const gmail = connectorByKey("gmail");
   const ready = { COMPOSIO_API_KEY: "k", COMPOSIO_VERIFIER_URL: "https://intern.test/app" };

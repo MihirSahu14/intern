@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { ComposioError, runSendTool, startSendSession } from "../lib/composio.ts";
 import { type Connector, type ConnectorKey, connectorByKey, sentFact } from "../lib/connectors.ts";
+import { redactEmails } from "../lib/redact.ts";
 import type { Draft } from "../lib/types.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -38,20 +39,46 @@ export const load = internalQuery({
 type Outcome = { ok: true } | { ok: false; unsure: boolean; error: string };
 
 const UNSURE_MESSAGE = "This may have been sent. Check your Sent folder before trying again.";
+const SEND_FAILED = "The send didn't go through. Retry, or reconnect if it keeps failing.";
 
 /**
- * Composio's own words never reach an owner, a log line or a fact — only
- * `console.log` (server-side, this action's own log) and a fixed copy,
- * classed by whether the failure looks like a dead grant. Same rule
- * `connections.ts` follows for connect-time errors.
+ * Composio's own words for what went wrong, cleaned up for an owner to read:
+ * this file's own `composio NNN:` prefix (see `lib/composio.ts`'s `call`)
+ * dropped, folded to its first line — plus a second when Composio splits a
+ * generic summary from the actual detail onto the next one, e.g. "Invalid
+ * request data provided\n- Extra inputs are not permitted on parameter
+ * `as_user`" (a real prod Slack rejection) — its trailing `(log_…)`/`(req_…)`
+ * id stripped, emails redacted, capped at 120 characters. `undefined` when
+ * there's nothing usable, which callers read as "no reason to append".
  */
-function ownerMessage(err: unknown, label: string): string {
+export function providerReason(message: string): string | undefined {
+  const lines = message
+    .replace(/^composio \d+:\s*/i, "")
+    .split("\n")
+    .map((l) => l.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean);
+  if (!lines.length) return undefined;
+  const joined = lines.length > 1 ? `${lines[0]}: ${lines[1]}` : lines[0];
+  const cleaned = redactEmails(joined.replace(/\s*\((?:log|req)[_-][\w-]+\)\s*$/i, "")).trim();
+  return cleaned ? cleaned.slice(0, 120) : undefined;
+}
+
+/**
+ * The fixed, connector-labeled copy an owner sees, classed by whether the
+ * failure looks like a dead grant. A dead grant keeps the old fully-fixed
+ * copy — same rule `connections.ts` follows for connect-time errors — because
+ * there's nothing more to say than "reconnect it". Anything else keeps
+ * `SEND_FAILED` verbatim and appends what was actually said, when
+ * `providerReason` found something worth showing — credited to `saidBy`:
+ * the connector for the tool call, "Composio" for its own session setup.
+ */
+function ownerMessage(err: unknown, label: string, saidBy: string): string {
   const status = err instanceof ComposioError ? err.status : undefined;
   const msg = err instanceof Error ? err.message : String(err);
   const deadGrant = status === 401 || status === 403 || /invalid_grant|unauthoriz|forbidden/i.test(msg);
-  return deadGrant
-    ? `${label} refused the send. Reconnect it and retry.`
-    : "The send didn't go through. Retry, or reconnect if it keeps failing.";
+  if (deadGrant) return `${label} refused the send. Reconnect it and retry.`;
+  const reason = providerReason(msg);
+  return reason ? `${SEND_FAILED} (${saidBy} said: ${reason})` : SEND_FAILED;
 }
 
 /** A gateway/request timeout: Composio (or what's in front of it) gave up on the response, not on the request. */
@@ -69,9 +96,9 @@ const isTimeoutStatus = (status: number) => status === 408 || status === 499;
  * running anything.
  */
 async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | undefined, job: Job): Promise<Outcome> {
-  const fail = (err: unknown, unsure: boolean): Outcome => {
+  const fail = (err: unknown, unsure: boolean, saidBy = c.label): Outcome => {
     console.log(`send.go ${actionId}: ${err instanceof Error ? err.message : String(err)}`);
-    return { ok: false, unsure, error: unsure ? UNSURE_MESSAGE : ownerMessage(err, c.label) };
+    return { ok: false, unsure, error: unsure ? UNSURE_MESSAGE : ownerMessage(err, c.label, saidBy) };
   };
   if (!apiKey || !job.composioAccountId) {
     // Not a Composio failure at all — the reconnect copy applies directly,
@@ -83,7 +110,8 @@ async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | u
   try {
     sessionId = await startSendSession(apiKey, { userId: job.ownerId, toolkit: c.toolkit, accountId: job.composioAccountId, tool: c.sendTool });
   } catch (err) {
-    return fail(err, false);
+    // Composio's own setup refused; the provider never saw the request.
+    return fail(err, false, "Composio");
   }
   try {
     await runSendTool(apiKey, sessionId, c.sendTool, c.toArguments(job.draft));
@@ -120,8 +148,10 @@ export const finish = internalMutation({
     const log = (level: "ok" | "err", text: string) => ctx.db.insert("logs", { internId: action.internId, level, text });
 
     if (!a.ok) {
-      // Already the fixed, owner-safe copy `go` chose — never Composio's raw text.
-      const reason = a.error ?? "The send didn't go through. Retry, or reconnect if it keeps failing.";
+      // Already the fixed, owner-safe copy `go` chose — Composio's raw text
+      // never reaches here except as the short, cleaned reason `ownerMessage`
+      // appended to it.
+      const reason = a.error ?? SEND_FAILED;
       const status = a.unsure ? "unsure" : "failed";
       await ctx.db.patch("actions", action._id, { status, sendError: reason });
       await log("err", status === "unsure" ? "send uncertain: check your Sent folder" : `send failed: ${reason}`);

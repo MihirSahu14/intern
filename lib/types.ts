@@ -243,6 +243,12 @@ export type Intern = {
   /** Short handle shown in the UI, e.g. `int-7f2`. */
   handle: string;
   task: string;
+  /**
+   * The member's own words, when they differ from `task` — set on a
+   * question-resumed intern, whose `task` quotes the answer. Only present on
+   * your own interns; show `displayTask ?? task` as the label everywhere.
+   */
+  displayTask?: string;
   status: InternStatus;
   mode: Mode;
   createdAt: number;

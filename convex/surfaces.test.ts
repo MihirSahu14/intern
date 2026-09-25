@@ -145,7 +145,7 @@ test("the graph and feed hide other people's private facts, subjects and address
   );
 
   const forA = (await asUser(a).query(api.facts.graph, {})).nodes.map((n) => n.label);
-  expect(forA).toEqual(expect.arrayContaining(["private note", "✉ Pricing", "email ann@acme.com about pricing"]));
+  expect(forA).toEqual(expect.arrayContaining(["private note", "✉ Pricing", "email [email] about pricing"]));
 
   const forB = (await asUser(b).query(api.facts.graph, {})).nodes.map((n) => n.label);
   expect(forB).not.toContain("private note");
@@ -723,7 +723,7 @@ test("approving with a connected account sends it and files an owner-only fact",
   ]);
 });
 
-test("a failed send never shows Composio's raw reason — only a fixed, connector-labeled copy — and can be retried", async () => {
+test("a dead-grant-shaped failure never shows Composio's raw reason — only the fixed reconnect copy — and can be retried", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
   const a = await seedUser("a");
@@ -857,12 +857,62 @@ test("a 4xx on the execute call is a definite `failed`, resendable right away", 
 
   const row = await t.run((ctx) => ctx.db.get("actions", actionId));
   expect(row?.status).toBe("failed");
-  expect(row?.sendError).not.toMatch(/bad recipient/);
+  // A definite 4xx isn't a dead grant or an unsure send — Gmail's own reason
+  // is worth showing, cleaned up (no "composio 400:", no "(req_1)").
+  expect(row?.sendError).toMatch(/^The send didn't go through\..* \(Gmail said: bad recipient\)$/);
 
   stubComposio({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a send whose Composio session never opened credits Composio, not Gmail, with the reason", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // 200 with no session_id: lib/composio.ts's own setup check throws before
+  // anything reaches Gmail.
+  stubComposio({});
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("failed");
+  expect(row?.sendError).toBe(
+    "The send didn't go through. Retry, or reconnect if it keeps failing. (Composio said: composio session returned no session_id)",
+  );
+});
+
+test("a definite failed send with no usable provider reason keeps the sentence alone", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // The execute call answers 400 with an empty body: nothing for
+  // providerReason to clean up, so ownerMessage falls back to the sentence
+  // alone — no "(<label> said: ...)" suffix.
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      n++;
+      return n === 1 ? new Response(JSON.stringify({ session_id: "trs_1" })) : new Response("", { status: 400 });
+    }),
+  );
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("failed");
+  expect(row?.sendError).toBe("The send didn't go through. Retry, or reconnect if it keeps failing.");
 });
 
 test("a 408 on the execute call is `unsure` like a 5xx, not a definite failed", async () => {
@@ -1861,6 +1911,9 @@ test("other people's interns carry no displayTask, parser verdict, lesson flag o
   expect(theirs?.sendsFrom).toBeUndefined();
   const mine = (await asUser(a).query(api.interns.list, {})).find((i) => i._id === internId);
   expect(mine?.parseOutcome).toBe("action_malformed:bad to");
+  // The owner still sees their own words, not the assembled `task` chain.
+  expect(mine?.displayTask).toBe("who owns pricing? ask ann@acme.com");
+  expect(mine?.task).toBe("follow up: the answer was ann@acme.com");
 });
 
 test("resend stops after three attempts in all", async () => {
@@ -2105,4 +2158,57 @@ test("the graph shows a question-and-answer chain as one intern, and no answer f
   expect(nodes.some((n) => n.label === "Which channel?")).toBe(false);
   const note = nodes.find((n) => n.label === "Team says hi in #general")!;
   expect(edges).toContainEqual({ source: root, target: note.id, rel: "filed" });
+});
+
+test("an owner's intern label with an email is redacted", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com about pricing", status: "done", countsTowardCap: true }),
+  );
+
+  const { nodes } = await asUser(a).query(api.facts.graph, {});
+  // The graph is a public map even for its own owner — addresses belong in
+  // the outbox, not here.
+  expect(nodes.find((n) => n.id === internId)?.label).toBe("email [email] about pricing");
+});
+
+test("a cancelled intern is absent from the graph, by the chain's newest status", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const root = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "book a room", status: "done", countsTowardCap: true }),
+  );
+  // The chain's newest run is cancelled, so the whole chain is left off the
+  // map — even though the root run it resumes already finished.
+  const resumed = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "book a room\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Which room? → the big one",
+      displayTask: "book a room",
+      resumes: root,
+      status: "cancelled",
+      countsTowardCap: true,
+    }),
+  );
+  const factId = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "booked the room", body: "", kind: "note", ownerId: a, internId: root, text: "booked the room\n" }),
+  );
+
+  const { nodes, edges } = await asUser(a).query(api.facts.graph, {});
+  expect(nodes.some((n) => n.id === root || n.id === resumed)).toBe(false);
+  // Its fact attaches to nothing and shows up unlinked, same as any other
+  // missing parent.
+  const fact = nodes.find((n) => n.id === factId)!;
+  expect(fact.label).toBe("booked the room");
+  expect(edges.some((e) => e.target === factId)).toBe(false);
+});
+
+test("the seed source label is 'starter facts'", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  await t.run((ctx) => ctx.db.insert("facts", { title: "new hires start Monday", body: "", kind: "note", text: "new hires start Monday\n" }));
+
+  const { nodes } = await asUser(a).query(api.facts.graph, {});
+  expect(nodes.find((n) => n.id === "src:seed")?.label).toBe("starter facts");
 });

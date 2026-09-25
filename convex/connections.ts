@@ -108,6 +108,7 @@ export const mine = query({
           /** The Intern label: null when not offered, else whether it's on. */
           capture: offered ? !!(userId && (await activeConnection(ctx, userId, c.key, true))) : null,
           disclosure: c.disclosure,
+          enables: c.enables,
           /** Slack only: the community workspace's invite link. Only https, since the rail renders it as a link. */
           invite: c.key === "slack" && process.env.COMMUNITY_SLACK_INVITE_URL?.startsWith("https://")
             ? process.env.COMMUNITY_SLACK_INVITE_URL

@@ -6,7 +6,7 @@ import { useState } from "react";
 import { api } from "@/convex/_generated/api";
 
 export const NOTICE =
-  "This is a public test brain. Briefs and facts are visible to every visitor; drafts and anything you send stay private to you. Don't enter anything private in a brief.";
+  "Public test brain: briefs and facts are visible to everyone. Your drafts, questions and sends are private to you. Don't put anything private in a brief.";
 
 export default function Consent() {
   const accept = useMutation(api.users.accept);

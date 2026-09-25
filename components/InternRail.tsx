@@ -43,20 +43,14 @@ export default function InternRail({
   onRetry: (id: string) => void;
   mineId: string;
 }) {
-  const live = interns.some(
+  const active = interns.filter(
     (i) => i.status === "running" || i.status === "queued",
-  );
-  const now = useNow(live);
+  ).length;
+  const now = useNow(active > 0);
 
   return (
+    // Headed by the cockpit's activity tabs ("mine"), which also carry the running count.
     <section className="flex min-h-0 flex-1 flex-col bg-panel">
-      <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
-        <h2 className="label">interns</h2>
-        <span className="text-faint tabular-nums">
-          {interns.filter((i) => i.status === "running").length}/
-          {interns.length}
-        </span>
-      </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {interns.length === 0 ? (
@@ -125,8 +119,19 @@ export default function InternRail({
               </div>
 
               <p className="mt-1 line-clamp-3 text-dim leading-relaxed">
-                {i.task}
+                {i.displayTask ?? i.task}
               </p>
+
+              {i.displayTask && i.displayTask !== i.task ? (
+                <details className="mt-1" onClick={(e) => e.stopPropagation()}>
+                  <summary className="cursor-pointer text-faint hover:text-dim">
+                    details
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-dim leading-relaxed">
+                    {i.task}
+                  </p>
+                </details>
+              ) : null}
 
               {i.tools.length ? (
                 <div className="mt-1.5 flex flex-wrap gap-1">
@@ -159,16 +164,11 @@ export default function InternRail({
                 <p className="mt-1.5 text-err">{i.error}</p>
               ) : null}
 
-              <div className="mt-1.5 flex items-center gap-2 text-faint">
-                <span>{i.mode === "live" ? "live" : "sim"}</span>
-                <span>·</span>
-                <span>{i.toolCalls} calls</span>
-                {i.resumes ? (
-                  <span className="ml-auto" title={`picked up from ${i.resumes}`}>
-                    ↻ {i.resumes}
-                  </span>
-                ) : null}
-              </div>
+              {i.resumes ? (
+                <p className="mt-1.5 text-faint" title={`picked up from ${i.resumes}`}>
+                  ↻ {i.resumes}
+                </p>
+              ) : null}
             </article>
           );
         })}

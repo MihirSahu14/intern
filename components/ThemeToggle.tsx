@@ -58,10 +58,11 @@ export default function ThemeToggle() {
     <button
       type="button"
       onClick={cycle}
-      title={`theme: ${choice}`}
-      aria-label={`Theme: ${choice}. Click to switch.`}
-      className="border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"
+      title="switch light/dark"
+      aria-label="switch light/dark"
+      className="flex items-center gap-1.5 border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"
     >
+      <span>theme</span>
       {ICON[choice]}
     </button>
   );

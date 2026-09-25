@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { collapseBlocks } from "@/lib/log-view";
 import type { Intern, LogLine, LogLevel } from "@/lib/types";
 
 // This stream always reads as a dark terminal inset, in both themes — see
@@ -32,8 +33,10 @@ export default function Terminal({
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const [raw, setRaw] = useState(false);
 
-  const lines = filter ? log.filter((l) => l.internId === filter) : log;
+  const filtered = filter ? log.filter((l) => l.internId === filter) : log;
+  const lines = raw ? filtered : collapseBlocks(filtered);
 
   useLayoutEffect(() => {
     if (!follow) return;
@@ -66,30 +69,44 @@ export default function Terminal({
         <Tab active={filter === null} onClick={() => onFilter(null)}>
           all
         </Tab>
-        {interns.slice(0, 8).map((i) => (
-          <Tab
-            key={i.id}
-            active={filter === i.id}
-            onClick={() => onFilter(i.id)}
-            dot={
-              i.status === "running"
-                ? "bg-term-ok pulse-slow"
-                : i.status === "failed"
-                  ? "bg-term-err"
-                  : i.status === "cancelled"
-                    ? "bg-term-faint"
-                    : i.status === "queued"
-                      ? "bg-term-warn"
-                      : "bg-term-line-2"
-            }
-          >
-            {i.handle}
-          </Tab>
-        ))}
+        {interns.slice(0, 8).map((i) => {
+          const label = i.displayTask ?? i.task;
+          return (
+            <Tab
+              key={i.id}
+              active={filter === i.id}
+              onClick={() => onFilter(i.id)}
+              title={i.id}
+              dot={
+                i.status === "running"
+                  ? "bg-term-ok pulse-slow"
+                  : i.status === "failed"
+                    ? "bg-term-err"
+                    : i.status === "cancelled"
+                      ? "bg-term-faint"
+                      : i.status === "queued"
+                        ? "bg-term-warn"
+                        : "bg-term-line-2"
+              }
+            >
+              {label.length > 24 ? `${label.slice(0, 24)}…` : label}
+            </Tab>
+          );
+        })}
         <div className="ml-auto flex items-center gap-3 text-term-faint">
           <span>
             {active.length} active · {lines.length} lines
           </span>
+          <button
+            type="button"
+            onClick={() => setRaw((r) => !r)}
+            className={`transition-colors hover:text-term-fg ${
+              raw ? "text-term-ok" : "text-term-faint"
+            }`}
+            title="show the uncollapsed stream"
+          >
+            {raw ? "◉ raw" : "○ raw"}
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -116,11 +133,15 @@ export default function Terminal({
             no output yet. dispatch an intern below.
           </p>
         ) : null}
-        {lines.map((line) => {
+        {lines.map((line, i) => {
           const meta = LEVEL[line.level];
+          // collapseBlocks can split one LogLine into several adjacent rows
+          // sharing its id; number them so keys stay unique and stable.
+          let part = 0;
+          while (i - part > 0 && lines[i - part - 1].id === line.id) part++;
           return (
             <div
-              key={line.id}
+              key={`${line.id}:${part}`}
               className="enter flex items-start gap-2 whitespace-pre-wrap break-words px-1 leading-[1.55]"
             >
               <span className="shrink-0 whitespace-nowrap text-term-faint tabular-nums">
@@ -150,16 +171,19 @@ function Tab({
   active,
   onClick,
   dot,
+  title,
 }: {
   children: React.ReactNode;
   active: boolean;
   onClick: () => void;
   dot?: string;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={`flex items-center gap-1.5 px-2 py-0.5 transition-colors ${
         active
           ? "bg-term-raised text-term-fg"

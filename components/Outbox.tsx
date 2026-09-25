@@ -52,7 +52,12 @@ export default function Outbox({
         <h2 className="label">outbox</h2>
         <div className="flex items-center gap-2">
           {live ? (
-            <span className="border border-ok/40 px-1 text-ok">live</span>
+            <span
+              className="border border-ok/40 px-1 text-ok"
+              title="Approving sends from your connected account."
+            >
+              sends for real
+            </span>
           ) : (
             <span className="border border-warn/40 px-1 text-warn">sandbox</span>
           )}

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { KIND_ORDER } from "./BrainGraph";
 import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
@@ -17,6 +18,8 @@ export type ConnectorRow = {
   capture: boolean | null;
   /** Shown under this connector's row: what its grant actually lets Composio do. */
   disclosure: string;
+  /** Shown under a not-yet-connected row: what connecting actually turns on. */
+  enables: string;
   /** The community workspace's invite link (Slack only), or null. */
   invite: string | null;
 };
@@ -42,6 +45,8 @@ export default function BrainRail({
   onDisconnect: (key: ConnectorKey) => void;
   onCapture: (on: boolean) => void;
 }) {
+  const [openDisclosure, setOpenDisclosure] = useState<ConnectorKey | null>(null);
+
   const counts = new Map<NodeKind, number>();
   for (const n of graph.nodes) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
 
@@ -57,30 +62,42 @@ export default function BrainRail({
 
   return (
     <aside className="flex min-h-0 w-[236px] shrink-0 flex-col border-r border-line bg-panel">
-      <Section title="brain">
-        <Row k="nodes"><span className="text-dim tabular-nums">{graph.nodes.length}</span></Row>
-        <Row k="edges"><span className="text-dim tabular-nums">{graph.edges.length}</span></Row>
-      </Section>
-
       <Section title="accounts">
         {connectors.map((c) => (
           <div key={c.key}>
             <Row k={c.label.toLowerCase()}>
               {!c.configured ? (
                 <span className="text-faint">not set up yet</span>
-              ) : c.connected ? (
-                <span className="text-dim">
-                  connected as {c.accountLabel ?? c.label} ·{" "}
-                  <button type="button" onClick={() => onDisconnect(c.key)} className="text-faint hover:text-err">
-                    disconnect
-                  </button>
-                </span>
               ) : (
-                <button type="button" onClick={() => onConnect(c.key)} className="text-accent hover:underline">
-                  connect
-                </button>
+                <span className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+                  <span className="text-dim">
+                    {c.connected ? `connected as ${c.accountLabel ?? c.label}` : "not connected"}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setOpenDisclosure(openDisclosure === c.key ? null : c.key)}
+                      aria-expanded={openDisclosure === c.key}
+                      aria-label="what this connects"
+                      title="what this connects"
+                      className="text-faint hover:text-fg"
+                    >
+                      ⓘ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => (c.connected ? onDisconnect(c.key) : onConnect(c.key))}
+                      className={`border border-line px-1.5 py-0.5 text-faint transition-colors hover:border-line-2 hover:text-fg ${
+                        c.connected ? "hover:border-err/50 hover:text-err" : ""
+                      }`}
+                    >
+                      {c.connected ? "disconnect" : "connect"}
+                    </button>
+                  </span>
+                </span>
               )}
             </Row>
+            {c.configured && !c.connected ? <p className="pt-0.5 text-faint leading-snug">{c.enables}</p> : null}
             {c.invite && !c.connected ? (
               <p className="pt-0.5 leading-snug">
                 <a href={c.invite} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
@@ -105,7 +122,9 @@ export default function BrainRail({
                 </span>
               </Row>
             )}
-            {c.configured ? <p className="pt-0.5 text-faint leading-snug">{c.disclosure}</p> : null}
+            {c.configured && openDisclosure === c.key ? (
+              <p className="pt-0.5 text-faint leading-snug">{c.disclosure}</p>
+            ) : null}
           </div>
         ))}
       </Section>
