@@ -133,11 +133,15 @@ export default function Terminal({
             no output yet. dispatch an intern below.
           </p>
         ) : null}
-        {lines.map((line) => {
+        {lines.map((line, i) => {
           const meta = LEVEL[line.level];
+          // collapseBlocks can split one LogLine into several adjacent rows
+          // sharing its id; number them so keys stay unique and stable.
+          let part = 0;
+          while (i - part > 0 && lines[i - part - 1].id === line.id) part++;
           return (
             <div
-              key={line.id}
+              key={`${line.id}:${part}`}
               className="enter flex items-start gap-2 whitespace-pre-wrap break-words px-1 leading-[1.55]"
             >
               <span className="shrink-0 whitespace-nowrap text-term-faint tabular-nums">

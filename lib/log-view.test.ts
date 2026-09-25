@@ -97,3 +97,54 @@ test("an unparsable block falls back to a generic label instead of vanishing", (
   assert.equal(out.length, 1);
   assert.equal(out[0].text, "(structured output)");
 });
+
+// A report shaped like lib/brief.ts asks for, fed through convex/run.ts's own
+// flush rule: `pending` goes out (trimmed) once it ends in "." or "\n" or
+// passes 160 characters. Chunk size decides where the LogLine boundaries fall.
+const REPORT = `Ann asked for the launch date to go out to the partner list. The date is settled in the brain, so I drafted the email.
+
+\`\`\`fact
+{"title":"Launch moved to March 3","body":"Ann confirmed it in the planning thread.","kind":"decision"}
+\`\`\`
+
+\`\`\`action
+{"kind":"email","to":["ann@acme.com"],"subject":"Launch date: March 3",
+ "body":"Hi Ann,\\n\\nThe launch is on March 3. I'll share the plan by Friday.\\n\\nThanks.",
+ "rationale":"the partner list needs the new date","sources":["[f1]"]}
+\`\`\`
+`;
+
+function streamed(report: string, size: number): LogLine[] {
+  const out: LogLine[] = [];
+  let pending = "";
+  for (let i = 0; i < report.length; i += size) {
+    pending += report.slice(i, i + size);
+    if (pending.length > 160 || /[.\n]$/.test(pending)) {
+      if (pending.trim()) out.push(line(pending.trim()));
+      pending = "";
+    }
+  }
+  if (pending.trim()) out.push(line(pending.trim()));
+  return out;
+}
+
+test("a streamed report collapses at any chunk size run.ts might flush at", () => {
+  for (const size of [1, 4, 17, 40, 90, 400]) {
+    const texts = collapseBlocks(streamed(REPORT, size)).map((l) => l.text);
+    assert.ok(texts.includes("noted: Launch moved to March 3"), `size ${size}: ${JSON.stringify(texts)}`);
+    assert.ok(texts.includes("drafted email → ann@acme.com"), `size ${size}: ${JSON.stringify(texts)}`);
+    assert.ok(!texts.some((t) => t.includes("```")), `size ${size}: ${JSON.stringify(texts)}`);
+    assert.ok(texts[0].startsWith("Ann asked for the launch date"), `size ${size}`);
+  }
+});
+
+test("a fence that never closes ends at the intern's next non-output line", () => {
+  const cut = REPORT.slice(0, REPORT.lastIndexOf("```"));
+  for (const size of [1, 4, 17, 40, 90, 400]) {
+    const done = line("finished in 12s", "ok");
+    const texts = collapseBlocks([...streamed(cut, size), done]).map((l) => l.text);
+    assert.ok(texts.includes("noted: Launch moved to March 3"), `size ${size}: ${JSON.stringify(texts)}`);
+    assert.deepEqual(texts.slice(-2), ["(structured output)", "finished in 12s"], `size ${size}`);
+    assert.ok(!texts.some((t) => t.includes("```")), `size ${size}`);
+  }
+});
