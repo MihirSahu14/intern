@@ -131,17 +131,31 @@ export const graph = query({
       return key;
     };
 
+    // A question resumes as a fresh intern; on the graph the whole chain is
+    // one node — the original ask, showing the newest run's status — so a
+    // back-and-forth doesn't sprout a node per answer.
+    const byId = new Map(interns.map((i) => [i._id as string, i]));
+    const rootOf = (id: string) => {
+      let r = byId.get(id);
+      while (r?.resumes && byId.has(r.resumes)) r = byId.get(r.resumes);
+      return r?._id;
+    };
     for (const i of interns) {
-      // A question-resumed `task` quotes the answer; `displayTask` (the
-      // original ask) is what a non-owner sees instead — same rule as
-      // `interns.list`.
-      const task = i.ownerId === viewer ? i.task : redactEmails(i.displayTask ?? i.task);
-      nodes.set(i._id, { id: i._id, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
-      edges.push({ source: await person(i.ownerId), target: i._id, rel: "briefed" });
+      const rootId = rootOf(i._id)!;
+      if (nodes.has(rootId)) continue; // newest first, so the first run seen sets the status
+      const root = byId.get(rootId)!;
+      // The root's `task` is the member's own words; `displayTask` covers a
+      // root whose parent fell outside the window — same rule as `interns.list`.
+      const task = root.ownerId === viewer ? (root.displayTask ?? root.task) : redactEmails(root.displayTask ?? root.task);
+      nodes.set(rootId, { id: rootId, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
+      edges.push({ source: await person(root.ownerId), target: rootId, rel: "briefed" });
     }
     for (const f of facts) {
+      // Answers to an intern's questions stay in recall, not on the map.
+      if (f.kind === "answer") continue;
       nodes.set(f._id, { id: f._id, label: f.title.slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind } });
-      if (f.internId && nodes.has(f.internId)) edges.push({ source: f.internId, target: f._id, rel: "filed" });
+      const filer = f.internId && rootOf(f.internId);
+      if (filer) edges.push({ source: filer, target: f._id, rel: "filed" });
       else if (f.ownerId) edges.push({ source: await person(f.ownerId), target: f._id, rel: "taught" });
       else {
         nodes.set("src:seed", { id: "src:seed", label: "seed", kind: "source", weight: 6 });
@@ -152,7 +166,8 @@ export const graph = query({
       const label =
         a.ownerId === viewer ? `✉ ${a.draft.subject || a.title}`.slice(0, 56) : a.status === "sent" ? "✉ sent" : "✉ a draft";
       nodes.set(a._id, { id: a._id, label, kind: "action", weight: 4, detail: a.status });
-      if (nodes.has(a.internId)) edges.push({ source: a.internId, target: a._id, rel: "drafted" });
+      const drafter = rootOf(a.internId);
+      if (drafter) edges.push({ source: drafter, target: a._id, rel: "drafted" });
     }
 
     return {

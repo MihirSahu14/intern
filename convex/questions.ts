@@ -1,5 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
+import { resumeTask } from "../lib/brief.ts";
 import { MAX_BRIEF_CHARS } from "../lib/caps.ts";
 import { mutation, query } from "./_generated/server";
 import { requireMember } from "./access";
@@ -52,7 +53,8 @@ export const answer = mutation({
     const parked = await ctx.db.get("interns", q.internId);
     if (parked?.status === "waiting") await ctx.db.patch("interns", parked._id, { status: "done" });
 
-    const task = `You asked: ${q.question}\nThe answer is: ${answer}\n\nOriginal task: ${parked?.task ?? ""}`.slice(0, MAX_BRIEF_CHARS);
+    // ponytail: cuts from the end, so a very long chain loses its newest answer; trim the oldest if that bites.
+    const task = resumeTask(parked?.task ?? "", q.question, answer).slice(0, MAX_BRIEF_CHARS);
     // The composed `task` above can quote the answer; `displayTask` carries
     // forward only the original, already-public-safe ask for non-owners.
     const displayTask = parked?.displayTask ?? parked?.task;
