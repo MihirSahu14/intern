@@ -154,5 +154,6 @@ test("inline fact-id citations are dropped, ordinary brackets kept", () => {
     stripCites("send hi to #all-intern-community [k97cqmxm3y4dykfba1x47t8n018f2h4e]. I have access [k971x6rpvpmeht5k8fvzfj83d18f2sfw], so"),
     "send hi to #all-intern-community. I have access, so",
   );
+  assert.equal(stripCites("as agreed [k97cqmxm3y4dykfba1x47t8n018f2h4e, k97ag0gs7r1jp2sc2fxdavndrn8f2ma1]."), "as agreed.");
   assert.equal(stripCites("see [note] and [a1]"), "see [note] and [a1]");
 });

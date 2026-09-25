@@ -78,9 +78,9 @@ export default function InternRail({
             >
               <div className="flex items-center gap-2">
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.dot}`} />
-                <span className="text-fg">{i.handle}</span>
-                <span className={`${s.text}`}>{s.label}</span>
-                <span className="ml-auto tabular-nums text-faint">
+                <span className="min-w-0 truncate text-fg">{i.handle}</span>
+                <span className={`shrink-0 ${s.text}`}>{s.label}</span>
+                <span className="ml-auto shrink-0 whitespace-nowrap tabular-nums text-faint">
                   {secs ? `${secs.toFixed(1)}s` : "—"}
                 </span>
                 {i.status === "running" || i.status === "queued" ? (

@@ -57,6 +57,8 @@ export async function dispatch(
   displayTask?: string,
 ): Promise<Id<"interns">> {
   if (!task) throw new ConvexError("Give the intern a task.");
+  // A stray keystroke ("/", "ok") is not a brief, and would spend one of the day's five.
+  if (task.trim().length < 3) throw new ConvexError("Say a bit more about the task.");
   if (task.length > MAX_BRIEF_CHARS) {
     throw new ConvexError(`Keep the brief under ${MAX_BRIEF_CHARS} characters.`);
   }

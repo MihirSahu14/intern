@@ -14,9 +14,9 @@ import ThemeToggle from "@/components/ThemeToggle";
  */
 
 export const metadata = {
-  title: "intern · a company brain you can see",
+  title: "intern · a community brain you can see",
   description:
-    "A company brain you can see, and interns that go find what it doesn't know yet. Nothing goes out without a person saying so.",
+    "A community brain you can see, and interns that go find what it doesn't know yet. Nothing goes out without a person saying so.",
 };
 
 const TRACE = [
@@ -69,7 +69,7 @@ export default function Landing() {
         </header>
 
         {/* ---- the brain ----------------------------------------------- */}
-        <section className="enter mt-14 border border-line bg-panel" aria-label="Example company brain">
+        <section className="enter mt-14 border border-line bg-panel" aria-label="Example community brain">
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-2">
             <span className="label">example · one onboarding brief</span>
             <span className="text-faint">size = how much hangs off it</span>
@@ -159,7 +159,7 @@ export default function Landing() {
         </section>
 
         <footer className="mt-auto flex flex-wrap items-center justify-between gap-3 pt-20 pb-6 text-faint">
-          <span>intern · a terminal for the company brain</span>
+          <span>intern · a terminal for the community brain</span>
           <a
             href="https://github.com/MihirSahu14/intern"
             className="transition-colors hover:text-dim"

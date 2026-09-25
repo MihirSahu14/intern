@@ -92,8 +92,8 @@ export default function Teach({
           className="flex h-8 w-full items-center gap-2 px-3 text-left text-faint transition-colors hover:text-fg"
         >
           <span className="text-k-fact">+</span>
-          <span className="label">add a fact</span>
-          <span className="ml-auto text-faint">goes straight into the brain</span>
+          <span className="label shrink-0 whitespace-nowrap">add a fact</span>
+          <span className="ml-auto min-w-0 truncate text-faint">goes straight into the brain</span>
         </button>
       </section>
     );
