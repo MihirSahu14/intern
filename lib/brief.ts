@@ -6,6 +6,7 @@
 
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
+import type { ActionKind } from "./types.ts";
 
 export type Recalled = { id: string; title: string; body: string };
 
@@ -15,7 +16,7 @@ export type Recalled = { id: string; title: string; body: string };
  * code, so this can't drift from it.
  */
 const channels = CONNECTORS.map((c) =>
-  c.forKind === "email" ? `an email sent from the member's own ${c.label}` : `a ${c.label} message posted under their own name in the community ${c.label}`,
+  c.forKind === "email" ? `an email sent from the member's own ${c.label}` : `a ${c.label} message posted under their own name in ${c.label}`,
 ).join(" or ");
 const ABOUT = `WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):
 - Intern is a public community brain: one shared set of facts that everyone who signs in with GitHub can read and add to, drawn as a live graph.
@@ -24,7 +25,7 @@ const ABOUT = `WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the tas
 - Nothing goes out until the member approves it in the outbox. They can edit first; their edit is saved as a fact the next intern reads first, which is how the brain learns.
 - You may ask at most one question per brief, and only for a missing recipient.
 - Limits: no browsing, no tools, no calendar or files, one draft per brief, ${BRIEFS_PER_DAY} briefs a day per member.
-- Briefs and facts are public; drafts, questions and sends are private to the member.`;
+- Briefs and most facts are public; drafts, questions and sends are private to the member.`;
 
 const SANDBOX = `This is a public sandbox shared by everyone trying Intern. Nothing you draft is
 ever sent. Use plausible placeholders for recipients (#general, name@example.com)
@@ -49,21 +50,28 @@ export function resumeTask(prior: string, question: string, answer: string): str
 }
 
 /** Who the intern works for: the owner's handle and the accounts they connected, each with who they are there. */
-export type Self = { handle?: string; accounts: { label: string; account: string }[] };
+export type Self = { handle?: string; accounts: { kind: ActionKind; label: string; account: string }[] };
 
 /** Resolves "me" in the task. Only the parts that exist; nothing at all when nothing does. */
 function youWorkFor(self?: Self): string {
   if (!self) return "";
-  const where = self.accounts.map((a) => (a.label === "Gmail" ? `their email is ${a.account}` : `on ${a.label} they are ${a.account}`));
+  const where = self.accounts.map((a) => (a.kind === "email" ? `their email is ${a.account}` : `on ${a.label} they are ${a.account}`));
   if (!self.handle && !where.length) return "";
   const who = self.handle ? `@${self.handle}` : "the person who briefed you";
-  return `\nYOU WORK FOR: ${who}. "Me", "myself" and "my" in the task mean them${where.length ? ` — ${where.join("; ")}` : ""}. Never put their address in a fact.\n`;
+  return `\nYOU WORK FOR: ${who}. "Me", "myself" and "my" in the task mean them${where.length ? ` — ${where.join("; ")}` : ""}. Never put their email or Slack account in a fact.\n`;
 }
 
-/** The ask rule for a first run: the recipient of a real send is the one thing worth stopping for. */
-const ASK = `The ONLY thing you may ask is who a real send goes to, when the task names no
-one and YOU WORK FOR does not settle it. Then do NOT pick the likely one. Stop
-and ask, with exactly one fenced block:
+/**
+ * The ask rule for a first live run: a real send's missing recipient is the
+ * one thing worth stopping for, and only when nothing in the prompt names it.
+ * The "me" clause only when there's a YOU WORK FOR section to settle it.
+ */
+const ask = (knowsSelf: boolean) => `Ask ONLY when all of these hold: the draft is a real send, the task names no
+recipient (no address, no person, no #channel),${knowsSelf ? ` it is not "me"/"myself" (YOU WORK FOR settles those),` : ""} and the brain gives no
+address or channel for it. A Slack post with a named #channel, or an email whose
+recipient is named or resolvable, must NEVER ask. A Slack post with no channel
+goes to the community's main channel if the brain names one, instead of asking.
+When in doubt, draft. Only then stop and ask, with exactly one fenced block:
 
 \`\`\`question
 {"question":"the one thing you need answered","context":"what you were doing"}
@@ -74,7 +82,11 @@ who sends it. Anything under ${ANSWERED} is settled; never ask about it again.
 
 At most one question per brief.`;
 
-/** Said instead of ASK once the question was asked: `run.go` drops any other one anyway. */
+/** The sandbox never sends, so a missing recipient is a placeholder like anything else. */
+const NO_ASK = `Here you never ask a question: every gap, the recipient included, gets a
+placeholder. When in doubt, draft.`;
+
+/** Said instead of `ask` once the question was asked: `run.go` drops any other one anyway. */
 const ASKED = `You already asked your one question. Do not ask another: draft now, using
 [placeholders] for anything still missing. Anything under ${ANSWERED} is settled.`;
 
@@ -125,7 +137,7 @@ names inside the body: write the best draft you can from the brain and what you
 know, and mark anything you genuinely cannot know as a [bracketed placeholder].
 The person reads and edits every draft before it goes out.
 
-${resumed ? ASKED : ASK}`;
+${resumed ? ASKED : sendsFrom.length ? ask(!!youWorkFor(self)) : NO_ASK}`;
 }
 
 /** FNV-1a of the template itself, base36. */
@@ -138,8 +150,10 @@ function fnv(text: string): string {
   return (h >>> 0).toString(36);
 }
 
+const SAMPLE_SELF: Self = { handle: "{handle}", accounts: [{ kind: "email", label: "Gmail", account: "{account}" }] };
 export const PROMPT_VERSION = fnv(
   brief("{task}", []) +
     brief("{task}", [], ["{label}"]) +
-    brief("{task}", [], [], { handle: "{handle}", accounts: [{ label: "Gmail", account: "{account}" }] }, true),
+    brief("{task}", [], ["{label}"], SAMPLE_SELF) +
+    brief("{task}", [], [], SAMPLE_SELF, true),
 );

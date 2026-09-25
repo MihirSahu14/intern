@@ -191,7 +191,8 @@ export default defineSchema({
     resumedBy: v.optional(v.id("interns")),
   })
     .index("by_ownerId", ["ownerId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_internId", ["internId"]),
 
   /** One row per UTC day. The global budget reads this. */
   usage: defineTable({

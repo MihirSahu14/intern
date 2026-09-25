@@ -128,7 +128,7 @@ function stubModel(report: string) {
   vi.stubGlobal("fetch", f);
   return f;
 }
-const promptOf = (f: ReturnType<typeof stubModel>) => JSON.parse(String(f.mock.calls[0][1]?.body)).messages[0].content as string;
+const promptOf = (f: ReturnType<typeof stubModel>, call = 0) => JSON.parse(String(f.mock.calls[call][1]?.body)).messages[0].content as string;
 
 const ASKING = [
   "Drafted what I could.",
@@ -140,17 +140,37 @@ const ASKING = [
   "```",
 ].join("\n");
 
-test("a fresh run that asks parks on its one question", async () => {
+/** Composio configured and an active grant for `connector`: the run is briefed live. */
+function seedLive(t: ReturnType<typeof setup>["t"], userId: Id<"users">, connector: "gmail" | "slack", accountLabel?: string) {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("COMPOSIO_VERIFIER_URL", "https://site.test/app");
+  return t.run((ctx) =>
+    ctx.db.insert("connections", { userId, connector, status: "active", state: `s-${connector}`, composioAccountId: `ca-${connector}`, accountLabel, createdAt: Date.now() }),
+  );
+}
+
+test("a fresh live run parks on its one question; dismissed and retried, it can't ask again", async () => {
   const f = stubModel(ASKING);
-  const { t, seedUser } = setup();
+  const { t, seedUser, asUser } = setup();
   const userId = await seedUser("a");
-  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "queued", countsTowardCap: true }));
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail the customer", status: "queued", countsTowardCap: true }));
 
   await t.action(internal.run.go, { internId });
 
   expect(promptOf(f)).toContain("```question");
   expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("waiting");
+  const [q] = await t.run((ctx) => ctx.db.query("questions").collect());
+  expect(q).toBeDefined();
+
+  // Dismissing cancels the intern; a retry runs the same row again — same brief, question spent.
+  await asUser(userId).mutation(api.questions.dismiss, { questionId: q._id });
+  await asUser(userId).mutation(api.interns.retry, { internId });
+  await t.action(internal.run.go, { internId });
+
+  expect(promptOf(f, 1)).toContain("You already asked your one question.");
   expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(1);
+  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("done");
 });
 
 test("a resumed run never asks again: its question is dropped, the rest still counts", async () => {
@@ -212,10 +232,13 @@ test("the owner's intern is told who \"me\" is, and the address goes nowhere els
   expect(JSON.stringify(written)).not.toContain("ann@acme.com");
 });
 
-test("a fact a run files carries no address when public, and stays verbatim when private", async () => {
-  stubModel('Done.\n```fact\n{"title":"ann@acme.com wants weekly mail","body":"write to ann@acme.com","kind":"preference"}\n```');
+test("a fact a run files carries no address or account label when public, and stays verbatim when private", async () => {
+  stubModel(
+    'Done.\n```fact\n{"title":"ann@acme.com wants weekly mail","body":"write to ann@acme.com, or ping @ann in Intern Community","kind":"preference"}\n```',
+  );
   const { t, seedUser } = setup();
   const userId = await seedUser("ann");
+  await seedLive(t, userId, "slack", "@ann in Intern Community");
   const fresh = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "queued", countsTowardCap: true }));
   // A question-resumed run (displayTask set) is private by construction; see noteRecall.
   const resumed = await t.run((ctx) =>
@@ -230,13 +253,13 @@ test("a fact a run files carries no address when public, and stays verbatim when
   expect(pub?.visibility).toBeUndefined();
   expect(pub).toMatchObject({
     title: "[email] wants weekly mail",
-    body: "write to [email]",
-    text: "[email] wants weekly mail\nwrite to [email]",
+    body: "write to [email], or ping [account]",
+    text: "[email] wants weekly mail\nwrite to [email], or ping [account]",
   });
   expect(facts.find((f) => f.internId === resumed)).toMatchObject({
     visibility: "owner",
     title: "ann@acme.com wants weekly mail",
-    body: "write to ann@acme.com",
+    body: "write to ann@acme.com, or ping @ann in Intern Community",
   });
 });
 

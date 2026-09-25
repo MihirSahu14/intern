@@ -1,7 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
-import { PROMPT_VERSION } from "../lib/brief.ts";
+import { PROMPT_VERSION, type Self } from "../lib/brief.ts";
 import { CONNECTORS, type ConnectorKey, connectorFor, isConfigured } from "../lib/connectors.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
@@ -236,20 +236,23 @@ export const start = internalMutation({
     const live: ConnectorKey[] = [];
     // Who "me" is: the owner's own handle and accounts, for their own run's
     // prompt only. Never logged, filed or broadcast.
-    const accounts: { label: string; account: string }[] = [];
+    const accounts: Self["accounts"] = [];
     for (const c of CONNECTORS) {
       const row = isConfigured(c, process.env) ? await activeConnection(ctx, i.ownerId, c.key) : null;
       if (!row) continue;
       live.push(c.key);
-      if (row.accountLabel) accounts.push({ label: c.label, account: row.accountLabel });
+      if (row.accountLabel) accounts.push({ kind: c.forKind, label: c.label, account: row.accountLabel });
     }
     // Kept on the run so `finish` can mark a draft briefed as sandbox — its
     // placeholder recipients must never go out unchanged (see outbox.decide).
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION, sendsFrom: live });
     const sendsFrom = CONNECTORS.filter((c) => live.includes(c.key)).map((c) => c.label);
     const handle = (await ctx.db.get("users", i.ownerId))?.handle;
-    // A question-resumed run already had its one question (see run.go).
-    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed: !!i.resumes };
+    // A brief gets one question (see run.go): this run's is spent if it
+    // resumes an answered one, or if this very intern already asked — a
+    // dismissed or cancelled question followed by a retry.
+    const resumed = !!i.resumes || !!(await ctx.db.query("questions").withIndex("by_internId", (q) => q.eq("internId", internId)).first());
+    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed };
   },
 });
 
@@ -347,10 +350,18 @@ export const finish = internalMutation({
     // private: an intern that read a private fact can restate it in its own
     // words, so the *filed* fact needs the same guard the recalled one had.
     const factVisibility: Doc<"facts">["visibility"] = intern.recalledPrivate ? "owner" : undefined;
+    // The run knows its owner's accounts (YOU WORK FOR) and any address it
+    // was briefed with; a public fact carries neither, whatever the prompt said.
+    const accountLabels: string[] = [];
+    if (!factVisibility && a.facts.length) {
+      for (const c of CONNECTORS) {
+        const label = (await activeConnection(ctx, intern.ownerId, c.key))?.accountLabel;
+        if (label) accountLabels.push(label);
+      }
+    }
+    const scrub = (text: string) => redactEmails(accountLabels.reduce((t, l) => t.split(l).join("[account]"), text));
     for (const raw of a.facts) {
-      // The run knows its owner's address (YOU WORK FOR) and any it was
-      // briefed with; a public fact must not carry one, whatever the prompt said.
-      const f = factVisibility ? raw : { ...raw, title: redactEmails(raw.title), body: redactEmails(raw.body) };
+      const f = factVisibility ? raw : { ...raw, title: scrub(raw.title), body: scrub(raw.body) };
       await insertFact(ctx, { ...f, ownerId: intern.ownerId, internId: a.internId, visibility: factVisibility });
       await log("ok", factVisibility ? "filed a private fact" : `filed · ${f.title}`);
     }

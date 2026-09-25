@@ -746,6 +746,38 @@ test("approving with a connected account sends it and files an owner-only fact",
   ]);
 });
 
+test("a live draft still holding a [placeholder] can't be sent until it's filled in", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await t.run((ctx) =>
+    ctx.db.patch("actions", actionId, { draft: { to: ["ann@acme.com"], subject: "Pricing", body: "See you on [date]. [Docs](https://x.co)" } }),
+  );
+  await seedActive(a);
+  stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(
+    "Fill in the [bracketed] parts before sending.",
+  );
+  // An edit that leaves the placeholder in is checked as edited, and refused too.
+  await expect(
+    asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Still [date], sorry." } }),
+  ).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
+
+  // The markdown link isn't a placeholder; the filled-in date clears it.
+  await asUser(a).mutation(api.outbox.decide, {
+    actionId,
+    decision: "approve",
+    edits: { body: "See you on Friday. [Docs](https://x.co)" },
+  });
+  // Drained here, or the scheduled send would fire inside a later test.
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
 test("a dead-grant-shaped failure never shows Composio's raw reason — only the fixed reconnect copy — and can be retried", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
@@ -1112,7 +1144,7 @@ test("an intern whose owner connected Gmail is briefed to send for real", async 
     task: "t",
     ownerId: a,
     sendsFrom: ["Gmail", "Slack"],
-    self: { handle: "a", accounts: [{ label: "Gmail", account: "ann@acme.com" }] },
+    self: { handle: "a", accounts: [{ kind: "email", label: "Gmail", account: "ann@acme.com" }] },
     resumed: false,
   });
 });

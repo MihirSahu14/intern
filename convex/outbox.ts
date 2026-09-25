@@ -10,7 +10,7 @@ import {
   tooManySends,
 } from "../lib/caps.ts";
 import { type ConnectorKey, connectorByKey, connectorFor, isConfigured } from "../lib/connectors.ts";
-import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
+import { UNFILLED, changedFields, correctionFromEdit, correctionFromReject, editRatio, hasPlaceholder } from "../lib/edits.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { recipientsInBrief } from "../lib/recipients.ts";
 import { internal } from "./_generated/api";
@@ -230,6 +230,10 @@ export const decide = mutation({
     ) {
       throw new ConvexError(placeholderRecipients(live.label));
     }
+    // The prompt makes [placeholders] the answer to a missing detail, so a
+    // real send must not carry one. `accepted` is exactly what goes out: a
+    // field edited now is checked as edited, an untouched one as drafted.
+    if (live && hasPlaceholder(accepted)) throw new ConvexError(UNFILLED);
     if (live) await assertCanSend(ctx, user._id);
 
     await ctx.db.patch("actions", action._id, {

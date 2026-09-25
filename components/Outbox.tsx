@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { CONNECTORS } from "@/lib/connectors";
+import { UNFILLED, hasPlaceholder } from "@/lib/edits";
 import type {
   ActionKind,
   ActionStatus,
@@ -158,7 +159,10 @@ function Pending({
   const showPlaceholderNote = !!via && !action.draftedLive && !changed.includes("to");
   const briefAllows = !!action.recipientsMatchBrief;
   // The server refuses this too (outbox.decide) when neither is true.
-  const blocked = showPlaceholderNote && !briefAllows;
+  const recipientBlocked = showPlaceholderNote && !briefAllows;
+  // A real send can't carry a [placeholder]; the server refuses it too.
+  const unfilled = !!via && hasPlaceholder({ to: list(to), cc: start.cc, subject, body });
+  const blocked = recipientBlocked || unfilled;
 
   return (
     <article className="enter border-b border-line px-3 py-2">
@@ -202,6 +206,7 @@ function Pending({
               {briefAllows ? ", or send as is if it's right." : "."}
             </p>
           ) : null}
+          {unfilled ? <p className="border-l border-warn/50 pl-2 text-warn">{UNFILLED}</p> : null}
           {changed.length ? (
             <p className="border-l border-k-fact/50 pl-2 text-k-fact">
               {changed.join(" and ")} changed · approving files the difference as
@@ -255,8 +260,10 @@ function Pending({
             disabled={blocked && expanded}
             className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10 disabled:opacity-40"
           >
-            {blocked
+            {recipientBlocked
               ? `Written before you connected ${via} — check the recipient`
+              : unfilled
+              ? UNFILLED
               : via
               ? `${changed.length ? "send with edits" : "approve & send"} via ${via}`
               : changed.length

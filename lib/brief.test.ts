@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
-import { PROMPT_VERSION, brief, resumeTask } from "./brief.ts";
+import { PROMPT_VERSION, type Self, brief, resumeTask } from "./brief.ts";
+
+const ME: Self = {
+  handle: "ann",
+  accounts: [
+    { kind: "email", label: "Gmail", account: "ann@acme.com" },
+    { kind: "slack", label: "Slack", account: "@ann in Intern Community" },
+  ],
+};
 
 test("the brief carries the task, the recalled facts, and the sandbox rule", () => {
   const text = brief("Draft a hello", [{ id: "f1", title: "Tone", body: "Be brief" }]);
@@ -38,50 +46,69 @@ test("the task outranks the brain, and a missing detail is a placeholder, not a 
   assert.match(text, /Do not invent people, systems, dates or numbers\./);
   assert.match(text, /A missing detail is not a question\./);
   assert.match(text, /\[bracketed placeholder\]/);
-  assert.match(text, /Never ask anything else: not intent, scope, tone, wording, length, examples or\nwho sends it\./);
 });
 
-test("a fresh brief offers the question block, only for the recipient of a real send", () => {
+test("the sandbox never offers the question block: it can't send, so it drafts", () => {
   const text = brief("x", []);
+  assert.ok(!text.includes("```question"));
+  assert.ok(!text.includes("Ask ONLY when"));
+  assert.match(text, /Here you never ask a question: every gap, the recipient included, gets a\nplaceholder\. When in doubt, draft\./);
+});
+
+test("a fresh live brief offers the question block, only for a recipient nothing names", () => {
+  const text = brief("x", [], ["Gmail"], ME);
   assert.ok(text.includes("```question"));
-  assert.match(text, /The ONLY thing you may ask is who a real send goes to/);
+  assert.match(text, /Ask ONLY when all of these hold: the draft is a real send, the task names no\nrecipient/);
+  assert.match(text, /it is not "me"\/"myself" \(YOU WORK FOR settles those\)/);
+  assert.match(text, /A Slack post with a named #channel, or an email whose\nrecipient is named or resolvable, must NEVER ask\./);
+  assert.match(text, /goes to the community's main channel if the brain names one/);
+  assert.match(text, /When in doubt, draft\./);
+  assert.match(text, /Never ask anything else: not intent, scope, tone, wording, length, examples or\nwho sends it\./);
   assert.match(text, /At most one question per brief\./);
   assert.ok(!text.includes("already asked your one question"));
+  // No YOU WORK FOR section, no reference to one in the ask rule.
+  const anonymous = brief("x", [], ["Gmail"]);
+  assert.ok(anonymous.includes("```question"));
+  assert.ok(!anonymous.includes("YOU WORK FOR settles"));
 });
 
-test("a resumed brief has no question block and says to draft now", () => {
-  const text = brief("x", [], [], undefined, true);
-  assert.ok(!text.includes("```question"));
-  assert.ok(!text.includes("The ONLY thing you may ask"));
-  assert.match(text, /You already asked your one question\. Do not ask another: draft now, using\n\[placeholders\] for anything still missing\./);
-  // The placeholder rule and the settled answers still hold.
-  assert.match(text, /A missing detail is not a question\./);
-  assert.match(text, /ANSWERS YOU WERE GIVEN is settled/);
+test("a resumed brief has no question block and says to draft now, live or not", () => {
+  for (const text of [brief("x", [], [], undefined, true), brief("x", [], ["Gmail"], ME, true)]) {
+    assert.ok(!text.includes("```question"));
+    assert.ok(!text.includes("Ask ONLY when"));
+    assert.match(text, /You already asked your one question\. Do not ask another: draft now, using\n\[placeholders\] for anything still missing\./);
+    // The placeholder rule and the settled answers still hold.
+    assert.match(text, /A missing detail is not a question\./);
+    assert.match(text, /ANSWERS YOU WERE GIVEN is settled/);
+  }
 });
 
-test("YOU WORK FOR resolves me, with only the parts that exist", () => {
-  const gmail = { label: "Gmail", account: "ann@acme.com" };
-  const slack = { label: "Slack", account: "@ann in Intern Community" };
+test("YOU WORK FOR resolves me, with only the parts that exist, keyed on the connector's kind", () => {
+  const slack = { kind: "slack" as const, label: "Slack", account: "@ann in Intern Community" };
   assert.ok(
-    brief("x", [], [], { handle: "ann", accounts: [gmail, slack] }).includes(
-      'YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them — their email is ann@acme.com; on Slack they are @ann in Intern Community.',
+    brief("x", [], [], ME).includes(
+      'YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them — their email is ann@acme.com; on Slack they are @ann in Intern Community. Never put their email or Slack account in a fact.',
     ),
   );
   assert.ok(brief("x", [], [], { handle: "ann", accounts: [] }).includes('YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them. '));
   const slackOnly = brief("x", [], [], { handle: "ann", accounts: [slack] });
   assert.match(slackOnly, /mean them — on Slack they are @ann in Intern Community\./);
-  assert.ok(!slackOnly.includes("their email"));
+  assert.ok(!slackOnly.includes("their email is"));
+  // The kind decides the phrasing, not the label.
+  assert.match(brief("x", [], [], { handle: "ann", accounts: [{ kind: "email", label: "Mail", account: "a@b.co" }] }), /their email is a@b\.co/);
   assert.ok(!brief("x", []).includes("YOU WORK FOR:"));
   assert.ok(!brief("x", [], [], { accounts: [] }).includes("YOU WORK FOR:"));
 });
 
 test("every brief, fresh or resumed, knows what Intern is, from the code's own connectors and cap", () => {
   for (const text of [brief("x", []), brief("x", [], ["Gmail"], undefined, true)]) {
-    const about = text.slice(text.indexOf("WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):"));
-    assert.ok(about.length < text.length);
+    const at = text.indexOf("WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):");
+    assert.ok(at >= 0);
+    const about = text.slice(at);
     for (const c of CONNECTORS) assert.ok(about.includes(c.label), c.label);
     assert.ok(about.includes(`${BRIEFS_PER_DAY} briefs a day per member`));
     assert.match(about, /Nothing goes out until the member approves it in the outbox/);
+    assert.match(about, /Briefs and most facts are public/);
   }
 });
 

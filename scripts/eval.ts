@@ -1,5 +1,6 @@
 /**
- * Offline eval: 27 fixed briefs through the current prompt.
+ * Offline eval: 28 fixed briefs through the current prompt, sandbox by
+ * default; `EVAL_LIVE=1` runs every brief as a connected member (see LIVE).
  * Checks the one thing that has silently broken before: does a brief that
  * should draft produce a *usable* action block, and does one that should ask
  * produce a question?
@@ -19,13 +20,34 @@ import { parseQuestionBlock } from "../lib/parse.ts";
 
 type Expect = "action" | "question" | "any";
 
+/** How a brief is run: who it works for and what it could send from. Unset means sandbox, nobody. */
+type Mode = { self?: Self; sendsFrom?: string[] };
+
 /**
  * Who a "me/myself" brief resolves to, the way prod's `interns.start` hands it
  * over from a connected Gmail. The run itself stays sandbox: nothing is sent.
  */
-const ME: Self = { handle: "tester", accounts: [{ label: "Gmail", account: "tester@example.com" }] };
+const ME: Self = { handle: "tester", accounts: [{ kind: "email", label: "Gmail", account: "tester@example.com" }] };
 
-const CASES: [string, Expect, Self?][] = [
+/**
+ * `EVAL_LIVE=1`: every brief runs the way prod runs a fully connected member —
+ * Gmail and Slack live, and YOU WORK FOR knows both accounts. Nothing is sent
+ * either way; the eval only reads what the model writes.
+ */
+const LIVE: Mode | null = process.env.EVAL_LIVE === "1"
+  ? {
+      sendsFrom: ["Gmail", "Slack"],
+      self: {
+        handle: "tester",
+        accounts: [
+          { kind: "email", label: "Gmail", account: "tester@example.com" },
+          { kind: "slack", label: "Slack", account: "@tester in Intern Community" },
+        ],
+      },
+    }
+  : null;
+
+const CASES: [string, Expect, Mode?][] = [
   ["Draft a Slack post introducing Intern to a new teammate", "action"],
   ["Write a follow-up email to someone who asked what Intern does", "action"],
   ["Email a prospect a two-line intro to Intern", "action"],
@@ -39,13 +61,16 @@ const CASES: [string, Expect, Self?][] = [
   ["Write an email declining a meeting politely", "action"],
   ["Post a Slack welcome for a new designer", "action"],
   ["Draft an email asking for feedback on Intern", "action"],
-  ["send a mail to myself explaining what Intern can do", "action", ME],
-  ["Email me a summary of what Intern can do", "action", ME],
+  ["send a mail to myself explaining what Intern can do", "action", { self: ME }],
+  ["Email me a summary of what Intern can do", "action", { self: ME }],
   ["Post in #all-intern-community: welcome to the new members", "action"],
   ["Draft a Slack message to the team about today's progress", "action"],
   ["Write an email to the team with Intern's features and limits", "action"],
-  // Once "question": under the one-question rule only an unknown recipient on a
-  // real send may ask, and eval runs sandbox, so these draft with placeholders or ask.
+  // The one brief that should ask: a real send (live Gmail) to someone nothing
+  // names — no address in the task, none in YOU WORK FOR, no brain to recall.
+  ["Email the new customer a welcome note", "question", { sendsFrom: ["Gmail"], self: { handle: "tester", accounts: [] } }],
+  // Once "question": now only an unknown recipient on a real send may ask, so
+  // in sandbox these draft with placeholders; live, any of them may ask.
   ["Email Sarah about the thing we discussed", "any"],
   ["Send the pricing to our biggest customer", "any"],
   ["Book the usual room for the weekly sync", "any"],
@@ -64,11 +89,12 @@ let usable = 0;
 let matched = 0;
 let errored = 0;
 
-console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs\n`);
-for (const [task, expect, self] of CASES) {
+console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs · ${LIVE ? "live (EVAL_LIVE=1)" : "sandbox"}\n`);
+for (const [task, expect, mode] of CASES) {
+  const { self, sendsFrom = [] } = LIVE ?? mode ?? {};
   let report = "";
   try {
-    for await (const c of stream(brief(task, [], [], self))) report += c.text ?? "";
+    for await (const c of stream(brief(task, [], sendsFrom, self))) report += c.text ?? "";
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
     errored++;
@@ -82,7 +108,12 @@ for (const [task, expect, self] of CASES) {
   if (got === "action") usable++;
   const ok = expect === "any" || got === expect;
   if (ok) matched++;
-  console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${action && "error" in action ? `\n     ${action.error}` : ""}`);
+  // A miss says why: the question it asked instead, or what was malformed.
+  const why = [
+    action && "error" in action ? `action: ${action.error}` : null,
+    !ok && question ? ("error" in question ? `question: ${question.error}` : `asked: ${question.question}`) : null,
+  ].filter(Boolean);
+  console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${why.map((w) => `\n     ${w}`).join("")}`);
   await sleep(6000);
 }
 
