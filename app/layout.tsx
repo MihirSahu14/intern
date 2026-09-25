@@ -9,9 +9,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "intern · company brain",
+  title: "intern · community brain",
   description:
-    "A company brain you can see, and interns that go find what it doesn't know yet.",
+    "A community brain you can see, and interns that go find what it doesn't know yet.",
 };
 
 // Runs before first paint so a saved theme applies with no flash of the

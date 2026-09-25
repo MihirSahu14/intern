@@ -133,7 +133,7 @@ export default function Cockpit({ me }: { me: Me }) {
       (internRows ?? []).map((i) => ({
         id: i._id,
         ownerId: i.ownerId,
-        handle: `@${i.handle} ${i._id.slice(-4)}`,
+        handle: `@${i.handle}`,
         task: i.task,
         displayTask: i.displayTask,
         status: i.status,

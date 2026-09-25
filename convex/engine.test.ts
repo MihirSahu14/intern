@@ -39,6 +39,13 @@ test("the sixth brief of the day is refused", async () => {
   await expect(as.mutation(api.interns.spawn, { task: "task 5" })).rejects.toThrow(/5 briefs/);
 });
 
+test("a stray keystroke is not a brief, and costs nothing", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  await expect(asUser(a).mutation(api.interns.spawn, { task: "/" })).rejects.toThrow(/Say a bit more/);
+  expect(await t.run((ctx) => ctx.db.query("interns").collect())).toHaveLength(0);
+});
+
 test("a second intern while one is queued is refused", async () => {
   const { seedUser, asUser } = setup();
   const as = asUser(await seedUser("a"));
@@ -117,7 +124,7 @@ test("the global budget stops everyone", async () => {
   const as = asUser(await seedUser("a"));
 
   await t.run((ctx) => ctx.db.insert("usage", { date: dayKey(Date.now()), costUsd: DAILY_BUDGET_USD, runs: 1 }));
-  await expect(as.mutation(api.interns.spawn, { task: "x" })).rejects.toThrow(/budget/);
+  await expect(as.mutation(api.interns.spawn, { task: "draft a hello" })).rejects.toThrow(/budget/);
 });
 
 test("CAP_EXEMPT_HANDLES: an exempt member can spawn a sixth brief and a second concurrent intern", async () => {
@@ -155,7 +162,7 @@ test("CAP_EXEMPT_HANDLES: exemption never clears the shared $5 budget", async ()
   const as = asUser(await seedUser("a"));
 
   await t.run((ctx) => ctx.db.insert("usage", { date: dayKey(Date.now()), costUsd: DAILY_BUDGET_USD, runs: 1 }));
-  await expect(as.mutation(api.interns.spawn, { task: "x" })).rejects.toThrow(/budget/);
+  await expect(as.mutation(api.interns.spawn, { task: "draft a hello" })).rejects.toThrow(/budget/);
 });
 
 test("CAP_EXEMPT_HANDLES matches case-insensitively and ignores stray whitespace", async () => {

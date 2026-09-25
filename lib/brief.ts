@@ -30,7 +30,7 @@ export function resumeTask(prior: string, question: string, answer: string): str
 
 export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = []): string {
   const learned = recalled.length
-    ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources"):\n${recalled
+    ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${recalled
         .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
         .join("\n")}\n`
     : "";
