@@ -68,16 +68,17 @@ export function providerReason(message: string): string | undefined {
  * failure looks like a dead grant. A dead grant keeps the old fully-fixed
  * copy — same rule `connections.ts` follows for connect-time errors — because
  * there's nothing more to say than "reconnect it". Anything else keeps
- * `SEND_FAILED` verbatim and appends what Composio/the provider actually
- * said, when `providerReason` found something worth showing.
+ * `SEND_FAILED` verbatim and appends what was actually said, when
+ * `providerReason` found something worth showing — credited to `saidBy`:
+ * the connector for the tool call, "Composio" for its own session setup.
  */
-function ownerMessage(err: unknown, label: string): string {
+function ownerMessage(err: unknown, label: string, saidBy: string): string {
   const status = err instanceof ComposioError ? err.status : undefined;
   const msg = err instanceof Error ? err.message : String(err);
   const deadGrant = status === 401 || status === 403 || /invalid_grant|unauthoriz|forbidden/i.test(msg);
   if (deadGrant) return `${label} refused the send. Reconnect it and retry.`;
   const reason = providerReason(msg);
-  return reason ? `${SEND_FAILED} (${label} said: ${reason})` : SEND_FAILED;
+  return reason ? `${SEND_FAILED} (${saidBy} said: ${reason})` : SEND_FAILED;
 }
 
 /** A gateway/request timeout: Composio (or what's in front of it) gave up on the response, not on the request. */
@@ -95,9 +96,9 @@ const isTimeoutStatus = (status: number) => status === 408 || status === 499;
  * running anything.
  */
 async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | undefined, job: Job): Promise<Outcome> {
-  const fail = (err: unknown, unsure: boolean): Outcome => {
+  const fail = (err: unknown, unsure: boolean, saidBy = c.label): Outcome => {
     console.log(`send.go ${actionId}: ${err instanceof Error ? err.message : String(err)}`);
-    return { ok: false, unsure, error: unsure ? UNSURE_MESSAGE : ownerMessage(err, c.label) };
+    return { ok: false, unsure, error: unsure ? UNSURE_MESSAGE : ownerMessage(err, c.label, saidBy) };
   };
   if (!apiKey || !job.composioAccountId) {
     // Not a Composio failure at all — the reconnect copy applies directly,
@@ -109,7 +110,8 @@ async function attempt(actionId: Id<"actions">, c: Connector, apiKey: string | u
   try {
     sessionId = await startSendSession(apiKey, { userId: job.ownerId, toolkit: c.toolkit, accountId: job.composioAccountId, tool: c.sendTool });
   } catch (err) {
-    return fail(err, false);
+    // Composio's own setup refused; the provider never saw the request.
+    return fail(err, false, "Composio");
   }
   try {
     await runSendTool(apiKey, sessionId, c.sendTool, c.toArguments(job.draft));

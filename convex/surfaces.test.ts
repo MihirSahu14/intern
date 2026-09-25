@@ -867,6 +867,27 @@ test("a 4xx on the execute call is a definite `failed`, resendable right away", 
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
 });
 
+test("a send whose Composio session never opened credits Composio, not Gmail, with the reason", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // 200 with no session_id: lib/composio.ts's own setup check throws before
+  // anything reaches Gmail.
+  stubComposio({});
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("failed");
+  expect(row?.sendError).toBe(
+    "The send didn't go through. Retry, or reconnect if it keeps failing. (Composio said: composio session returned no session_id)",
+  );
+});
+
 test("a definite failed send with no usable provider reason keeps the sentence alone", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
