@@ -33,36 +33,33 @@ function summarize(kind: "action" | "fact" | "question", text: string): string {
  * Collapse every complete ```action/```fact/```question fence in `lines` into
  * one summary line each; everything else passes through untouched.
  *
- * A fence still being streamed — no closing "```" yet among the given lines —
- * is dropped along with the rest of the input rather than shown half-formed:
- * nothing crashes, and it collapses normally once a later call sees the row
- * that closes it.
+ * `lines` is the merged, time-ordered stream across every intern in the
+ * panel (the "all" tab), not one intern's own log — so an open fence is
+ * tracked per `internId`, not globally: one intern's unterminated fence only
+ * swallows *that intern's* later rows (nothing crashes, and it collapses
+ * normally once a later call sees the row that closes it) while every other
+ * intern's rows keep showing, interleaved exactly as they came in.
  */
 export function collapseBlocks(lines: LogLine[]): LogLine[] {
   const out: LogLine[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const open = line.text.trim().match(FENCE_OPEN);
-    if (!open) {
-      out.push(line);
-      i++;
+  const open = new Map<string | null, { kind: "action" | "fact" | "question"; buf: string[] }>();
+
+  for (const line of lines) {
+    const pending = open.get(line.internId);
+    if (pending) {
+      pending.buf.push(line.text);
+      if (FENCE_CLOSE.test(line.text.trim())) {
+        out.push({ ...line, text: summarize(pending.kind, pending.buf.join("\n")) });
+        open.delete(line.internId);
+      }
       continue;
     }
-    const kind = open[1] as "action" | "fact" | "question";
-    const buf = [line.text];
-    let j = i + 1;
-    let closed = false;
-    for (; j < lines.length; j++) {
-      buf.push(lines[j].text);
-      if (FENCE_CLOSE.test(lines[j].text.trim())) {
-        closed = true;
-        break;
-      }
+    const opened = line.text.trim().match(FENCE_OPEN);
+    if (opened) {
+      open.set(line.internId, { kind: opened[1] as "action" | "fact" | "question", buf: [line.text] });
+      continue;
     }
-    if (!closed) return out;
-    out.push({ ...line, text: summarize(kind, buf.join("\n")) });
-    i = j + 1;
+    out.push(line);
   }
   return out;
 }

@@ -5,9 +5,9 @@ import { collapseBlocks } from "./log-view.ts";
 import type { LogLine } from "./types.ts";
 
 let nextId = 1;
-const line = (text: string, level: LogLine["level"] = "out"): LogLine => ({
+const line = (text: string, level: LogLine["level"] = "out", internId = "i1"): LogLine => ({
   id: nextId++,
-  internId: "i1",
+  internId,
   ownerId: "u1",
   ts: Date.now(),
   level,
@@ -68,6 +68,22 @@ test("a block that never closes is hidden, not crashed on", () => {
   const lines = [line("Thinking it through."), line("```action"), line('{"kind":"email"')];
   const out = collapseBlocks(lines);
   assert.deepEqual(out, [lines[0]]);
+});
+
+test("an unterminated fence in one intern's stream doesn't hide another intern's later lines", () => {
+  // "all" tab: lines merged across interns by time. A's fence never closes —
+  // only A's own rows should be swallowed, not B's.
+  const lines = [
+    line("```action", "out", "A"),
+    line('{"kind":"email"', "out", "A"),
+    line("still working on it", "out", "B"),
+    line("almost done", "out", "B"),
+  ];
+  const out = collapseBlocks(lines);
+  assert.deepEqual(
+    out.map((l) => l.text),
+    ["still working on it", "almost done"],
+  );
 });
 
 test("plain lines with no fence pass through untouched", () => {

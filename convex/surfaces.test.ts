@@ -723,7 +723,7 @@ test("approving with a connected account sends it and files an owner-only fact",
   ]);
 });
 
-test("a failed send never shows Composio's raw reason — only a fixed, connector-labeled copy — and can be retried", async () => {
+test("a dead-grant-shaped failure never shows Composio's raw reason — only the fixed reconnect copy — and can be retried", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
   const a = await seedUser("a");
@@ -865,6 +865,33 @@ test("a 4xx on the execute call is a definite `failed`, resendable right away", 
   await asUser(a).mutation(api.outbox.resend, { actionId });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a definite failed send with no usable provider reason keeps the sentence alone", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await seedActive(a);
+  // The execute call answers 400 with an empty body: nothing for
+  // providerReason to clean up, so ownerMessage falls back to the sentence
+  // alone — no "(<label> said: ...)" suffix.
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      n++;
+      return n === 1 ? new Response(JSON.stringify({ session_id: "trs_1" })) : new Response("", { status: 400 });
+    }),
+  );
+
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const row = await t.run((ctx) => ctx.db.get("actions", actionId));
+  expect(row?.status).toBe("failed");
+  expect(row?.sendError).toBe("The send didn't go through. Retry, or reconnect if it keeps failing.");
 });
 
 test("a 408 on the execute call is `unsure` like a 5xx, not a definite failed", async () => {
