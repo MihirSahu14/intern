@@ -44,7 +44,7 @@ export default function Landing() {
 
         {/* ---- hero ---------------------------------------------------- */}
         <header className="enter mt-20 sm:mt-28">
-          <p className="label">the company brain</p>
+          <p className="label">the community brain</p>
           <h1 className="mt-5 max-w-2xl text-2xl leading-[1.35] tracking-tight text-fg sm:text-[28px]">
             A company brain you can see, and interns that go find what it
             doesn&rsquo;t know yet.
@@ -52,8 +52,8 @@ export default function Landing() {
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
             Dispatch a long-running intern at a brief and leave it alone. It
             reads everything the company knows, does the work, and files what it
-            learns back. Drafts stop and wait for you; in this public sandbox
-            nothing is ever sent.
+            learns back. Drafts stop and wait for you. Nothing goes out until you
+            approve it, and then it goes from your own Gmail or Slack.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -104,9 +104,9 @@ export default function Landing() {
           <p className="label">why it isn&rsquo;t a chat window</p>
           <div className="mt-6 grid gap-px border border-line bg-line sm:grid-cols-3">
             <Panel
-              title="It never sends"
+              title="Nothing leaves without you"
               accent="text-warn"
-              body="An intern that decides something should go out writes a draft and stops. Approval isn't a rubber stamp bolted on the end — it's the only way anything leaves."
+              body="An intern that decides something should go out writes a draft and stops. You approve it, and it sends from your own connected account. Approval is the only way anything leaves."
             />
             <Panel
               title="Editing teaches it"
@@ -132,13 +132,23 @@ export default function Landing() {
           <Loop />
         </section>
 
+        {/* ---- the community --------------------------------------------- */}
+        <section className="mt-24">
+          <p className="label">the community</p>
+          <p className="mt-5 max-w-xl leading-relaxed text-dim">
+            Everyone who signs in joins one public Slack workspace. Connect your
+            own Gmail or Slack and an intern&rsquo;s approved draft goes out as
+            you: an email from your address, a message under your name.
+          </p>
+        </section>
+
         {/* ---- close ---------------------------------------------------- */}
         <section className="mt-24 border border-line bg-panel p-8">
           <h2 className="text-fg">Point it at a brief and walk away.</h2>
           <p className="mt-3 max-w-lg leading-relaxed text-dim">
             It&rsquo;s a public test brain — sign in with GitHub and everything
             you do joins what everyone else has taught it. Drafts stop and wait
-            for you; nothing is ever sent.
+            for you; nothing goes out until you approve it.
           </p>
           <Link
             href="/app"

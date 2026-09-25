@@ -91,8 +91,8 @@ export default function Teach({
           className="flex h-8 w-full items-center gap-2 px-3 text-left text-faint transition-colors hover:text-fg"
         >
           <span className="text-k-fact">+</span>
-          <span className="label">tell it something</span>
-          <span className="ml-auto text-faint">no intern needed</span>
+          <span className="label">add a fact</span>
+          <span className="ml-auto text-faint">goes straight into the brain</span>
         </button>
       </section>
     );
@@ -101,7 +101,7 @@ export default function Teach({
   return (
     <section className="shrink-0 border-b border-line bg-panel">
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
-        <h2 className="label">tell it something</h2>
+        <h2 className="label">add a fact</h2>
         <button
           type="button"
           onClick={() => setOpen(false)}

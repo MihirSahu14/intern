@@ -23,7 +23,7 @@ const STEPS = [
   {
     n: "3",
     title: "it works, then stops",
-    body: "It files what it learned as facts, and anything outbound becomes a draft. An intern has no send tool.",
+    body: "It files what it learned as facts, and anything outbound becomes a draft. An intern can't send on its own.",
     tie: "writes",
   },
   {

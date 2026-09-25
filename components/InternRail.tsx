@@ -43,19 +43,18 @@ export default function InternRail({
   onRetry: (id: string) => void;
   mineId: string;
 }) {
-  const live = interns.some(
+  const active = interns.filter(
     (i) => i.status === "running" || i.status === "queued",
-  );
-  const now = useNow(live);
+  ).length;
+  const now = useNow(active > 0);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-panel">
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
         <h2 className="label">interns</h2>
-        <span className="text-faint tabular-nums">
-          {interns.filter((i) => i.status === "running").length}/
-          {interns.length}
-        </span>
+        {active > 0 ? (
+          <span className="text-faint tabular-nums">{active} running</span>
+        ) : null}
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -159,16 +158,11 @@ export default function InternRail({
                 <p className="mt-1.5 text-err">{i.error}</p>
               ) : null}
 
-              <div className="mt-1.5 flex items-center gap-2 text-faint">
-                <span>{i.mode === "live" ? "live" : "sim"}</span>
-                <span>·</span>
-                <span>{i.toolCalls} calls</span>
-                {i.resumes ? (
-                  <span className="ml-auto" title={`picked up from ${i.resumes}`}>
-                    ↻ {i.resumes}
-                  </span>
-                ) : null}
-              </div>
+              {i.resumes ? (
+                <p className="mt-1.5 text-faint" title={`picked up from ${i.resumes}`}>
+                  ↻ {i.resumes}
+                </p>
+              ) : null}
             </article>
           );
         })}
