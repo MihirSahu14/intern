@@ -212,6 +212,34 @@ test("the owner's intern is told who \"me\" is, and the address goes nowhere els
   expect(JSON.stringify(written)).not.toContain("ann@acme.com");
 });
 
+test("a fact a run files carries no address when public, and stays verbatim when private", async () => {
+  stubModel('Done.\n```fact\n{"title":"ann@acme.com wants weekly mail","body":"write to ann@acme.com","kind":"preference"}\n```');
+  const { t, seedUser } = setup();
+  const userId = await seedUser("ann");
+  const fresh = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "queued", countsTowardCap: true }));
+  // A question-resumed run (displayTask set) is private by construction; see noteRecall.
+  const resumed = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "mail me\n- Who? → me", displayTask: "mail me", status: "queued", resumes: fresh, countsTowardCap: true }),
+  );
+
+  await t.action(internal.run.go, { internId: fresh });
+  await t.action(internal.run.go, { internId: resumed });
+
+  const facts = await t.run((ctx) => ctx.db.query("facts").collect());
+  const pub = facts.find((f) => f.internId === fresh);
+  expect(pub?.visibility).toBeUndefined();
+  expect(pub).toMatchObject({
+    title: "[email] wants weekly mail",
+    body: "write to [email]",
+    text: "[email] wants weekly mail\nwrite to [email]",
+  });
+  expect(facts.find((f) => f.internId === resumed)).toMatchObject({
+    visibility: "owner",
+    title: "ann@acme.com wants weekly mail",
+    body: "write to ann@acme.com",
+  });
+});
+
 test("the global budget stops everyone", async () => {
   const { t, seedUser, asUser } = setup();
   const as = asUser(await seedUser("a"));

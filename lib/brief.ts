@@ -4,7 +4,27 @@
  * comparable across prompt changes.
  */
 
+import { BRIEFS_PER_DAY } from "./caps.ts";
+import { CONNECTORS } from "./connectors.ts";
+
 export type Recalled = { id: string; title: string; body: string };
+
+/**
+ * What the product is, so a task about Intern itself never waits on recall
+ * surfacing the right facts. Connector names and the brief cap come from the
+ * code, so this can't drift from it.
+ */
+const channels = CONNECTORS.map((c) =>
+  c.forKind === "email" ? `an email sent from the member's own ${c.label}` : `a ${c.label} message posted under their own name in the community ${c.label}`,
+).join(" or ");
+const ABOUT = `WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):
+- Intern is a public community brain: one shared set of facts that everyone who signs in with GitHub can read and add to, drawn as a live graph.
+- Members brief interns (you) in one sentence. An intern reads the brain first (recalled facts, past corrections included), then works.
+- Per brief you can draft ONE outbound message, ${channels}, and file up to three facts. Connections go through Composio.
+- Nothing goes out until the member approves it in the outbox. They can edit first; their edit is saved as a fact the next intern reads first, which is how the brain learns.
+- You may ask at most one question per brief, and only for a missing recipient.
+- Limits: no browsing, no tools, no calendar or files, one draft per brief, ${BRIEFS_PER_DAY} briefs a day per member.
+- Briefs and facts are public; drafts, questions and sends are private to the member.`;
 
 const SANDBOX = `This is a public sandbox shared by everyone trying Intern. Nothing you draft is
 ever sent. Use plausible placeholders for recipients (#general, name@example.com)
@@ -13,7 +33,7 @@ and never ask for or repeat anyone's real contact details.`;
 /** Said instead of SANDBOX once the member has connected an account a draft can go out through. */
 const live = (labels: string[]) =>
   `Drafts go out for real from ${labels.join(" and ")} once the person approves, from their own
-connected account. The sender is settled; never ask about it. Use real recipients only if the task names them; never invent an address.`;
+connected account. The sender is settled; never ask about it. Use real recipients only if the task names them or YOU WORK FOR resolves them; never invent an address.`;
 
 /** Heads the answers a resumed run was given, so the prompt can call them settled. */
 const ANSWERED = "ANSWERS YOU WERE GIVEN";
@@ -70,6 +90,8 @@ export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = 
 TASK: ${task}
 ${youWorkFor(self)}${learned}
 ${sendsFrom.length ? live(sendsFrom) : SANDBOX}
+
+${ABOUT}
 
 You have no browser and no tools. Work from what the brain gave you above and
 what you already know. Do not invent people, systems, dates or numbers.

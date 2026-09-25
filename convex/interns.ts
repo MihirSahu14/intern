@@ -347,7 +347,10 @@ export const finish = internalMutation({
     // private: an intern that read a private fact can restate it in its own
     // words, so the *filed* fact needs the same guard the recalled one had.
     const factVisibility: Doc<"facts">["visibility"] = intern.recalledPrivate ? "owner" : undefined;
-    for (const f of a.facts) {
+    for (const raw of a.facts) {
+      // The run knows its owner's address (YOU WORK FOR) and any it was
+      // briefed with; a public fact must not carry one, whatever the prompt said.
+      const f = factVisibility ? raw : { ...raw, title: redactEmails(raw.title), body: redactEmails(raw.body) };
       await insertFact(ctx, { ...f, ownerId: intern.ownerId, internId: a.internId, visibility: factVisibility });
       await log("ok", factVisibility ? "filed a private fact" : `filed · ${f.title}`);
     }

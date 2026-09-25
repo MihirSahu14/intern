@@ -1,5 +1,5 @@
 /**
- * Offline eval: 22 fixed briefs through the current prompt.
+ * Offline eval: 27 fixed briefs through the current prompt.
  * Checks the one thing that has silently broken before: does a brief that
  * should draft produce a *usable* action block, and does one that should ask
  * produce a question?
@@ -13,13 +13,19 @@
  * rate — a model outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
-import { PROMPT_VERSION, brief } from "../lib/brief.ts";
+import { PROMPT_VERSION, type Self, brief } from "../lib/brief.ts";
 import { stream } from "../lib/model.ts";
 import { parseQuestionBlock } from "../lib/parse.ts";
 
 type Expect = "action" | "question" | "any";
 
-const CASES: [string, Expect][] = [
+/**
+ * Who a "me/myself" brief resolves to, the way prod's `interns.start` hands it
+ * over from a connected Gmail. The run itself stays sandbox: nothing is sent.
+ */
+const ME: Self = { handle: "tester", accounts: [{ label: "Gmail", account: "tester@example.com" }] };
+
+const CASES: [string, Expect, Self?][] = [
   ["Draft a Slack post introducing Intern to a new teammate", "action"],
   ["Write a follow-up email to someone who asked what Intern does", "action"],
   ["Email a prospect a two-line intro to Intern", "action"],
@@ -33,8 +39,11 @@ const CASES: [string, Expect][] = [
   ["Write an email declining a meeting politely", "action"],
   ["Post a Slack welcome for a new designer", "action"],
   ["Draft an email asking for feedback on Intern", "action"],
-  // Eval runs sandbox: a placeholder recipient is fine, so "myself" is no reason to ask.
-  ["send a mail to myself explaining what Intern can do", "action"],
+  ["send a mail to myself explaining what Intern can do", "action", ME],
+  ["Email me a summary of what Intern can do", "action", ME],
+  ["Post in #all-intern-community: welcome to the new members", "action"],
+  ["Draft a Slack message to the team about today's progress", "action"],
+  ["Write an email to the team with Intern's features and limits", "action"],
   // Once "question": under the one-question rule only an unknown recipient on a
   // real send may ask, and eval runs sandbox, so these draft with placeholders or ask.
   ["Email Sarah about the thing we discussed", "any"],
@@ -45,6 +54,7 @@ const CASES: [string, Expect][] = [
   ["What makes a prospect viable for Intern?", "any"],
   ["List two risks the brain has not solved yet", "any"],
   ["Who is Intern for?", "any"],
+  ["What can Intern do?", "any"],
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -55,10 +65,10 @@ let matched = 0;
 let errored = 0;
 
 console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs\n`);
-for (const [task, expect] of CASES) {
+for (const [task, expect, self] of CASES) {
   let report = "";
   try {
-    for await (const c of stream(brief(task, []))) report += c.text ?? "";
+    for await (const c of stream(brief(task, [], [], self))) report += c.text ?? "";
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
     errored++;

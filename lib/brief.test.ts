@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { BRIEFS_PER_DAY } from "./caps.ts";
+import { CONNECTORS } from "./connectors.ts";
 import { PROMPT_VERSION, brief, resumeTask } from "./brief.ts";
 
 test("the brief carries the task, the recalled facts, and the sandbox rule", () => {
@@ -21,7 +23,7 @@ test("a connected member's intern is told drafts go out for real", () => {
   const text = brief("Email Ann", [], ["Gmail", "Slack"]);
   assert.match(text, /Drafts go out for real from Gmail and Slack once the person approves/);
   assert.match(text, /The sender is settled; never ask about it\./);
-  assert.match(text, /Use real recipients only if the task names them; never invent an address\./);
+  assert.match(text, /Use real recipients only if the task names them or YOU WORK FOR resolves them; never invent an address\./);
   assert.ok(!text.includes("public sandbox"));
 });
 
@@ -71,6 +73,16 @@ test("YOU WORK FOR resolves me, with only the parts that exist", () => {
   assert.ok(!slackOnly.includes("their email"));
   assert.ok(!brief("x", []).includes("YOU WORK FOR:"));
   assert.ok(!brief("x", [], [], { accounts: [] }).includes("YOU WORK FOR:"));
+});
+
+test("every brief, fresh or resumed, knows what Intern is, from the code's own connectors and cap", () => {
+  for (const text of [brief("x", []), brief("x", [], ["Gmail"], undefined, true)]) {
+    const about = text.slice(text.indexOf("WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):"));
+    assert.ok(about.length < text.length);
+    for (const c of CONNECTORS) assert.ok(about.includes(c.label), c.label);
+    assert.ok(about.includes(`${BRIEFS_PER_DAY} briefs a day per member`));
+    assert.match(about, /Nothing goes out until the member approves it in the outbox/);
+  }
 });
 
 test("resumed answers stay one flat list under the original ask", () => {
