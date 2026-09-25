@@ -24,6 +24,8 @@ export type Connector = {
   toArguments(draft: Draft): Record<string, unknown>;
   /** Shown under the connect control: what this grant actually lets Composio do. */
   disclosure: string;
+  /** Shown under a not-yet-connected row: what connecting actually turns on. */
+  enables: string;
 };
 
 // Tool slugs and argument names confirmed against docs.composio.dev/toolkits/{gmail,slack} on 2026-09-21 (Task 1 Step 1).
@@ -53,6 +55,7 @@ export const CONNECTORS: Connector[] = [
     // so; see HANDOVER.md's "Model provider" section for the least-privilege
     // alternative (Mihir's own Google OAuth app).
     disclosure: "Composio holds this connection. It can read and send your mail; Intern only ever sends what you approve.",
+    enables: "send approved emails from your address",
   },
   {
     key: "slack",
@@ -66,6 +69,7 @@ export const CONNECTORS: Connector[] = [
       markdown_text: d.subject ? `*${d.subject}*\n${d.body}` : d.body,
     }),
     disclosure: "Composio holds this connection. Intern only posts what you approve.",
+    enables: "post approved messages under your name",
   },
 ];
 
