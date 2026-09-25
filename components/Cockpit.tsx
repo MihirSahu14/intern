@@ -478,7 +478,10 @@ export default function Cockpit({ me }: { me: Me }) {
 
   const mine = interns.filter((i) => i.ownerId === me.userId);
 
-  const running = mine.filter((i) => i.status === "running" || i.status === "queued").length;
+  // The terminal tabs only the first 8: yours first, so pickIntern on one of yours has a tab.
+  const yoursFirst = [...mine, ...interns.filter((i) => i.ownerId !== me.userId)];
+  const isActive = (i: Intern) => i.status === "running" || i.status === "queued";
+  const running = mine.filter(isActive).length;
   const activityTab = activity ?? (mine.length ? "mine" : "everyone");
 
   // The command bar's replies (help, errors, approve…) are unscoped lines, so
@@ -513,7 +516,7 @@ export default function Cockpit({ me }: { me: Me }) {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <CommandBar onSubmit={submit} mode="live" busy={activeIds.length} />
+          <CommandBar onSubmit={submit} mode="live" busy={interns.filter(isActive).length} />
 
           {mine.length === 0 ? (
             <div className="flex shrink-0 flex-wrap gap-2 border-b border-line bg-panel px-3 py-2">
@@ -567,7 +570,7 @@ export default function Cockpit({ me }: { me: Me }) {
             <div className={`absolute inset-0 flex flex-col ${view === "log" ? "" : "invisible"}`}>
               <Terminal
                 log={log}
-                interns={interns}
+                interns={yoursFirst}
                 filter={filter}
                 onFilter={setFilter}
               />

@@ -32,7 +32,10 @@ export default function CommandBar({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement !== input.current) {
+      const t = e.target as HTMLElement;
+      // Typing a "/" in another field (the Outbox body, a URL) is just typing.
+      const typing = t.matches?.("input, textarea, select") || t.isContentEditable;
+      if (e.key === "/" && !typing) {
         e.preventDefault();
         input.current?.focus();
       }

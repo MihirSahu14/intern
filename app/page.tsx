@@ -46,12 +46,12 @@ export default function Landing() {
         <header className="enter mt-20 sm:mt-28">
           <p className="label">the community brain</p>
           <h1 className="mt-5 max-w-2xl text-2xl leading-[1.35] tracking-tight text-fg sm:text-[28px]">
-            A company brain you can see, and interns that go find what it
+            A community brain you can see, and interns that go find what it
             doesn&rsquo;t know yet.
           </h1>
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
             Dispatch a long-running intern at a brief and leave it alone. It
-            reads everything the company knows, does the work, and files what it
+            reads everything the community knows, does the work, and files what it
             learns back. Drafts stop and wait for you. Nothing goes out until you
             approve it, and then it goes from your own Gmail or Slack.
           </p>
@@ -126,7 +126,7 @@ export default function Landing() {
           <p className="label">how it gets better</p>
           <p className="mt-5 max-w-xl leading-relaxed text-dim">
             Four steps, and the fourth feeds the second. That loop is the whole
-            product: the brain learns this company by being corrected, not by
+            product: the brain learns this community by being corrected, not by
             being configured.
           </p>
           <Loop />
