@@ -48,3 +48,14 @@ test("a title's links never reach the community's channels", () => {
     "@ann taught the brain: Free stuff at [link] and [link] now · https://intern-brain.vercel.app/u/ann",
   );
 });
+
+test("a link glued directly onto a word character still gets stripped", () => {
+  assert.equal(
+    broadcastText({ type: "taught", handle: "ann", title: "click_https://evil.test/x now" }, SITE),
+    "@ann taught the brain: click_[link] now · https://intern-brain.vercel.app/u/ann",
+  );
+  assert.equal(
+    broadcastText({ type: "taught", handle: "ann", title: "xhttps://evil.test/x now" }, SITE),
+    "@ann taught the brain: x[link] now · https://intern-brain.vercel.app/u/ann",
+  );
+});
