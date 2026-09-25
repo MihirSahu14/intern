@@ -349,7 +349,7 @@ test("other people's interns show no error text, no recalledFactIds and no recal
       ownerId: a,
       task: "t",
       status: "failed",
-      error: 'gemini rejected argument "body": "secret renewal terms"',
+      error: 'model rejected argument "body": "secret renewal terms"',
       recalledFactIds: [factId],
       recalledPrivate: true,
       countsTowardCap: true,

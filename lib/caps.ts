@@ -23,11 +23,19 @@ export const MAX_RECIPIENTS = 20;
 /** Each recipient in that list — an email address or a Slack channel name, never a paragraph. */
 export const MAX_RECIPIENT_CHARS = 200;
 
-// ponytail: list price per 1M tokens for gemini-flash-latest, checked by hand
-// at ai.google.dev/pricing. On the free tier nothing is billed; the cap then
-// acts as a ~500-runs/day ceiling. Update both if GEMINI_MODEL changes.
-const USD_PER_M_IN = 0.3;
-const USD_PER_M_OUT = 2.5;
+/**
+ * List price per 1M tokens, env-configurable so the cap stays meaningful
+ * whichever `MODEL_*` provider is live (see lib/model.ts). Defaults are
+ * Groq's paid `openai/gpt-oss-20b` price — $0.075 in / $0.30 out per 1M —
+ * from console.groq.com/docs/models via .superpowers/sdd/llm-providers-research.md.
+ *
+ * ponytail: Groq's free tier bills nothing, so on the default provider this
+ * cap doesn't ration real spend — it just bounds runs/day (5/$0.30-ish worth
+ * of output ≈ hundreds of runs). It becomes a real dollar cap the moment
+ * MODEL_BASE_URL points at a paid tier. Read once here; costUsd stays pure.
+ */
+const USD_PER_M_IN = Number(process.env.MODEL_USD_PER_M_IN) || 0.075;
+const USD_PER_M_OUT = Number(process.env.MODEL_USD_PER_M_OUT) || 0.3;
 
 const DAY_MS = 86_400_000;
 const RESETS = "Resets at 00:00 UTC.";
@@ -35,8 +43,8 @@ const RESETS = "Resets at 00:00 UTC.";
 export const dayStart = (now: number) => now - (now % DAY_MS);
 export const dayKey = (now: number) => new Date(dayStart(now)).toISOString().slice(0, 10);
 
-export const costUsd = (tokensIn: number, tokensOut: number) =>
-  (tokensIn * USD_PER_M_IN + tokensOut * USD_PER_M_OUT) / 1_000_000;
+export const costUsd = (tokensIn: number, tokensOut: number, usdPerMIn = USD_PER_M_IN, usdPerMOut = USD_PER_M_OUT) =>
+  (tokensIn * usdPerMIn + tokensOut * usdPerMOut) / 1_000_000;
 
 export function spawnBlocked(s: {
   briefsToday: number;

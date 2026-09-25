@@ -1,15 +1,15 @@
 import { v } from "convex/values";
 import { parseActionBlock } from "../lib/action-block.ts";
 import { brief } from "../lib/brief.ts";
-import { stream } from "../lib/gemini.ts";
+import { describe, stream } from "../lib/model.ts";
 import { parseFactBlocks, parseQuestionBlock } from "../lib/parse.ts";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 
-const BUSY = "The free model is busy, try again in a minute.";
+const BUSY = "The model is busy, try again in a minute.";
 
 /**
- * One intern run: recall, one streamed Gemini call, parse, finish.
+ * One intern run: recall, one streamed model call, parse, finish.
  * Plain fetch, so no "use node". Cancellation is checked by `finish` and
  * `fail`, which both still record usage and mark the run's real end when the
  * intern was cancelled meanwhile — see `dispatch`'s active check.
@@ -37,7 +37,7 @@ export const go = internalAction({
         recalled: recalled.map((f) => ({ id: f.id, kind: f.kind, visibility: f.visibility })),
       });
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
-      await say("sys", "thinking · gemini");
+      await say("sys", `thinking · ${describe()}`);
 
       const prompt = brief(started.task, recalled, started.sendsFrom);
       let report = "";
@@ -56,13 +56,13 @@ export const go = internalAction({
       if (pending.trim()) await say("out", pending.trim());
 
       report = report.trim();
-      if (!report) throw new Error("gemini returned an empty report");
+      if (!report) throw new Error("model returned an empty report");
 
-      // ponytail: if Gemini ever stops sending usageMetadata, every run books
-      // 0 tokens, addUsage adds $0 and the $5/day global budget quietly stops
-      // existing. chars/4 is the usual rough estimate — wrong by a third at
-      // worst, which is a budget that still holds. Only for a run that
-      // produced something: an empty report must stay free (see the catch).
+      // ponytail: if the provider ever stops sending a usage frame, every run
+      // books 0 tokens, addUsage adds $0 and the $5/day global budget quietly
+      // stops existing. chars/4 is the usual rough estimate — wrong by a
+      // third at worst, which is a budget that still holds. Only for a run
+      // that produced something: an empty report must stay free (see the catch).
       if (usage.out === 0) {
         usage = { in: Math.ceil(prompt.length / 4), out: Math.ceil(report.length / 4) };
       }
@@ -95,12 +95,13 @@ export const go = internalAction({
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // 429 (quota) and 503 (overloaded) are both the free tier being busy,
-      // not this run's fault — same user-facing copy either way. Whether it
-      // counts toward the daily brief cap is decided by usage, not the status
-      // text: a missing key or an overloaded model that returned zero output
-      // tokens produced nothing billable, so it shouldn't cost a brief.
-      const busy = message.startsWith("gemini 429") || message.startsWith("gemini 503");
+      // 429 (quota), 503 (overloaded) and 529 (also "overloaded", used by
+      // some providers) are all the model being busy, not this run's fault —
+      // same user-facing copy either way. Whether it counts toward the daily
+      // brief cap is decided by usage, not the status text: a missing key or
+      // an overloaded model that returned zero output tokens produced
+      // nothing billable, so it shouldn't cost a brief.
+      const busy = ["429", "503", "529"].some((code) => message.startsWith(`model ${code}`));
       await ctx.runMutation(internal.interns.fail, {
         internId,
         error: busy ? BUSY : message.slice(0, 500),

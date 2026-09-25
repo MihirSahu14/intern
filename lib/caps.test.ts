@@ -19,9 +19,13 @@ test("a day is a UTC day", () => {
   assert.equal(dayKey(lastSecond + 1000), "2026-09-20");
 });
 
-test("cost is priced per million tokens", () => {
-  assert.equal(costUsd(1_000_000, 0), 0.3);
-  assert.equal(costUsd(0, 1_000_000), 2.5);
+test("cost is priced per million tokens, at the default (Groq gpt-oss-20b) rate", () => {
+  assert.equal(costUsd(1_000_000, 0), 0.075);
+  assert.equal(costUsd(0, 1_000_000), 0.3);
+});
+
+test("costUsd takes prices as arguments for a provider other than the env default", () => {
+  assert.equal(costUsd(1_000_000, 1_000_000, 1, 2), 3);
 });
 
 test("a brief under every limit goes through", () => {

@@ -58,7 +58,7 @@ test("a failed run on a busy model does not consume a brief", async () => {
   );
   await t.mutation(internal.interns.fail, {
     internId: internA,
-    error: "gemini 429 quota",
+    error: "model 429 quota",
     countsTowardCap: false,
     tokensIn: 0,
     tokensOut: 0,
