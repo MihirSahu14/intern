@@ -23,3 +23,8 @@ test("a placeholder the member never typed is not in the brief", () => {
 test("an address only as a substring of a longer token doesn't match", () => {
   assert.equal(recipientsInBrief(["bob@x.com"], "cc jimbob@x.com on this"), false);
 });
+
+test("comma- and semicolon-joined addresses in the brief both match", () => {
+  assert.equal(recipientsInBrief(["ann@acme.com", "bob@acme.com"], "cc ann@acme.com,bob@acme.com on this"), true);
+  assert.equal(recipientsInBrief(["ann@acme.com", "bob@acme.com"], "cc ann@acme.com;bob@acme.com on this"), true);
+});
