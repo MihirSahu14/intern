@@ -6,6 +6,8 @@ const KEY = "intern.theme";
 type Choice = "system" | "light" | "dark";
 const CYCLE: Choice[] = ["system", "light", "dark"];
 const ICON: Record<Choice, string> = { system: "◐", light: "○", dark: "●" };
+// "auto" follows the OS, so dark → auto on a dark OS looks like nothing happened; the label says which mode is on.
+const LABEL: Record<Choice, string> = { system: "auto", light: "light", dark: "dark" };
 
 function read(): Choice {
   try {
@@ -58,11 +60,11 @@ export default function ThemeToggle() {
     <button
       type="button"
       onClick={cycle}
-      title="switch light/dark"
-      aria-label="switch light/dark"
+      title={`theme: ${LABEL[choice]}, click to switch`}
+      aria-label={`theme: ${LABEL[choice]}, click to switch`}
       className="flex items-center gap-1.5 border border-line px-1.5 py-0.5 transition-colors hover:border-line-2 hover:text-fg"
     >
-      <span>theme</span>
+      <span>{LABEL[choice]}</span>
       {ICON[choice]}
     </button>
   );

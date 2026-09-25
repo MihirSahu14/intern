@@ -48,23 +48,23 @@ export default function Outbox({
 
   return (
     <section className="flex max-h-[46%] min-h-0 shrink-0 flex-col border-b border-line bg-panel">
-      <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
+      <header className="flex min-h-8 shrink-0 flex-wrap items-center justify-between gap-x-2 border-b border-line px-3 py-1">
         <h2 className="label">outbox</h2>
         <div className="flex items-center gap-2">
           {live ? (
             <span
-              className="border border-ok/40 px-1 text-ok"
+              className="whitespace-nowrap border border-ok/40 px-1 text-ok"
               title="Approving sends from your connected account."
             >
               sends for real
             </span>
           ) : (
-            <span className="border border-warn/40 px-1 text-warn">sandbox</span>
+            <span className="whitespace-nowrap border border-warn/40 px-1 text-warn">sandbox</span>
           )}
           <span
-            className={`tabular-nums ${pending.length ? "text-k-action" : "text-faint"}`}
+            className={`whitespace-nowrap tabular-nums ${pending.length ? "text-k-action" : "text-faint"}`}
           >
-            {pending.length} awaiting you
+            {pending.length} waiting
           </span>
         </div>
       </header>
