@@ -133,6 +133,7 @@ export default function Cockpit({ me }: { me: Me }) {
         ownerId: i.ownerId,
         handle: `@${i.handle} ${i._id.slice(-4)}`,
         task: i.task,
+        displayTask: i.displayTask,
         status: i.status,
         mode: "live",
         createdAt: i._creationTime,

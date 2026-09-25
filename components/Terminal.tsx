@@ -66,26 +66,30 @@ export default function Terminal({
         <Tab active={filter === null} onClick={() => onFilter(null)}>
           all
         </Tab>
-        {interns.slice(0, 8).map((i) => (
-          <Tab
-            key={i.id}
-            active={filter === i.id}
-            onClick={() => onFilter(i.id)}
-            dot={
-              i.status === "running"
-                ? "bg-term-ok pulse-slow"
-                : i.status === "failed"
-                  ? "bg-term-err"
-                  : i.status === "cancelled"
-                    ? "bg-term-faint"
-                    : i.status === "queued"
-                      ? "bg-term-warn"
-                      : "bg-term-line-2"
-            }
-          >
-            {i.handle}
-          </Tab>
-        ))}
+        {interns.slice(0, 8).map((i) => {
+          const label = i.displayTask ?? i.task;
+          return (
+            <Tab
+              key={i.id}
+              active={filter === i.id}
+              onClick={() => onFilter(i.id)}
+              title={i.id}
+              dot={
+                i.status === "running"
+                  ? "bg-term-ok pulse-slow"
+                  : i.status === "failed"
+                    ? "bg-term-err"
+                    : i.status === "cancelled"
+                      ? "bg-term-faint"
+                      : i.status === "queued"
+                        ? "bg-term-warn"
+                        : "bg-term-line-2"
+              }
+            >
+              {label.length > 24 ? `${label.slice(0, 24)}…` : label}
+            </Tab>
+          );
+        })}
         <div className="ml-auto flex items-center gap-3 text-term-faint">
           <span>
             {active.length} active · {lines.length} lines
@@ -150,16 +154,19 @@ function Tab({
   active,
   onClick,
   dot,
+  title,
 }: {
   children: React.ReactNode;
   active: boolean;
   onClick: () => void;
   dot?: string;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={`flex items-center gap-1.5 px-2 py-0.5 transition-colors ${
         active
           ? "bg-term-raised text-term-fg"

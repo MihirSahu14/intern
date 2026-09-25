@@ -124,8 +124,19 @@ export default function InternRail({
               </div>
 
               <p className="mt-1 line-clamp-3 text-dim leading-relaxed">
-                {i.task}
+                {i.displayTask ?? i.task}
               </p>
+
+              {i.displayTask && i.displayTask !== i.task ? (
+                <details className="mt-1" onClick={(e) => e.stopPropagation()}>
+                  <summary className="cursor-pointer text-faint hover:text-dim">
+                    details
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap text-dim leading-relaxed">
+                    {i.task}
+                  </p>
+                </details>
+              ) : null}
 
               {i.tools.length ? (
                 <div className="mt-1.5 flex flex-wrap gap-1">

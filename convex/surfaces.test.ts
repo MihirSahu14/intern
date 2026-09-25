@@ -1861,6 +1861,9 @@ test("other people's interns carry no displayTask, parser verdict, lesson flag o
   expect(theirs?.sendsFrom).toBeUndefined();
   const mine = (await asUser(a).query(api.interns.list, {})).find((i) => i._id === internId);
   expect(mine?.parseOutcome).toBe("action_malformed:bad to");
+  // The owner still sees their own words, not the assembled `task` chain.
+  expect(mine?.displayTask).toBe("who owns pricing? ask ann@acme.com");
+  expect(mine?.task).toBe("follow up: the answer was ann@acme.com");
 });
 
 test("resend stops after three attempts in all", async () => {
