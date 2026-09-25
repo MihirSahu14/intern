@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { collapseBlocks } from "@/lib/log-view";
+import { collapseBlocks, stripCites } from "@/lib/log-view";
 import type { Intern, LogLine, LogLevel } from "@/lib/types";
 
 // This stream always reads as a dark terminal inset, in both themes — see
@@ -36,7 +36,9 @@ export default function Terminal({
   const [raw, setRaw] = useState(false);
 
   const filtered = filter ? log.filter((l) => l.internId === filter) : log;
-  const lines = raw ? filtered : collapseBlocks(filtered);
+  const lines = raw ? filtered : collapseBlocks(filtered).map((l) => ({ ...l, text: stripCites(l.text) }));
+  // Each line is tagged with its intern's ask, not its id: an id means nothing to a person.
+  const askOf = new Map(interns.map((i) => [i.id, i.displayTask ?? i.task]));
 
   useLayoutEffect(() => {
     if (!follow) return;
@@ -62,10 +64,8 @@ export default function Terminal({
 
   return (
     <section style={{ colorScheme: "dark" }} className="flex min-h-0 flex-1 flex-col bg-term-panel">
-      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-term-line px-2">
-        <span className="mr-2 text-[11px] tracking-[0.14em] uppercase text-term-dim">
-          stream
-        </span>
+      <header className="flex h-8 shrink-0 items-center gap-3 border-b border-term-line px-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         <Tab active={filter === null} onClick={() => onFilter(null)}>
           all
         </Tab>
@@ -76,7 +76,7 @@ export default function Terminal({
               key={i.id}
               active={filter === i.id}
               onClick={() => onFilter(i.id)}
-              title={i.id}
+              title={label}
               dot={
                 i.status === "running"
                   ? "bg-term-ok pulse-slow"
@@ -89,11 +89,12 @@ export default function Terminal({
                         : "bg-term-line-2"
               }
             >
-              {label.length > 24 ? `${label.slice(0, 24)}…` : label}
+              {label.length > 20 ? `${label.slice(0, 20)}…` : label}
             </Tab>
           );
         })}
-        <div className="ml-auto flex items-center gap-3 text-term-faint">
+        </div>
+        <div className="flex shrink-0 items-center gap-3 whitespace-nowrap text-term-faint">
           <span>
             {active.length} active · {lines.length} lines
           </span>
@@ -147,13 +148,16 @@ export default function Terminal({
               <span className="shrink-0 whitespace-nowrap text-term-faint tabular-nums">
                 {clock(line.ts)}
               </span>
-              <button
-                type="button"
-                onClick={() => onFilter(line.internId)}
-                className="w-[64px] shrink-0 truncate whitespace-nowrap text-left text-term-faint transition-colors hover:text-term-dim"
-              >
-                {line.internId ?? "cockpit"}
-              </button>
+              {filter === null ? (
+                <button
+                  type="button"
+                  onClick={() => onFilter(line.internId)}
+                  title={line.internId ? askOf.get(line.internId) : undefined}
+                  className="w-[96px] shrink-0 truncate whitespace-nowrap text-left text-term-faint transition-colors hover:text-term-dim"
+                >
+                  {line.internId ? (askOf.get(line.internId) ?? "an intern") : "cockpit"}
+                </button>
+              ) : null}
               <span className={`shrink-0 ${meta.className}`}>{meta.glyph}</span>
               <span className={`min-w-0 flex-1 ${meta.className}`}>
                 {line.text}
@@ -184,7 +188,7 @@ function Tab({
       type="button"
       onClick={onClick}
       title={title}
-      className={`flex items-center gap-1.5 px-2 py-0.5 transition-colors ${
+      className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap px-2 py-0.5 transition-colors ${
         active
           ? "bg-term-raised text-term-fg"
           : "text-term-faint hover:bg-term-raised/60 hover:text-term-dim"
