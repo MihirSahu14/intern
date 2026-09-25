@@ -17,6 +17,8 @@ export type ConnectorRow = {
   capture: boolean | null;
   /** Shown under this connector's row: what its grant actually lets Composio do. */
   disclosure: string;
+  /** The community workspace's invite link (Slack only), or null. */
+  invite: string | null;
 };
 
 export default function BrainRail({
@@ -79,6 +81,13 @@ export default function BrainRail({
                 </button>
               )}
             </Row>
+            {c.invite && !c.connected ? (
+              <p className="pt-0.5 leading-snug">
+                <a href={c.invite} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                  Join the community Slack first
+                </a>
+              </p>
+            ) : null}
             {c.capture === null ? null : (
               // Off by default. On is its own read-only consent; the send grant never reads mail.
               <Row k="">

@@ -134,8 +134,12 @@ test("slack tool replies: the reacted message's own text, and the member's own i
   // reacted one is gone (deleted, or a thread reply), that's someone else's.
   assert.equal(readHistoryText({ messages: [{ text: "older", ts: "1.1" }] }, "1.2"), null);
   assert.equal(readHistoryText({}, "1.2"), null);
-  assert.deepEqual(readWhoami({ ok: true, user_id: "U123", user: "ann", team: "acme" }), { userId: "U123", label: "@ann in acme" });
-  assert.deepEqual(readWhoami({}), { userId: null, label: null });
+  assert.deepEqual(readWhoami({ ok: true, user_id: "U123", user: "ann", team: "acme", team_id: "T9" }), {
+    userId: "U123",
+    teamId: "T9",
+    label: "@ann in acme",
+  });
+  assert.deepEqual(readWhoami({}), { userId: null, teamId: null, label: null });
 });
 
 test("slack: public only for the member's own message in a channel confirmed public", () => {
