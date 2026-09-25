@@ -857,7 +857,9 @@ test("a 4xx on the execute call is a definite `failed`, resendable right away", 
 
   const row = await t.run((ctx) => ctx.db.get("actions", actionId));
   expect(row?.status).toBe("failed");
-  expect(row?.sendError).not.toMatch(/bad recipient/);
+  // A definite 4xx isn't a dead grant or an unsure send — Gmail's own reason
+  // is worth showing, cleaned up (no "composio 400:", no "(req_1)").
+  expect(row?.sendError).toMatch(/^The send didn't go through\..* \(Gmail said: bad recipient\)$/);
 
   stubComposio({ session_id: "trs_2" }, { data: {}, error: null, log_id: "log_1" });
   await asUser(a).mutation(api.outbox.resend, { actionId });

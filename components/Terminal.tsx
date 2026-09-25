@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { collapseBlocks } from "@/lib/log-view";
 import type { Intern, LogLine, LogLevel } from "@/lib/types";
 
 // This stream always reads as a dark terminal inset, in both themes — see
@@ -32,8 +33,10 @@ export default function Terminal({
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const [raw, setRaw] = useState(false);
 
-  const lines = filter ? log.filter((l) => l.internId === filter) : log;
+  const filtered = filter ? log.filter((l) => l.internId === filter) : log;
+  const lines = raw ? filtered : collapseBlocks(filtered);
 
   useLayoutEffect(() => {
     if (!follow) return;
@@ -94,6 +97,16 @@ export default function Terminal({
           <span>
             {active.length} active · {lines.length} lines
           </span>
+          <button
+            type="button"
+            onClick={() => setRaw((r) => !r)}
+            className={`transition-colors hover:text-term-fg ${
+              raw ? "text-term-ok" : "text-term-faint"
+            }`}
+            title="show the uncollapsed stream"
+          >
+            {raw ? "◉ raw" : "○ raw"}
+          </button>
           <button
             type="button"
             onClick={() => {
