@@ -26,12 +26,10 @@ test("slack posts to the channel as the member and bolds a subject only when the
   assert.deepEqual(slack.toArguments({ to: ["#general"], subject: "", body: "ship it" }), {
     channel: "#general",
     markdown_text: "ship it",
-    as_user: true,
   });
   assert.deepEqual(slack.toArguments({ to: ["#general"], subject: "Heads up", body: "ship it" }), {
     channel: "#general",
     markdown_text: "*Heads up*\nship it",
-    as_user: true,
   });
 });
 

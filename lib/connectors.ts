@@ -29,8 +29,9 @@ export type Connector = {
 // Tool slugs and argument names confirmed against docs.composio.dev/toolkits/{gmail,slack} on 2026-09-21 (Task 1 Step 1).
 // Gmail's GMAIL_SEND_EMAIL: recipient_email, extra_recipients (array), cc (array), subject, body.
 // Slack's own SLACK_SEND_MESSAGE (not the deprecated SLACK_CHAT_POST_MESSAGE, and not Slackbot's
-// SLACKBOT_SEND_MESSAGE, which is a separate toolkit): channel, markdown_text. `as_user` posts as the
-// member who connected, not as an app ("set `as_user=True` to post as the authenticated user", 2026-09-25).
+// SLACKBOT_SEND_MESSAGE, which is a separate toolkit): channel, markdown_text — nothing else: it
+// rejects `as_user` ("Extra inputs are not permitted", prod, 2026-09-25). The `slack` toolkit is a user
+// token, so a send posts as the member who connected without it.
 export const CONNECTORS: Connector[] = [
   {
     key: "gmail",
@@ -63,7 +64,6 @@ export const CONNECTORS: Connector[] = [
     toArguments: (d) => ({
       channel: d.to[0],
       markdown_text: d.subject ? `*${d.subject}*\n${d.body}` : d.body,
-      as_user: true,
     }),
     disclosure: "Composio holds this connection. Intern only posts what you approve.",
   },
