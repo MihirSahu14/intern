@@ -4,7 +4,7 @@ import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from
 import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, type QueryCtx, internalQuery, mutation, query } from "./_generated/server";
-import { requireMember, visibleTo } from "./access";
+import { capExempt, requireMember, visibleTo } from "./access";
 import { broadcast } from "./broadcast";
 import { factKind } from "./schema";
 
@@ -44,7 +44,7 @@ export async function factCapBlocked(ctx: QueryCtx, ownerId: Id<"users">): Promi
   // Write-backs still fill the window above, so the overflow guard stays
   // honest; they just aren't teaching, so they don't use up the twenty.
   if (today.length > DAY_WINDOW) return tooManyFacts;
-  return teachBlocked(today.filter((f) => !f.source?.startsWith("send:")).length);
+  return teachBlocked(today.filter((f) => !f.source?.startsWith("send:")).length, await capExempt(ctx, ownerId));
 }
 
 export const teach = mutation({

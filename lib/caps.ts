@@ -46,14 +46,35 @@ export const dayKey = (now: number) => new Date(dayStart(now)).toISOString().sli
 export const costUsd = (tokensIn: number, tokensOut: number, usdPerMIn = USD_PER_M_IN, usdPerMOut = USD_PER_M_OUT) =>
   (tokensIn * usdPerMIn + tokensOut * usdPerMOut) / 1_000_000;
 
+/**
+ * `CAP_EXEMPT_HANDLES`: a deployment env var, comma-separated GitHub handles,
+ * for the deployment owner's own testing — so hitting BRIEFS_PER_DAY on your
+ * own deployment doesn't stop you from trying it. Case-insensitive and
+ * whitespace-trimmed on both sides, so `CAP_EXEMPT_HANDLES=" Mihir, Ann "`
+ * matches a `users.handle` of `mihir` or `ANN`. Unset or empty exempts no
+ * one. Exemption is per-member caps only — see each `*Blocked` function's own
+ * note for what it never skips.
+ */
+export function isCapExempt(handle: string | null | undefined, env: string | undefined): boolean {
+  if (!handle) return false;
+  const h = handle.trim().toLowerCase();
+  return (env ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .includes(h);
+}
+
+/** Exempt still hits the shared $5/day budget — it isn't a per-member quota. */
 export function spawnBlocked(s: {
   briefsToday: number;
   active: boolean;
   spentToday: number;
+  exempt?: boolean;
 }): string | null {
   if (s.spentToday >= DAILY_BUDGET_USD) {
     return `The community used today's $${DAILY_BUDGET_USD} model budget. ${RESETS}`;
   }
+  if (s.exempt) return null;
   if (s.active) return "You already have an intern working. Wait for it to finish.";
   if (s.briefsToday >= BRIEFS_PER_DAY) {
     return `You've used your ${BRIEFS_PER_DAY} briefs for today. ${RESETS}`;
@@ -61,15 +82,19 @@ export function spawnBlocked(s: {
   return null;
 }
 
-export const teachBlocked = (factsToday: number): string | null =>
-  factsToday >= FACTS_PER_DAY ? `You've added ${FACTS_PER_DAY} facts today. ${RESETS}` : null;
+export const teachBlocked = (factsToday: number, exempt = false): string | null =>
+  !exempt && factsToday >= FACTS_PER_DAY ? `You've added ${FACTS_PER_DAY} facts today. ${RESETS}` : null;
 
 export const SENDS_PER_DAY = 20;
 
-export const sendBlocked = (sendsToday: number): string | null =>
-  sendsToday >= SENDS_PER_DAY ? `You've used your ${SENDS_PER_DAY} sends for today. ${RESETS}` : null;
+export const sendBlocked = (sendsToday: number, exempt = false): string | null =>
+  !exempt && sendsToday >= SENDS_PER_DAY ? `You've used your ${SENDS_PER_DAY} sends for today. ${RESETS}` : null;
 
-/** Said when the day's window overflows and the counts above stop being trustworthy. */
+/**
+ * Said when the day's window overflows and the counts above stop being
+ * trustworthy — a safety guard against miscounting, not a quota, so it's
+ * never skipped by `CAP_EXEMPT_HANDLES`.
+ */
 export const tooManyBriefs = `You've started too many interns today. ${RESETS}`;
 export const tooManyFacts = `You've written too many facts today. ${RESETS}`;
 export const tooManySends = `You've decided too many drafts today to count your sends. ${RESETS}`;

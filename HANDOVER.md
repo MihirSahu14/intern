@@ -27,6 +27,15 @@ person per UTC day, 1 intern working at a time, 20 facts per person per day,
 $5 of model spend across everyone per day. A run that produced nothing billable
 (the model was busy — 429/503/529) doesn't cost a brief.
 
+**`CAP_EXEMPT_HANDLES`** (Convex env var, comma-separated GitHub handles,
+case-insensitive) is for the deployment owner's own testing; exempt members
+still spend the shared budget. It skips every per-member cap — briefs/day,
+one-concurrent-intern, facts/day, sends/day, connect-starts/hour — for a
+listed `users.handle`, checked server-side, never from client args. It never
+skips the shared $5/day budget, the DAY_WINDOW overflow safety guard, or the
+resend-attempts cap. One helper, `access.ts`'s `capExempt` (built on
+`lib/caps.ts`'s pure `isCapExempt`), backs every one of those cap sites.
+
 ### Model provider
 
 `lib/model.ts` speaks the OpenAI-compatible `/chat/completions` streaming API
@@ -401,6 +410,7 @@ never Vercel — every one is read server-side, in `convex/` or `lib/` that
 | `BROADCAST_DISCORD_WEBHOOK_URL` | Optional — unset means no Discord broadcasts | A **separate test channel's** webhook URL | Your real announcements channel's webhook URL |
 | `BROADCAST_SLACK_WEBHOOK_URL` | Optional — unset means no Slack broadcasts | A separate test channel's incoming-webhook URL | Real channel's incoming-webhook URL |
 | `SITE_URL` | Already set (Convex Auth) — reused to build the `/u/<handle>` link in every broadcast line | `http://localhost:3000` | `https://intern-brain.vercel.app` |
+| `CAP_EXEMPT_HANDLES` | Optional — unset means nobody is exempt | Your own GitHub handle(s), comma-separated, for your own testing; exempt members still spend the shared budget | Unset unless you're testing on prod yourself |
 
 Unset `COMPOSIO_API_KEY`/`COMPOSIO_VERIFIER_URL` together means the whole app
 runs in sandbox (drafts approve but nothing sends, nothing captures). Unset

@@ -7,7 +7,7 @@ import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
-import { ownerView, requireMember } from "./access";
+import { capExempt, ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
@@ -38,6 +38,7 @@ async function assertWithinCaps(ctx: MutationCtx, ownerId: Id<"users">) {
       (i) => i.status === "queued" || i.status === "running" || (i.status === "cancelled" && i.endedAt === undefined),
     ),
     spentToday: usage?.costUsd ?? 0,
+    exempt: await capExempt(ctx, ownerId),
   });
   if (blocked) throw new ConvexError(blocked);
 }

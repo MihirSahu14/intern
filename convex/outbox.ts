@@ -16,7 +16,7 @@ import { recipientsInBrief } from "../lib/recipients.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type MutationCtx, type QueryCtx, mutation, query } from "./_generated/server";
-import { ownerView, requireMember } from "./access";
+import { capExempt, ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
@@ -122,7 +122,7 @@ async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">, excludeActi
     .take(DAY_WINDOW + 2);
   const today = rows.filter((a) => a._id !== excludeActionId);
   if (today.length > DAY_WINDOW) throw new ConvexError(tooManySends);
-  const blocked = sendBlocked(today.filter((a) => a.connector).length);
+  const blocked = sendBlocked(today.filter((a) => a.connector).length, await capExempt(ctx, ownerId));
   if (blocked) throw new ConvexError(blocked);
 }
 
