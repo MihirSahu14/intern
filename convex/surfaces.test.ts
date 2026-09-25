@@ -145,7 +145,7 @@ test("the graph and feed hide other people's private facts, subjects and address
   );
 
   const forA = (await asUser(a).query(api.facts.graph, {})).nodes.map((n) => n.label);
-  expect(forA).toEqual(expect.arrayContaining(["private note", "✉ Pricing", "email ann@acme.com about pricing"]));
+  expect(forA).toEqual(expect.arrayContaining(["private note", "✉ Pricing", "email [email] about pricing"]));
 
   const forB = (await asUser(b).query(api.facts.graph, {})).nodes.map((n) => n.label);
   expect(forB).not.toContain("private note");
@@ -2137,4 +2137,57 @@ test("the graph shows a question-and-answer chain as one intern, and no answer f
   expect(nodes.some((n) => n.label === "Which channel?")).toBe(false);
   const note = nodes.find((n) => n.label === "Team says hi in #general")!;
   expect(edges).toContainEqual({ source: root, target: note.id, rel: "filed" });
+});
+
+test("an owner's intern label with an email is redacted", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com about pricing", status: "done", countsTowardCap: true }),
+  );
+
+  const { nodes } = await asUser(a).query(api.facts.graph, {});
+  // The graph is a public map even for its own owner — addresses belong in
+  // the outbox, not here.
+  expect(nodes.find((n) => n.id === internId)?.label).toBe("email [email] about pricing");
+});
+
+test("a cancelled intern is absent from the graph, by the chain's newest status", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const root = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "book a room", status: "done", countsTowardCap: true }),
+  );
+  // The chain's newest run is cancelled, so the whole chain is left off the
+  // map — even though the root run it resumes already finished.
+  const resumed = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "book a room\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Which room? → the big one",
+      displayTask: "book a room",
+      resumes: root,
+      status: "cancelled",
+      countsTowardCap: true,
+    }),
+  );
+  const factId = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "booked the room", body: "", kind: "note", ownerId: a, internId: root, text: "booked the room\n" }),
+  );
+
+  const { nodes, edges } = await asUser(a).query(api.facts.graph, {});
+  expect(nodes.some((n) => n.id === root || n.id === resumed)).toBe(false);
+  // Its fact attaches to nothing and shows up unlinked, same as any other
+  // missing parent.
+  const fact = nodes.find((n) => n.id === factId)!;
+  expect(fact.label).toBe("booked the room");
+  expect(edges.some((e) => e.target === factId)).toBe(false);
+});
+
+test("the seed source label is 'starter facts'", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  await t.run((ctx) => ctx.db.insert("facts", { title: "new hires start Monday", body: "", kind: "note", text: "new hires start Monday\n" }));
+
+  const { nodes } = await asUser(a).query(api.facts.graph, {});
+  expect(nodes.find((n) => n.id === "src:seed")?.label).toBe("starter facts");
 });

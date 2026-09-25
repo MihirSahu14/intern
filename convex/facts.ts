@@ -126,7 +126,7 @@ export const graph = query({
       if (!nodes.has(key)) {
         const u = await ctx.db.get("users", id);
         const handle = u?.handle ?? u?.name ?? "someone";
-        nodes.set(key, { id: key, label: `@${handle}`, kind: "contact", weight: 5, meta: { image: u?.image ?? null } });
+        nodes.set(key, { id: key, label: redactEmails(`@${handle}`), kind: "contact", weight: 5, meta: { image: u?.image ?? null } });
       }
       return key;
     };
@@ -140,32 +140,42 @@ export const graph = query({
       while (r?.resumes && byId.has(r.resumes)) r = byId.get(r.resumes);
       return r?._id;
     };
+    // `interns` is newest first, so the first run seen for a root is the
+    // chain's newest — that's the status (and cancelled-or-not) that decides
+    // the node, even if an older run further back in the chain was cancelled.
+    const seenRoots = new Set<string>();
     for (const i of interns) {
       const rootId = rootOf(i._id)!;
-      if (nodes.has(rootId)) continue; // newest first, so the first run seen sets the status
+      if (seenRoots.has(rootId)) continue;
+      seenRoots.add(rootId);
+      // A cancelled chain is left off the map; its facts and drafts, if any,
+      // attach to nothing and show up unlinked, same as any missing parent.
+      if (i.status === "cancelled") continue;
       const root = byId.get(rootId)!;
       // The root's `task` is the member's own words; `displayTask` covers a
       // root whose parent fell outside the window — same rule as `interns.list`.
-      const task = root.ownerId === viewer ? (root.displayTask ?? root.task) : redactEmails(root.displayTask ?? root.task);
+      // The graph is a public map even for its owner — addresses belong in
+      // the outbox — so every label is redacted, not just other people's.
+      const task = redactEmails(root.displayTask ?? root.task);
       nodes.set(rootId, { id: rootId, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
       edges.push({ source: await person(root.ownerId), target: rootId, rel: "briefed" });
     }
     for (const f of facts) {
       // Answers to an intern's questions stay in recall, not on the map.
       if (f.kind === "answer") continue;
-      nodes.set(f._id, { id: f._id, label: f.title.slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind } });
+      nodes.set(f._id, { id: f._id, label: redactEmails(f.title).slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind } });
       const filer = f.internId && rootOf(f.internId);
       if (filer) edges.push({ source: filer, target: f._id, rel: "filed" });
       else if (f.ownerId) edges.push({ source: await person(f.ownerId), target: f._id, rel: "taught" });
       else {
-        nodes.set("src:seed", { id: "src:seed", label: "seed", kind: "source", weight: 6 });
+        nodes.set("src:seed", { id: "src:seed", label: "starter facts", kind: "source", weight: 6 });
         edges.push({ source: "src:seed", target: f._id, rel: "seeded" });
       }
     }
     for (const a of actions) {
       const label =
-        a.ownerId === viewer ? `✉ ${a.draft.subject || a.title}`.slice(0, 56) : a.status === "sent" ? "✉ sent" : "✉ a draft";
-      nodes.set(a._id, { id: a._id, label, kind: "action", weight: 4, detail: a.status });
+        a.ownerId === viewer ? `✉ ${a.draft.subject || a.title}` : a.status === "sent" ? "✉ sent" : "✉ a draft";
+      nodes.set(a._id, { id: a._id, label: redactEmails(label).slice(0, 56), kind: "action", weight: 4, detail: a.status });
       const drafter = rootOf(a.internId);
       if (drafter) edges.push({ source: drafter, target: a._id, rel: "drafted" });
     }

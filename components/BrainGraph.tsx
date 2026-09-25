@@ -357,6 +357,11 @@ export default function BrainGraph({
     const LINK_LEN = 74;
     const GRAVITY = 0.011;
     const DAMP = 0.84;
+    // Settle fast: a busy community graph reheats often (new fact, new
+    // intern), and a slow decay never lets the map finish coming to rest
+    // between reheats — it just reads as permanent drift. ~1.3s to the
+    // stop threshold below, instead of ~6s.
+    const ALPHA_DECAY = 0.94;
 
     /**
      * People sit on the rim, not in the pile.
@@ -441,7 +446,7 @@ export default function BrainGraph({
         b.y += Math.max(-14, Math.min(14, b.vy));
       }
 
-      alpha.current = a * 0.985;
+      alpha.current = a * ALPHA_DECAY;
     };
 
     const fontFamily = getComputedStyle(document.body).fontFamily;
