@@ -12,9 +12,10 @@ import {
 import { type ConnectorKey, connectorByKey, connectorFor, isConfigured } from "../lib/connectors.ts";
 import { changedFields, correctionFromEdit, correctionFromReject, editRatio } from "../lib/edits.ts";
 import { redactEmails } from "../lib/redact.ts";
+import { recipientsInBrief } from "../lib/recipients.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { type MutationCtx, mutation, query } from "./_generated/server";
+import { type MutationCtx, type QueryCtx, mutation, query } from "./_generated/server";
 import { ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
@@ -46,6 +47,12 @@ function capEdits(edits: Edits): Edits {
   if (edits.subject !== undefined) out.subject = edits.subject.slice(0, MAX_FACT_CHARS);
   if (edits.body !== undefined) out.body = edits.body.slice(0, MAX_FACT_CHARS);
   return out;
+}
+
+/** The owner's own words, same fallback `facts.ts`/`community.ts`/`interns.ts` use for a question-resumed run's `task`. */
+async function briefTextFor(ctx: QueryCtx | MutationCtx, internId: Id<"interns">): Promise<string> {
+  const intern = await ctx.db.get("interns", internId);
+  return intern?.displayTask ?? intern?.task ?? "";
 }
 
 /**
@@ -80,7 +87,16 @@ export const list = query({
         const handle = (await ownerView(ctx, a.ownerId)).handle;
         // Private drafts, shared brain: the owner gets the draft, everyone
         // else only that one exists.
-        if (a.ownerId === userId) return { ...a, handle };
+        if (a.ownerId === userId) {
+          // Only worth asking for a draft still awaiting a decision, drafted
+          // before its account connected — that's the only row the Outbox
+          // button treats differently (see Outbox.tsx's `blocked`).
+          const recipientsMatchBrief =
+            a.status === "pending" && !a.draftedLive
+              ? recipientsInBrief([...a.draft.to, ...(a.draft.cc ?? [])], await briefTextFor(ctx, a.internId))
+              : undefined;
+          return { ...a, handle, recipientsMatchBrief };
+        }
         return { _id: a._id, _creationTime: a._creationTime, kind: a.kind, status: a.status, ownerId: a.ownerId, handle };
       }),
     );
@@ -113,9 +129,11 @@ async function assertCanSend(ctx: MutationCtx, ownerId: Id<"users">, excludeActi
 /** Composio send calls one draft may cost, its first included: a dead grant can't be hammered through `resend`. */
 const SEND_ATTEMPTS = 3;
 
-/** Said when a draft written under the sandbox prompt is about to go out unchanged. */
-const placeholderRecipients =
-  "This was drafted before your account was connected, so its recipients are placeholders. Change who it goes to before sending.";
+/**
+ * Said when a draft written under the sandbox prompt is about to go out with
+ * a recipient the member never typed themselves — see `recipientsInBrief`.
+ */
+const placeholderRecipients = (label: string) => `Written before you connected ${label} — check the recipient.`;
 
 /**
  * Approve (optionally edited) or reject. An edit becomes a preference fact and
@@ -199,10 +217,18 @@ export const decide = mutation({
       return { needsConnect: live.key };
     }
     // The sandbox prompt tells the model to invent #general and
-    // name@example.com. Sent unchanged, that is a real post in the member's
-    // real #general: only recipients the member typed in this approval go.
-    if (live && !action.draftedLive && !(a.edits?.to && fields.includes("to"))) {
-      throw new ConvexError(placeholderRecipients);
+    // name@example.com. Sent unchanged, that's a real post in the member's
+    // real #general — unless every recipient the draft names is one the
+    // member actually typed in their own brief, in which case it was never a
+    // placeholder to begin with. Otherwise only a "to" edited in this
+    // approval clears it.
+    if (
+      live &&
+      !action.draftedLive &&
+      !recipientsInBrief([...action.draft.to, ...(action.draft.cc ?? [])], await briefTextFor(ctx, action.internId)) &&
+      !(a.edits?.to && fields.includes("to"))
+    ) {
+      throw new ConvexError(placeholderRecipients(live.label));
     }
     if (live) await assertCanSend(ctx, user._id);
 

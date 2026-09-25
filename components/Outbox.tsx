@@ -144,10 +144,16 @@ function Pending({
       decision: "approve",
       edits: changed.length || action.accepted ? { to: list(to), subject, body } : undefined,
     });
-  // Drafted under the sandbox prompt, whose recipients are placeholders
-  // (#general, name@example.com): it can't go out for real until the person
-  // says who it's for. The server refuses it too (outbox.decide).
-  const needsRecipient = !!via && !action.draftedLive && !changed.includes("to");
+  // Drafted under the sandbox prompt, whose recipients may be placeholders
+  // (#general, name@example.com) — unless every recipient is one the member
+  // already typed in their own brief (`recipientsMatchBrief`, computed
+  // server-side by `lib/recipients.ts`'s `recipientsInBrief`), in which case
+  // it was never a placeholder to begin with. Once edited this round, it's
+  // moot either way.
+  const showPlaceholderNote = !!via && !action.draftedLive && !changed.includes("to");
+  const briefAllows = !!action.recipientsMatchBrief;
+  // The server refuses this too (outbox.decide) when neither is true.
+  const blocked = showPlaceholderNote && !briefAllows;
 
   return (
     <article className="enter border-b border-line px-3 py-2">
@@ -185,9 +191,10 @@ function Pending({
           {action.sources.length ? (
             <p className="text-faint">from: {action.sources.join(", ")}</p>
           ) : null}
-          {needsRecipient ? (
+          {showPlaceholderNote ? (
             <p className="border-l border-warn/50 pl-2 text-warn">
-              drafted before you connected {via}, so &ldquo;to&rdquo; is a placeholder · change it to send
+              This was drafted before {via} was connected, so it may use a placeholder recipient. Edit &ldquo;to&rdquo;
+              {briefAllows ? ", or send as is if it's right." : "."}
             </p>
           ) : null}
           {changed.length ? (
@@ -239,12 +246,12 @@ function Pending({
         <div className="mt-2 flex gap-px">
           <button
             type="button"
-            onClick={needsRecipient ? (expanded ? undefined : onToggle) : approve}
-            disabled={needsRecipient && expanded}
+            onClick={blocked ? (expanded ? undefined : onToggle) : approve}
+            disabled={blocked && expanded}
             className="flex-1 border border-ok/40 py-0.5 text-ok transition-colors hover:bg-ok/10 disabled:opacity-40"
           >
-            {needsRecipient
-              ? "change “to” to send"
+            {blocked
+              ? `Written before you connected ${via} — check the recipient`
               : via
               ? `${changed.length ? "send with edits" : "approve & send"} via ${via}`
               : changed.length
