@@ -120,6 +120,57 @@ test("the global budget stops everyone", async () => {
   await expect(as.mutation(api.interns.spawn, { task: "x" })).rejects.toThrow(/budget/);
 });
 
+test("CAP_EXEMPT_HANDLES: an exempt member can spawn a sixth brief and a second concurrent intern", async () => {
+  vi.stubEnv("CAP_EXEMPT_HANDLES", "a");
+  const { t, seedUser, asUser } = setup();
+  const as = asUser(await seedUser("a"));
+
+  for (let i = 0; i < 5; i++) {
+    const internId = await as.mutation(api.interns.spawn, { task: `task ${i}` });
+    // Free the one-concurrent-intern slot so only the daily count is at play,
+    // same as the non-exempt version of this test above.
+    await t.run((ctx) => ctx.db.patch("interns", internId, { status: "done", endedAt: Date.now() }));
+  }
+  // The sixth brief: over BRIEFS_PER_DAY for anyone else.
+  await expect(as.mutation(api.interns.spawn, { task: "task 5" })).resolves.toBeTruthy();
+  // A seventh while the sixth is still queued: past the one-concurrent-intern cap too.
+  await expect(as.mutation(api.interns.spawn, { task: "task 6" })).resolves.toBeTruthy();
+});
+
+test("CAP_EXEMPT_HANDLES: a member whose handle isn't listed is still refused", async () => {
+  vi.stubEnv("CAP_EXEMPT_HANDLES", "someone-else");
+  const { t, seedUser, asUser } = setup();
+  const as = asUser(await seedUser("a"));
+
+  for (let i = 0; i < 5; i++) {
+    const internId = await as.mutation(api.interns.spawn, { task: `task ${i}` });
+    await t.run((ctx) => ctx.db.patch("interns", internId, { status: "done", endedAt: Date.now() }));
+  }
+  await expect(as.mutation(api.interns.spawn, { task: "task 5" })).rejects.toThrow(/5 briefs/);
+});
+
+test("CAP_EXEMPT_HANDLES: exemption never clears the shared $5 budget", async () => {
+  vi.stubEnv("CAP_EXEMPT_HANDLES", "a");
+  const { t, seedUser, asUser } = setup();
+  const as = asUser(await seedUser("a"));
+
+  await t.run((ctx) => ctx.db.insert("usage", { date: dayKey(Date.now()), costUsd: DAILY_BUDGET_USD, runs: 1 }));
+  await expect(as.mutation(api.interns.spawn, { task: "x" })).rejects.toThrow(/budget/);
+});
+
+test("CAP_EXEMPT_HANDLES matches case-insensitively and ignores stray whitespace", async () => {
+  vi.stubEnv("CAP_EXEMPT_HANDLES", " Mihir , ANN ,bob");
+  const { t, seedUser, asUser } = setup();
+  // Stored handle is lower-case "ann"; the env list has "ANN" with padding on both sides.
+  const as = asUser(await seedUser("ann"));
+
+  for (let i = 0; i < 5; i++) {
+    const internId = await as.mutation(api.interns.spawn, { task: `task ${i}` });
+    await t.run((ctx) => ctx.db.patch("interns", internId, { status: "done", endedAt: Date.now() }));
+  }
+  await expect(as.mutation(api.interns.spawn, { task: "task 5" })).resolves.toBeTruthy();
+});
+
 test("only the owner can decide on a draft", async () => {
   const { t, seedUser, asUser } = setup();
   const owner = await seedUser("owner");

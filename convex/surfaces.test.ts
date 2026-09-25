@@ -1812,11 +1812,13 @@ test("a sandbox-drafted message can't go out unchanged once connected; with its 
   const { actionId } = await seedDraft(a, "slack", {});
   const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
 
-  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/placeholders/);
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(
+    /check the recipient/,
+  );
   // Retyping the same placeholder isn't choosing a recipient.
   await expect(
     asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { to: ["#general"] } }),
-  ).rejects.toThrow(/placeholders/);
+  ).rejects.toThrow(/check the recipient/);
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
   expect(f).not.toHaveBeenCalled();
 
@@ -1827,6 +1829,40 @@ test("a sandbox-drafted message can't go out unchanged once connected; with its 
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect(JSON.parse(String(f.mock.calls[1][1]?.body)).arguments.channel).toBe("#team-pricing");
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a sandbox-drafted action whose recipient the member actually typed in their brief sends unedited once connected", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "gmail");
+  // seedDraft's default task is "email ann@acme.com about pricing" and its
+  // email draft's `to` is exactly that address — the member's own words, not
+  // a sandbox placeholder, even though `draftedLive` is false here.
+  const { actionId } = await seedDraft(a, "email", { draftedLive: false });
+  const f = stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  expect(await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).toBe(null);
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).arguments.recipient_email).toBe("ann@acme.com");
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a sandbox-drafted action whose recipient (#general) the member never typed is still refused", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  await seedActive(a, "slack");
+  // #general is the sandbox placeholder — seedDraft's task never mentions it.
+  const { actionId } = await seedDraft(a, "slack", { draftedLive: false });
+  const f = stubFetch({});
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(
+    /check the recipient/,
+  );
+  expect(f).not.toHaveBeenCalled();
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
 });
 
 test("a draft is marked live only when its own kind's account was connected as the run started", async () => {

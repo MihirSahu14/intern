@@ -190,6 +190,7 @@ export default function Cockpit({ me }: { me: Me }) {
               connector: a.connector,
               sendError: a.sendError,
               draftedLive: a.draftedLive,
+              recipientsMatchBrief: a.recipientsMatchBrief,
             }]
           : [],
       ),

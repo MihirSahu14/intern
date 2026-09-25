@@ -6,7 +6,7 @@ import { SLACK_TOOLS, TRIGGERS, readWhoami } from "../lib/inbound.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type QueryCtx, action, internalAction, internalMutation, internalQuery, query } from "./_generated/server";
-import { requireMember } from "./access";
+import { capExempt, requireMember } from "./access";
 import { connectorKey } from "./schema";
 
 /**
@@ -107,6 +107,7 @@ export const mine = query({
           accountLabel: row?.accountLabel ?? null,
           /** The Intern label: null when not offered, else whether it's on. */
           capture: offered ? !!(userId && (await activeConnection(ctx, userId, c.key, true))) : null,
+          disclosure: c.disclosure,
         };
       }),
     );
@@ -129,7 +130,9 @@ export const begin = internalMutation({
       .query("connections")
       .withIndex("by_userId_and_createdAt", (q) => q.eq("userId", user._id).gte("createdAt", now - 60 * 60_000))
       .take(STARTS_PER_HOUR);
-    if (recent.length >= STARTS_PER_HOUR) throw new ConvexError("Too many connect attempts this hour. Try again later.");
+    if (recent.length >= STARTS_PER_HOUR && !(await capExempt(ctx, user._id))) {
+      throw new ConvexError("Too many connect attempts this hour. Try again later.");
+    }
     await ctx.db.insert("connections", {
       userId: user._id,
       connector: a.connector,

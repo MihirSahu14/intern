@@ -3,7 +3,7 @@
 import { KIND_ORDER } from "./BrainGraph";
 import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
-import { COMPOSIO_DISCLOSURE, type ConnectorKey } from "@/lib/connectors";
+import type { ConnectorKey } from "@/lib/connectors";
 import type { ActionKind, Graph, GraphNode, NodeKind } from "@/lib/types";
 
 export type ConnectorRow = {
@@ -15,6 +15,8 @@ export type ConnectorRow = {
   accountLabel: string | null;
   /** Gmail's `Intern` label: null when this deployment doesn't offer it, else whether it's on. */
   capture: boolean | null;
+  /** Shown under this connector's row: what its grant actually lets Composio do. */
+  disclosure: string;
 };
 
 export default function BrainRail({
@@ -94,11 +96,9 @@ export default function BrainRail({
                 </span>
               </Row>
             )}
+            {c.configured ? <p className="pt-0.5 text-faint leading-snug">{c.disclosure}</p> : null}
           </div>
         ))}
-        {connectors.some((c) => c.configured) ? (
-          <p className="pt-1 text-faint leading-snug">{COMPOSIO_DISCLOSURE}</p>
-        ) : null}
       </Section>
 
       <Section title="layers">

@@ -336,6 +336,12 @@ export type ProposedAction = {
   sendError?: string;
   /** Written knowing it could really go out. False: its recipients are sandbox placeholders. */
   draftedLive?: boolean;
+  /**
+   * Only set on a pending, non-`draftedLive` draft: whether every recipient
+   * in `draft` already appears in the brief the owner typed, so it may go
+   * live unedited (`lib/recipients.ts`'s `recipientsInBrief`).
+   */
+  recipientsMatchBrief?: boolean;
 };
 
 /** What would actually go out: the person's version if they wrote one. */

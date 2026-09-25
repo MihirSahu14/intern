@@ -7,6 +7,7 @@ import {
   costUsd,
   dayKey,
   dayStart,
+  isCapExempt,
   sendBlocked,
   spawnBlocked,
   teachBlocked,
@@ -59,4 +60,22 @@ test("sends cap at twenty a day", () => {
   assert.equal(sendBlocked(SENDS_PER_DAY - 1), null);
   assert.match(sendBlocked(SENDS_PER_DAY) ?? "", /20 sends/);
   assert.match(sendBlocked(SENDS_PER_DAY) ?? "", /00:00 UTC/);
+});
+
+test("exempt clears the per-member checks, not the community budget", () => {
+  assert.equal(spawnBlocked({ briefsToday: BRIEFS_PER_DAY, active: true, spentToday: 0, exempt: true }), null);
+  assert.match(
+    spawnBlocked({ briefsToday: 0, active: false, spentToday: 5, exempt: true }) ?? "",
+    /budget/,
+  );
+  assert.equal(teachBlocked(FACTS_PER_DAY, true), null);
+  assert.equal(sendBlocked(SENDS_PER_DAY, true), null);
+});
+
+test("CAP_EXEMPT_HANDLES matches case-insensitively, ignoring stray whitespace", () => {
+  assert.equal(isCapExempt("Ann", " mihir , Ann ,bob"), true);
+  assert.equal(isCapExempt("ANN", " mihir , Ann ,bob"), true);
+  assert.equal(isCapExempt("carl", " mihir , Ann ,bob"), false);
+  assert.equal(isCapExempt("mihir", undefined), false);
+  assert.equal(isCapExempt(null, "mihir"), false);
 });

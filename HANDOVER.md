@@ -27,6 +27,15 @@ person per UTC day, 1 intern working at a time, 20 facts per person per day,
 $5 of model spend across everyone per day. A run that produced nothing billable
 (the model was busy — 429/503/529) doesn't cost a brief.
 
+**`CAP_EXEMPT_HANDLES`** (Convex env var, comma-separated GitHub handles,
+case-insensitive) is for the deployment owner's own testing; exempt members
+still spend the shared budget. It skips every per-member cap — briefs/day,
+one-concurrent-intern, facts/day, sends/day, connect-starts/hour — for a
+listed `users.handle`, checked server-side, never from client args. It never
+skips the shared $5/day budget, the DAY_WINDOW overflow safety guard, or the
+resend-attempts cap. One helper, `access.ts`'s `capExempt` (built on
+`lib/caps.ts`'s pure `isCapExempt`), backs every one of those cap sites.
+
 ### Model provider
 
 `lib/model.ts` speaks the OpenAI-compatible `/chat/completions` streaming API
@@ -82,6 +91,25 @@ billed, so the cap just bounds runs/day rather than dollars — see the
 
 `GEMINI_API_KEY` / `GEMINI_MODEL` are gone — nothing reads them anymore.
 
+### Gmail scope
+
+⚠️ **The Gmail grant is not send-only.** Google blocks a Composio-managed auth
+config scoped to `gmail.send` only on Composio's *shared* app (the
+"send-only" config this file used to describe never actually connects).
+Prod's `COMPOSIO_AUTH_CONFIG_GMAIL` is a managed config trimmed to
+`userinfo.email`, `userinfo.profile` and `https://mail.google.com/` — the
+last of those is full mailbox read/write/send access, not send-only. Intern
+itself still only ever sends what a member approves; the point is that the
+*grant* Composio holds can do more than that, and the disclosure under the
+connect control (`lib/connectors.ts`'s Gmail `disclosure`) says so.
+
+The least-privilege path, if it's worth the setup: Mihir's own Google OAuth
+app, scoped to `gmail.send` only, used as a custom Composio auth config
+instead of the managed one. In **Testing** publishing status it works for up
+to 100 test users (added by email in the Google Cloud Console) with no
+review; opening it to everyone needs Google's verification for the
+`gmail.send` scope, which is free but not instant.
+
 **Approvals send, once a member connects an account.** With Composio set up
 (`COMPOSIO_API_KEY` + `COMPOSIO_VERIFIER_URL`), approving an email or Slack
 draft sends it from the member's own connected Gmail/Slack (`outbox.decide` ->
@@ -89,8 +117,10 @@ draft sends it from the member's own connected Gmail/Slack (`outbox.decide` ->
 connection it asks them to connect first and keeps their edits. Calendar
 drafts, and every draft on a deployment without Composio, stay sandboxed:
 approving sends nothing. A draft written before its account was connected was
-briefed with placeholder recipients (#general, name@example.com), so it can't
-go out until the member changes `to`. Inbound: a member's own 🧠 in Slack and
+briefed with placeholder recipients (#general, name@example.com); it can go
+out unedited only when every recipient it names is one the member actually
+typed in their own brief (`lib/recipients.ts`'s `recipientsInBrief`) —
+otherwise it can't go out until the member changes `to`. Inbound: a member's own 🧠 in Slack and
 an opt-in `Intern` Gmail label add facts through a signed webhook
 (`/composio/webhook`). Broadcasts post public one-liners to Discord/Slack
 webhooks. Either way, approving files the difference from the draft as a
@@ -334,8 +364,13 @@ The open ones that survive the cut:
   history lookup is refused.
 - **The Gmail `Intern` label** is opt-in per member: a second, read-only
   (`gmail.readonly`) grant with its own consent screen, through
-  `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE`. The send grant never reads mail.
-  Captures are owner-only.
+  `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE`. ⚠️ On prod's actual config the send
+  grant *can* already read mail (see "Gmail scope" above — Google blocks a
+  `gmail.send`-only auth config on Composio's shared app), which makes this
+  second grant redundant for members connected through that config. It's kept
+  anyway: it's opt-in and harmless, and it's the only route to
+  least-privilege capture on a deployment that does move to Mihir's own
+  send-only Google OAuth app. Captures are owner-only.
 - **Webhook:** `https://<deployment>.convex.site/composio/webhook`, signed with
   `COMPOSIO_WEBHOOK_SECRET`. Without the secret, every event gets a 401 and no
   trigger is created.
@@ -368,13 +403,14 @@ never Vercel — every one is read server-side, in `convex/` or `lib/` that
 |---|---|---|---|
 | `COMPOSIO_API_KEY` | Yes — unset means every connector shows "not set up yet" and outbox drafts stay sandboxed (approved, nothing sent) | `intern-dev` project's API key, Composio dashboard. **Scope it to Gmail + Slack toolkits only** (Composio's May 2026 breach — see Step 1 below) | `intern-prod` project's key, same scoping |
 | `COMPOSIO_VERIFIER_URL` | Yes, alongside the API key — `isConfigured` requires both, and it must start with `https://` or the connector reads as unconfigured | A public HTTPS URL that resolves to `/app` — Composio rejects localhost/private addresses on save, so this needs a tunnel to `localhost:3000` (e.g. an ngrok URL) or a Vercel preview URL, ending in `/app` | `https://intern-brain.vercel.app/app` |
-| `COMPOSIO_AUTH_CONFIG_GMAIL` | Optional, strongly recommended | A **send-only** Gmail auth config's `ac_…` id, Composio-managed auth, scope `gmail.send` only. Without it, Gmail connects through Composio's default managed scopes, which are **not publicly documented and may cover the whole mailbox** | same, `intern-prod`'s send-only config |
-| `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` | Optional — without it, **or without `COMPOSIO_WEBHOOK_SECRET`**, the Gmail `Intern`-label toggle is hidden and `start({capture: true})` refuses | A **separate, read-only** Gmail auth config's `ac_…` id, scope `gmail.readonly` only. This is a second consent screen a member opts into; the send grant never reads mail | same, `intern-prod`'s capture config |
+| `COMPOSIO_AUTH_CONFIG_GMAIL` | Optional — unset means Gmail connects through Composio's own default managed config instead (see "Gmail scope" above) | Not set on `intern-dev`/`intern-prod`: Google blocks a `gmail.send`-only Composio-managed auth config on Composio's shared app, so prod uses the default managed config (`userinfo.email`, `userinfo.profile`, `https://mail.google.com/` — **not send-only**). Set this only if you build a **custom** auth config backed by your own Google OAuth app, scoped to `gmail.send` only (see "Gmail scope") | same — unset unless you've built the custom least-privilege config |
+| `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` | Optional — without it, **or without `COMPOSIO_WEBHOOK_SECRET`**, the Gmail `Intern`-label toggle is hidden and `start({capture: true})` refuses | A **separate, read-only** Gmail auth config's `ac_…` id, scope `gmail.readonly` only. This is a second consent screen a member opts into; redundant on the current send config (which can already read) but kept because it's opt-in and harmless | same, `intern-prod`'s capture config |
 | `COMPOSIO_AUTH_CONFIG_SLACK` | Optional but likely needed — whether Composio-managed Slack auth posts as the member (vs. as an app) is **unconfirmed** (Task 3 concern 2); test a throwaway connect first | A **custom** Slack auth config's `ac_…` id, backed by your own Slack app with **user scopes** `chat:write`, `reactions:read`, `channels:history`, `channels:read`, `users:read` | same, `intern-prod`'s custom config, a separate Slack app or a separately-installed one |
 | `COMPOSIO_WEBHOOK_SECRET` | Optional (but the Gmail `Intern` label needs it: `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE` does nothing without it) — without it, every inbound webhook call gets a 401 and no 🧠/label trigger is ever created; sends and connects still work | `intern-dev` project's webhook signing secret, Composio dashboard | `intern-prod`'s webhook secret |
 | `BROADCAST_DISCORD_WEBHOOK_URL` | Optional — unset means no Discord broadcasts | A **separate test channel's** webhook URL | Your real announcements channel's webhook URL |
 | `BROADCAST_SLACK_WEBHOOK_URL` | Optional — unset means no Slack broadcasts | A separate test channel's incoming-webhook URL | Real channel's incoming-webhook URL |
 | `SITE_URL` | Already set (Convex Auth) — reused to build the `/u/<handle>` link in every broadcast line | `http://localhost:3000` | `https://intern-brain.vercel.app` |
+| `CAP_EXEMPT_HANDLES` | Optional — unset means nobody is exempt | Your own GitHub handle(s), comma-separated, for your own testing; exempt members still spend the shared budget | Unset unless you're testing on prod yourself |
 
 Unset `COMPOSIO_API_KEY`/`COMPOSIO_VERIFIER_URL` together means the whole app
 runs in sandbox (drafts approve but nothing sends, nothing captures). Unset
@@ -389,8 +425,8 @@ early with no log.
    connections, GitHub tokens and API keys exposed; since remediated with
    envelope encryption, scoped keys and an IP allowlist). Decide whether
    Composio may hold members' tokens before going further; Mihir's ruling was
-   keep Composio and harden (scoped key, send-only Gmail, opt-in capture,
-   revoke on disconnect/purge).
+   keep Composio and harden (scoped key, trimmed Gmail scopes — not send-only,
+   see "Gmail scope" above — opt-in capture, revoke on disconnect/purge).
 2. **Create two Composio projects**, `intern-dev` and `intern-prod`. For each,
    generate an API key **scoped to the Gmail and Slack toolkits only** — not a
    full-access key — given the breach in Step 1. That key is
@@ -432,12 +468,16 @@ early with no log.
 
 ### Gmail (~30 min)
 
-7. **Send-only auth config.** In the Composio dashboard, create a
-   Composio-managed Gmail auth config scoped to `gmail.send` only, and set its
-   id as `COMPOSIO_AUTH_CONFIG_GMAIL`. Connect a throwaway Gmail through it
-   first: `gmail.send` is a Google *sensitive* scope and can trigger an
-   unverified-app block on sending — if it does, you'll need your own Google
-   OAuth app for this config instead (config only, no code change).
+7. **Sending.** Leave `COMPOSIO_AUTH_CONFIG_GMAIL` unset and connect through
+   Composio's own default managed app — a `gmail.send`-only Composio-managed
+   auth config does not connect at all; Google blocks it on Composio's shared
+   app. The default managed app's actual grant is `userinfo.email`,
+   `userinfo.profile` and `https://mail.google.com/` (full mailbox), which is
+   what prod runs on (see "Gmail scope" earlier in this file). For
+   least-privilege sending instead, build your own Google OAuth app scoped to
+   `gmail.send` only and use it as a **custom** Composio auth config — Testing
+   publishing status covers up to 100 test users with no review; opening it to
+   everyone needs Google's (free) verification of the `gmail.send` scope.
 8. **Capture (opt-in inbound) auth config.** Create a second, separate Gmail
    auth config scoped to `gmail.readonly` only, id →
    `COMPOSIO_AUTH_CONFIG_GMAIL_CAPTURE`. `gmail.readonly` is a Google
@@ -493,8 +533,11 @@ yours to run), pointed at by `.env.local`, with the frontend on a public
 HTTPS tunnel for the verifier URL.
 
 - [ ] Connect Gmail. On the connected account, check `requested_scopes` (via
-      `GET /connected_accounts/{id}` in the Composio dashboard or API) —
-      confirm it's `gmail.send` only, not the whole mailbox.
+      `GET /connected_accounts/{id}` in the Composio dashboard or API) — on
+      the default managed config it's `userinfo.email`, `userinfo.profile`
+      and `https://mail.google.com/` (full mailbox, not send-only — see
+      "Gmail scope"); on a custom least-privilege config, confirm it's
+      `gmail.send` only.
 - [ ] Connect Slack. Confirm the stored `externalUserId` on that member's
       `connections` row (Convex dashboard) is the **member's own** Slack user
       id, not a bot's — `SLACK_TEST_AUTH`'s output shape isn't documented by
