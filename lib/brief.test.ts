@@ -30,10 +30,47 @@ test("with nothing connected the sandbox rule stays", () => {
   assert.ok(!brief("x", []).includes("go out for real"));
 });
 
-test("the task outranks the brain, and confirming intent is never a question", () => {
+test("the task outranks the brain, and a missing detail is a placeholder, not a question", () => {
   const text = brief("x", []);
   assert.match(text, /The TASK outranks the brain/);
-  assert.match(text, /Never ask to confirm intent, tone, wording, length or who sends it/);
+  assert.match(text, /Do not invent people, systems, dates or numbers\./);
+  assert.match(text, /A missing detail is not a question\./);
+  assert.match(text, /\[bracketed placeholder\]/);
+  assert.match(text, /Never ask anything else: not intent, scope, tone, wording, length, examples or\nwho sends it\./);
+});
+
+test("a fresh brief offers the question block, only for the recipient of a real send", () => {
+  const text = brief("x", []);
+  assert.ok(text.includes("```question"));
+  assert.match(text, /The ONLY thing you may ask is who a real send goes to/);
+  assert.match(text, /At most one question per brief\./);
+  assert.ok(!text.includes("already asked your one question"));
+});
+
+test("a resumed brief has no question block and says to draft now", () => {
+  const text = brief("x", [], [], undefined, true);
+  assert.ok(!text.includes("```question"));
+  assert.ok(!text.includes("The ONLY thing you may ask"));
+  assert.match(text, /You already asked your one question\. Do not ask another: draft now, using\n\[placeholders\] for anything still missing\./);
+  // The placeholder rule and the settled answers still hold.
+  assert.match(text, /A missing detail is not a question\./);
+  assert.match(text, /ANSWERS YOU WERE GIVEN is settled/);
+});
+
+test("YOU WORK FOR resolves me, with only the parts that exist", () => {
+  const gmail = { label: "Gmail", account: "ann@acme.com" };
+  const slack = { label: "Slack", account: "@ann in Intern Community" };
+  assert.ok(
+    brief("x", [], [], { handle: "ann", accounts: [gmail, slack] }).includes(
+      'YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them — their email is ann@acme.com; on Slack they are @ann in Intern Community.',
+    ),
+  );
+  assert.ok(brief("x", [], [], { handle: "ann", accounts: [] }).includes('YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them. '));
+  const slackOnly = brief("x", [], [], { handle: "ann", accounts: [slack] });
+  assert.match(slackOnly, /mean them — on Slack they are @ann in Intern Community\./);
+  assert.ok(!slackOnly.includes("their email"));
+  assert.ok(!brief("x", []).includes("YOU WORK FOR:"));
+  assert.ok(!brief("x", [], [], { accounts: [] }).includes("YOU WORK FOR:"));
 });
 
 test("resumed answers stay one flat list under the original ask", () => {

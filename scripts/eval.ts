@@ -1,5 +1,5 @@
 /**
- * Offline eval: 20 fixed briefs through the current prompt.
+ * Offline eval: 22 fixed briefs through the current prompt.
  * Checks the one thing that has silently broken before: does a brief that
  * should draft produce a *usable* action block, and does one that should ask
  * produce a question?
@@ -33,10 +33,14 @@ const CASES: [string, Expect][] = [
   ["Write an email declining a meeting politely", "action"],
   ["Post a Slack welcome for a new designer", "action"],
   ["Draft an email asking for feedback on Intern", "action"],
-  ["Email Sarah about the thing we discussed", "question"],
-  ["Send the pricing to our biggest customer", "question"],
-  ["Book the usual room for the weekly sync", "question"],
-  ["Tell the new hire who they report to", "question"],
+  // Eval runs sandbox: a placeholder recipient is fine, so "myself" is no reason to ask.
+  ["send a mail to myself explaining what Intern can do", "action"],
+  // Once "question": under the one-question rule only an unknown recipient on a
+  // real send may ask, and eval runs sandbox, so these draft with placeholders or ask.
+  ["Email Sarah about the thing we discussed", "any"],
+  ["Send the pricing to our biggest customer", "any"],
+  ["Book the usual room for the weekly sync", "any"],
+  ["Tell the new hire who they report to", "any"],
   ["Summarise what Intern is in three sentences", "any"],
   ["What makes a prospect viable for Intern?", "any"],
   ["List two risks the brain has not solved yet", "any"],

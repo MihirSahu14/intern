@@ -40,7 +40,7 @@ export const go = internalAction({
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
       await say("sys", `thinking · ${describe()}`);
 
-      const prompt = brief(started.task, recalled, started.sendsFrom);
+      const prompt = brief(started.task, recalled, started.sendsFrom, started.self, started.resumed);
       let report = "";
       let pending = "";
       for await (const chunk of stream(prompt)) {
@@ -68,7 +68,14 @@ export const go = internalAction({
         usage = { in: Math.ceil(prompt.length / 4), out: Math.ceil(report.length / 4) };
       }
 
-      const asked = parseQuestionBlock(report);
+      // One question per brief, in code as well as in the prompt: every
+      // answer starts a fresh run, so a prompt-only "at most one per run"
+      // let a brief ask forever. A resumed run drafts with what it has.
+      let asked = parseQuestionBlock(report);
+      if (asked && started.resumed) {
+        asked = null;
+        await say("sys", "didn't ask again — one question per brief");
+      }
       const parsed = parseActionBlock(report);
       const ok = parsed && !("error" in parsed) ? parsed : null;
       await ctx.runMutation(internal.interns.finish, {

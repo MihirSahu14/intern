@@ -2,7 +2,7 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { ComposioError, completeAuth, connect, deleteAccount, deleteTrigger, execute, upsertTrigger } from "../lib/composio.ts";
 import { CONNECTORS, type ConnectorKey, connectorByKey, isConfigured } from "../lib/connectors.ts";
-import { SLACK_TOOLS, TRIGGERS, readWhoami } from "../lib/inbound.ts";
+import { GMAIL_TOOLS, SLACK_TOOLS, TRIGGERS, readGmailProfile, readWhoami } from "../lib/inbound.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type QueryCtx, action, internalAction, internalMutation, internalQuery, query } from "./_generated/server";
@@ -343,6 +343,20 @@ export const finish = action({
         await ctx.runMutation(internal.connections.retire, { rowId: fresh.rowId });
         await forgetAccount(accountId, { revoke: false });
         return { ok: false, connector: "gmail", reason: "Couldn't switch on the Intern label. Try again." };
+      }
+    }
+
+    if (fresh.connector === "gmail") {
+      // Which address this is, for the rail and for the member's own interns
+      // ("email myself"). Best-effort: a grant that can send is worth keeping
+      // without it. The address itself never reaches the log.
+      try {
+        const email = readGmailProfile(
+          await execute(apiKey, GMAIL_TOOLS.profile, { userId, toolkit: "gmail", accountId, arguments: { user_id: "me" } }),
+        );
+        if (email) await ctx.runMutation(internal.connections.settle, { rowId: fresh.rowId, accountLabel: email });
+      } catch (err) {
+        console.log(`connections.finish: gmail profile failed for ${userId}: ${String(err)}`);
       }
     }
 

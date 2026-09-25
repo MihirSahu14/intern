@@ -28,7 +28,37 @@ export function resumeTask(prior: string, question: string, answer: string): str
   return `${head}\n- ${question.trim()} → ${answer.trim()}`;
 }
 
-export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = []): string {
+/** Who the intern works for: the owner's handle and the accounts they connected, each with who they are there. */
+export type Self = { handle?: string; accounts: { label: string; account: string }[] };
+
+/** Resolves "me" in the task. Only the parts that exist; nothing at all when nothing does. */
+function youWorkFor(self?: Self): string {
+  if (!self) return "";
+  const where = self.accounts.map((a) => (a.label === "Gmail" ? `their email is ${a.account}` : `on ${a.label} they are ${a.account}`));
+  if (!self.handle && !where.length) return "";
+  const who = self.handle ? `@${self.handle}` : "the person who briefed you";
+  return `\nYOU WORK FOR: ${who}. "Me", "myself" and "my" in the task mean them${where.length ? ` — ${where.join("; ")}` : ""}. Never put their address in a fact.\n`;
+}
+
+/** The ask rule for a first run: the recipient of a real send is the one thing worth stopping for. */
+const ASK = `The ONLY thing you may ask is who a real send goes to, when the task names no
+one and YOU WORK FOR does not settle it. Then do NOT pick the likely one. Stop
+and ask, with exactly one fenced block:
+
+\`\`\`question
+{"question":"the one thing you need answered","context":"what you were doing"}
+\`\`\`
+
+Never ask anything else: not intent, scope, tone, wording, length, examples or
+who sends it. Anything under ${ANSWERED} is settled; never ask about it again.
+
+At most one question per brief.`;
+
+/** Said instead of ASK once the question was asked: `run.go` drops any other one anyway. */
+const ASKED = `You already asked your one question. Do not ask another: draft now, using
+[placeholders] for anything still missing. Anything under ${ANSWERED} is settled.`;
+
+export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = [], self?: Self, resumed = false): string {
   const learned = recalled.length
     ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${recalled
         .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
@@ -38,7 +68,7 @@ export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = 
   return `You are an intern working a task for the team.
 
 TASK: ${task}
-${learned}
+${youWorkFor(self)}${learned}
 ${sendsFrom.length ? live(sendsFrom) : SANDBOX}
 
 You have no browser and no tools. Work from what the brain gave you above and
@@ -68,21 +98,12 @@ message), draft it as exactly one fenced block and a human approves it:
 For Slack the channel goes in "to" and there is no subject. Always "to", never
 "channel".
 
-Ask only when you are genuinely blocked: the draft would need a fact you would
-otherwise have to invent (who it goes to when a real send names no one, a price,
-a date, what "the thing" is). Then do NOT pick the likely one. Stop and ask, with
-exactly one fenced block:
+A missing detail is not a question. Content, scope, examples, tone, dates,
+names inside the body: write the best draft you can from the brain and what you
+know, and mark anything you genuinely cannot know as a [bracketed placeholder].
+The person reads and edits every draft before it goes out.
 
-\`\`\`question
-{"question":"the one thing you need answered","context":"what you were doing"}
-\`\`\`
-
-Never ask to confirm intent, tone, wording, length or who sends it: make a
-sensible choice, say so in one line of the report, and draft. The person reads
-and edits every draft before it goes out. Anything under ${ANSWERED} is settled;
-never ask about it again.
-
-At most one question per run.`;
+${resumed ? ASKED : ASK}`;
 }
 
 /** FNV-1a of the template itself, base36. */
@@ -95,4 +116,8 @@ function fnv(text: string): string {
   return (h >>> 0).toString(36);
 }
 
-export const PROMPT_VERSION = fnv(brief("{task}", []) + brief("{task}", [], ["{label}"]));
+export const PROMPT_VERSION = fnv(
+  brief("{task}", []) +
+    brief("{task}", [], ["{label}"]) +
+    brief("{task}", [], [], { handle: "{handle}", accounts: [{ label: "Gmail", account: "{account}" }] }, true),
+);

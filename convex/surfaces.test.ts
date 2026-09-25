@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { SLACK_TOOLS, TRIGGERS, sign } from "../lib/inbound.ts";
+import { GMAIL_TOOLS, SLACK_TOOLS, TRIGGERS, sign } from "../lib/inbound.ts";
 import { broadcast } from "./broadcast";
 import schema from "./schema";
 
@@ -497,6 +497,29 @@ test("finish: the member who consented on their own link is connected", async ()
   expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
     expect.objectContaining({ key: "gmail", configured: true, connected: true }),
   );
+  // The profile lookup got no usable answer here: best-effort, so still connected, just unlabelled.
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.accountLabel).toBeUndefined();
+});
+
+test("finish: connecting Gmail records which address it is, for its owner's rail only", async () => {
+  composioEnv();
+  const { seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedPending(a);
+  const f = route([
+    ["/connected_accounts/complete_auth", completed],
+    ["/execute", { data: { emailAddress: "ann@acme.com", messagesTotal: 3 }, error: null, log_id: "log_1" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+  ]);
+
+  expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "gmail" });
+  const profile = f.mock.calls.find(([url]) => url.includes("/execute"));
+  expect(JSON.parse(String(profile?.[1]?.body))).toEqual({ tool_slug: GMAIL_TOOLS.profile, arguments: { user_id: "me" } });
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", connected: true, accountLabel: "ann@acme.com" }),
+  );
+  expect(JSON.stringify(await asUser(b).query(api.connections.mine, {}))).not.toContain("ann@acme.com");
 });
 
 test("finish: never takes a user id from its arguments", async () => {
@@ -1081,17 +1104,31 @@ test("an intern whose owner connected Gmail is briefed to send for real", async 
   composioEnv();
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
-  await seedActive(a);
+  await seedActive(a, "gmail", { accountLabel: "ann@acme.com" });
+  await seedActive(a, "slack");
   const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
-  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: ["Gmail"] });
+  // Slack has no label here, so it sends but says nothing about who "me" is there.
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({
+    task: "t",
+    ownerId: a,
+    sendsFrom: ["Gmail", "Slack"],
+    self: { handle: "a", accounts: [{ label: "Gmail", account: "ann@acme.com" }] },
+    resumed: false,
+  });
 });
 
 test("without Composio's env the intern stays in the sandbox", async () => {
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
-  await seedActive(a);
+  await seedActive(a, "gmail", { accountLabel: "ann@acme.com" });
   const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
-  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: [] });
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({
+    task: "t",
+    ownerId: a,
+    sendsFrom: [],
+    self: { handle: "a", accounts: [] },
+    resumed: false,
+  });
 });
 
 test("a lesson from a draft that could reach a real person stays private", async () => {
@@ -1435,9 +1472,15 @@ test("connecting Gmail to send never starts reading mail", async () => {
   const { seedUser, asUser, seedPending } = setup();
   const a = await seedUser("a");
   await seedPending(a, "gmail");
-  const f = route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "gmail" }]]);
+  const f = route([
+    ["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "gmail" }],
+    ["/execute", { data: { emailAddress: "ann@acme.com" }, error: null, log_id: "log_1" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+  ]);
   expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(true);
-  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/complete_auth"]);
+  // No trigger, and the one tool it may run is the profile lookup, in a session scoped to it alone.
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/complete_auth", "/tool_router/session", "/tool_router/session/trs_1/execute"]);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).tools).toEqual({ gmail: { enable: [GMAIL_TOOLS.profile] } });
   expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
     expect.objectContaining({ key: "gmail", connected: true, capture: false }),
   );

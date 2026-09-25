@@ -7,6 +7,7 @@ import {
   isPublicChannel,
   mayBePublic,
   readEnvelope,
+  readGmailProfile,
   readHistoryText,
   readWhoami,
   slackFact,
@@ -156,4 +157,14 @@ test("slack: public only for the member's own message in a channel confirmed pub
   assert.equal(mayBePublic({ channel: "G1", author: "U123" }, "U123"), false);
   assert.equal(mayBePublic({ channel: "C1", author: "U777" }, "U123"), false);
   assert.equal(mayBePublic({ channel: "C1", author: null }, "U123"), false);
+});
+
+test("gmail profile: the connected address, flat or nested once, else null", () => {
+  assert.equal(readGmailProfile({ emailAddress: "ann@acme.com", messagesTotal: 3 }), "ann@acme.com");
+  assert.equal(readGmailProfile({ email: "ann@acme.com" }), "ann@acme.com");
+  assert.equal(readGmailProfile({ response_data: { emailAddress: "ann@acme.com" } }), "ann@acme.com");
+  assert.equal(readGmailProfile({ data: { email: "ann@acme.com" } }), "ann@acme.com");
+  assert.equal(readGmailProfile({ emailAddress: "" }), null);
+  assert.equal(readGmailProfile({ response_data: "ann@acme.com" }), null);
+  assert.equal(readGmailProfile({}), null);
 });

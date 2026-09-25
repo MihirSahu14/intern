@@ -119,6 +119,99 @@ test("a missing MODEL_API_KEY fails the run through run.go with setup copy, no b
   expect(f).not.toHaveBeenCalled();
 });
 
+/** The model, stubbed: one SSE stream carrying `report`. Returns the fetch mock, whose body holds the prompt. */
+function stubModel(report: string) {
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  const frames = [{ choices: [{ delta: { content: report } }] }, { usage: { prompt_tokens: 100, completion_tokens: 50 } }];
+  const sse = frames.map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n";
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => new Response(sse));
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+const promptOf = (f: ReturnType<typeof stubModel>) => JSON.parse(String(f.mock.calls[0][1]?.body)).messages[0].content as string;
+
+const ASKING = [
+  "Drafted what I could.",
+  "```question",
+  '{"question":"Which features?","context":"writing the mail"}',
+  "```",
+  "```fact",
+  '{"title":"Intern drafts, people approve","body":"Nothing sends without approval","kind":"note"}',
+  "```",
+].join("\n");
+
+test("a fresh run that asks parks on its one question", async () => {
+  const f = stubModel(ASKING);
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  expect(promptOf(f)).toContain("```question");
+  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("waiting");
+  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(1);
+});
+
+test("a resumed run never asks again: its question is dropped, the rest still counts", async () => {
+  const f = stubModel(ASKING);
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const parked = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "done", countsTowardCap: true }));
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: userId,
+      task: "mail me\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Who is me? → mine",
+      displayTask: "mail me",
+      status: "queued",
+      resumes: parked,
+      countsTowardCap: true,
+    }),
+  );
+
+  await t.action(internal.run.go, { internId });
+
+  const prompt = promptOf(f);
+  expect(prompt).not.toContain("```question");
+  expect(prompt).toContain("You already asked your one question.");
+  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.get("interns", internId))).toMatchObject({ status: "done", parseOutcome: "none" });
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(1);
+  const logs = await t.run((ctx) => ctx.db.query("logs").collect());
+  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "didn't ask again — one question per brief" }));
+  expect(logs.some((l) => /No question was asked/.test(l.text))).toBe(false);
+});
+
+test("the owner's intern is told who \"me\" is, and the address goes nowhere else", async () => {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("COMPOSIO_VERIFIER_URL", "https://site.test/app");
+  const f = stubModel("Drafted it.");
+  const { t, seedUser } = setup();
+  const userId = await seedUser("ann");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", {
+      userId,
+      connector: "gmail",
+      status: "active",
+      state: "s1",
+      composioAccountId: "ca_1",
+      accountLabel: "ann@acme.com",
+      createdAt: Date.now(),
+    }),
+  );
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail myself", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  expect(promptOf(f)).toContain('YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them — their email is ann@acme.com.');
+  const written = await t.run(async (ctx) => [
+    await ctx.db.query("logs").collect(),
+    await ctx.db.query("facts").collect(),
+    await ctx.db.query("interns").collect(),
+  ]);
+  expect(JSON.stringify(written)).not.toContain("ann@acme.com");
+});
+
 test("the global budget stops everyone", async () => {
   const { t, seedUser, asUser } = setup();
   const as = asUser(await seedUser("a"));

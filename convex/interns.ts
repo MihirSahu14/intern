@@ -234,14 +234,22 @@ export const start = internalMutation({
     }
     // Which of the owner's accounts a draft from this run would really go out through.
     const live: ConnectorKey[] = [];
+    // Who "me" is: the owner's own handle and accounts, for their own run's
+    // prompt only. Never logged, filed or broadcast.
+    const accounts: { label: string; account: string }[] = [];
     for (const c of CONNECTORS) {
-      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) live.push(c.key);
+      const row = isConfigured(c, process.env) ? await activeConnection(ctx, i.ownerId, c.key) : null;
+      if (!row) continue;
+      live.push(c.key);
+      if (row.accountLabel) accounts.push({ label: c.label, account: row.accountLabel });
     }
     // Kept on the run so `finish` can mark a draft briefed as sandbox — its
     // placeholder recipients must never go out unchanged (see outbox.decide).
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION, sendsFrom: live });
     const sendsFrom = CONNECTORS.filter((c) => live.includes(c.key)).map((c) => c.label);
-    return { task: i.task, ownerId: i.ownerId, sendsFrom };
+    const handle = (await ctx.db.get("users", i.ownerId))?.handle;
+    // A question-resumed run already had its one question (see run.go).
+    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed: !!i.resumes };
   },
 });
 
