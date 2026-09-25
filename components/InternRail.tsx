@@ -49,13 +49,8 @@ export default function InternRail({
   const now = useNow(active > 0);
 
   return (
+    // Headed by the cockpit's activity tabs ("mine"), which also carry the running count.
     <section className="flex min-h-0 flex-1 flex-col bg-panel">
-      <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
-        <h2 className="label">interns</h2>
-        {active > 0 ? (
-          <span className="text-faint tabular-nums">{active} running</span>
-        ) : null}
-      </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {interns.length === 0 ? (

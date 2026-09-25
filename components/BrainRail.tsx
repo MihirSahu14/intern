@@ -57,11 +57,6 @@ export default function BrainRail({
 
   return (
     <aside className="flex min-h-0 w-[236px] shrink-0 flex-col border-r border-line bg-panel">
-      <Section title="brain">
-        <Row k="nodes"><span className="text-dim tabular-nums">{graph.nodes.length}</span></Row>
-        <Row k="edges"><span className="text-dim tabular-nums">{graph.edges.length}</span></Row>
-      </Section>
-
       <Section title="accounts">
         {connectors.map((c) => (
           <div key={c.key}>

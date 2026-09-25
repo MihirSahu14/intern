@@ -12,10 +12,8 @@ const ago = (at: number) => {
 export default function Feed() {
   const events = useQuery(api.community.feed, {});
   return (
-    <section className="flex max-h-[40%] min-h-0 shrink-0 flex-col border-b border-line bg-panel">
-      <header className="flex h-8 shrink-0 items-center border-b border-line px-3">
-        <h2 className="label">community</h2>
-      </header>
+    // Headed by the cockpit's activity tabs ("everyone").
+    <section className="flex min-h-0 flex-1 flex-col bg-panel">
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!events?.length ? (
           <p className="p-3 text-faint">nobody yet. you&rsquo;re first.</p>

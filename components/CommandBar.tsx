@@ -52,20 +52,17 @@ export default function CommandBar({
   };
 
   return (
-    // Always a dark terminal inset, in both themes — see the
-    // `--color-term-*` tokens in app/globals.css. Every colour class below
-    // is one of those, not the theme-following border-line/bg-panel/etc.
-    <div style={{ colorScheme: "dark" }} className="flex h-10 shrink-0 items-center gap-2 border-t border-term-line bg-term-panel px-3">
+    // The primary control: it sits at the top of the centre column, so it
+    // follows the theme rather than the terminal's dark inset.
+    <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
       <span
-        className={mode === "live" ? "text-term-ok" : "text-term-warn"}
+        className={mode === "live" ? "text-ok" : "text-warn"}
         title={mode === "live" ? "brain connected" : "simulated brain"}
       >
         {mode === "live" ? "▲" : "◇"}
       </span>
-      <span className="text-term-faint">intern</span>
-      <span className="text-term-line-2">/</span>
-      <span className="text-term-faint">{busy ? `${busy} working` : "idle"}</span>
-      <span className="text-term-fg">❯</span>
+      <span className="text-faint">{busy ? `${busy} working` : "idle"}</span>
+      <span className="text-fg">❯</span>
       <input
         ref={input}
         value={value}
@@ -90,13 +87,14 @@ export default function CommandBar({
         }}
         spellCheck={false}
         autoComplete="off"
-        placeholder="brief an intern, e.g. draft a Slack post introducing Intern   ( / to focus )"
-        className="min-w-0 flex-1 bg-transparent text-term-fg placeholder:text-term-faint/70"
+        placeholder="brief an intern, e.g. Post in #all-intern-community: hi from Intern"
+        title="/ to focus"
+        className="min-w-0 flex-1 bg-transparent py-1 text-fg placeholder:text-faint/70"
       />
       <button
         type="button"
         onClick={submit}
-        className="shrink-0 border border-term-line px-2 py-0.5 text-term-faint transition-colors hover:border-term-line-2 hover:text-term-fg"
+        className="shrink-0 border border-accent/50 px-2 py-0.5 text-accent transition-colors hover:bg-accent/10"
       >
         run ⏎
       </button>

@@ -17,8 +17,9 @@ import type { FactKind } from "@/lib/types";
  * Tags, a subject and an "attach to the selected node" toggle used to be
  * collected here and silently dropped on the way to the mutation.
  *
- * Collapsed to a single line at rest. The panel below it is where interns are
- * stopped, and that has to stay the loudest thing in the column.
+ * Collapsed to a single line at rest, at the foot of the right rail: the
+ * questions and drafts above it are what stops interns, and those have to stay
+ * the loudest things in the column.
  */
 
 const KINDS: FactKind[] = [
@@ -84,7 +85,7 @@ export default function Teach({
 
   if (!open) {
     return (
-      <section className="shrink-0 border-b border-line bg-panel">
+      <section className="shrink-0 border-t border-line bg-panel">
         <button
           type="button"
           onClick={() => setOpen(true)}
@@ -99,7 +100,7 @@ export default function Teach({
   }
 
   return (
-    <section className="shrink-0 border-b border-line bg-panel">
+    <section className="shrink-0 border-t border-line bg-panel">
       <header className="flex h-8 shrink-0 items-center justify-between border-b border-line px-3">
         <h2 className="label">add a fact</h2>
         <button

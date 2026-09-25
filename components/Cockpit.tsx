@@ -98,7 +98,9 @@ export default function Cockpit({ me }: { me: Me }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hidden, setHidden] = useState<Set<NodeKind>>(new Set());
-  const [termHeight, setTermHeight] = useState(280);
+  const [view, setView] = useState<"brain" | "log">("brain");
+  // null until the member picks one; until then it follows whether they have interns.
+  const [activity, setActivity] = useState<"mine" | "everyone" | null>(null);
 
   const localSeq = useRef(0);
   const echo = useCallback((level: LogLevel, text: string) => {
@@ -250,11 +252,14 @@ export default function Cockpit({ me }: { me: Me }) {
   );
 
   // --- actions -------------------------------------------------------------
+  // Every brief lands you on its log. On failure the filter clears so the error line shows.
   const spawn = useCallback(
     async (task: string) => {
+      setView("log");
       try {
-        await spawnM({ task });
+        setFilter(await spawnM({ task }));
       } catch (err) {
+        setFilter(null);
         echo("err", why(err));
       }
     },
@@ -473,25 +478,21 @@ export default function Cockpit({ me }: { me: Me }) {
 
   const mine = interns.filter((i) => i.ownerId === me.userId);
 
-  // --- terminal resize: keep the existing `dragging` ref + useEffect block unchanged ---
-  const dragging = useRef(false);
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      const h = window.innerHeight - e.clientY - 40;
-      setTermHeight(Math.max(90, Math.min(window.innerHeight - 220, h)));
-    };
-    const onUp = () => {
-      dragging.current = false;
-      document.body.style.userSelect = "";
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, []);
+  const running = mine.filter((i) => i.status === "running" || i.status === "queued").length;
+  const activityTab = activity ?? (mine.length ? "mine" : "everyone");
+
+  // The command bar's replies (help, errors, approve…) are unscoped lines, so
+  // show the whole stream; a brief then narrows it to the new intern.
+  const submit = (raw: string) => {
+    setView("log");
+    setFilter(null);
+    run(raw);
+  };
+
+  const pickIntern = (id: string | null) => {
+    setFilter(id);
+    if (id) setView("log");
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -512,62 +513,10 @@ export default function Cockpit({ me }: { me: Me }) {
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="relative min-h-0 flex-1">
-            <BrainGraph
-              graph={graph}
-              selectedId={selectedId}
-              onSelect={select}
-              query={query}
-              hidden={hidden}
-              activeIds={activeIds}
-            />
-            <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
-              <div className="pointer-events-auto flex items-center gap-2 border border-line bg-panel/90 px-2 py-1 backdrop-blur">
-                <span className="text-faint">⌕</span>
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="filter nodes"
-                  spellCheck={false}
-                  className="w-44 bg-transparent placeholder:text-faint/70"
-                />
-                {query ? (
-                  <button
-                    type="button"
-                    onClick={() => setQuery("")}
-                    className="text-faint hover:text-fg"
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </div>
-              <div className="border border-line bg-panel/90 px-2 py-1 text-faint backdrop-blur">
-                {graph.nodes.length} nodes · {graph.edges.length} edges
-              </div>
-            </div>
-          </div>
-
-          <div
-            onMouseDown={() => {
-              dragging.current = true;
-              document.body.style.userSelect = "none";
-            }}
-            className="h-[5px] shrink-0 cursor-row-resize border-t border-line bg-panel transition-colors hover:bg-line-2"
-          />
-
-          <div style={{ height: termHeight }} className="flex min-h-0 shrink-0">
-            <div className="flex min-h-0 flex-1 flex-col">
-              <Terminal
-                log={log}
-                interns={interns}
-                filter={filter}
-                onFilter={setFilter}
-              />
-            </div>
-          </div>
+          <CommandBar onSubmit={submit} mode="live" busy={activeIds.length} />
 
           {mine.length === 0 ? (
-            <div className="flex shrink-0 flex-wrap gap-2 border-t border-line bg-panel px-3 py-2">
+            <div className="flex shrink-0 flex-wrap gap-2 border-b border-line bg-panel px-3 py-2">
               <span className="text-faint">try:</span>
               {EXAMPLES.map((e) => (
                 <button key={e} type="button" onClick={() => void spawn(e)} className="border border-line px-2 text-dim hover:border-line-2 hover:text-fg">
@@ -577,11 +526,56 @@ export default function Cockpit({ me }: { me: Me }) {
             </div>
           ) : null}
 
-          <CommandBar onSubmit={run} mode="live" busy={activeIds.length} />
+          <Tabs tabs={["brain", "log"]} value={view} onChange={setView} />
+
+          {/* Both stay mounted so the graph keeps its layout and the log its scroll. */}
+          <div className="relative min-h-0 flex-1">
+            <div className={`absolute inset-0 ${view === "brain" ? "" : "invisible"}`}>
+              <BrainGraph
+                graph={graph}
+                selectedId={selectedId}
+                onSelect={select}
+                query={query}
+                hidden={hidden}
+                activeIds={activeIds}
+              />
+              <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
+                <div className="pointer-events-auto flex items-center gap-2 border border-line bg-panel/90 px-2 py-1 backdrop-blur">
+                  <span className="text-faint">⌕</span>
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="filter nodes"
+                    spellCheck={false}
+                    className="w-44 bg-transparent placeholder:text-faint/70"
+                  />
+                  {query ? (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      className="text-faint hover:text-fg"
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </div>
+                <div className="border border-line bg-panel/90 px-2 py-1 text-faint backdrop-blur">
+                  {graph.nodes.length} nodes · {graph.edges.length} edges
+                </div>
+              </div>
+            </div>
+            <div className={`absolute inset-0 flex flex-col ${view === "log" ? "" : "invisible"}`}>
+              <Terminal
+                log={log}
+                interns={interns}
+                filter={filter}
+                onFilter={setFilter}
+              />
+            </div>
+          </div>
         </main>
 
-        <aside className="flex min-h-0 w-[268px] shrink-0 flex-col border-l border-line">
-          <Teach onTeach={teach} />
+        <aside className="flex min-h-0 w-[268px] shrink-0 flex-col overflow-y-auto border-l border-line">
           <Questions
             questions={questions}
             onAnswer={answer}
@@ -594,15 +588,27 @@ export default function Cockpit({ me }: { me: Me }) {
             onResend={(id) => void resend(id)}
             onConfirmUnsent={(id) => void confirmUnsent(id)}
           />
-          <Feed />
-          <InternRail
-            interns={interns}
-            filter={filter}
-            onFilter={setFilter}
-            onKill={kill}
-            onRetry={retry}
-            mineId={me.userId}
-          />
+          <section className="flex min-h-40 flex-1 flex-col bg-panel">
+            <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line pr-3">
+              <Tabs tabs={["mine", "everyone"]} value={activityTab} onChange={setActivity} bare />
+              {activityTab === "mine" && running > 0 ? (
+                <span className="ml-auto text-faint tabular-nums">{running} running</span>
+              ) : null}
+            </header>
+            {activityTab === "mine" ? (
+              <InternRail
+                interns={mine}
+                filter={filter}
+                onFilter={pickIntern}
+                onKill={kill}
+                onRetry={retry}
+                mineId={me.userId}
+              />
+            ) : (
+              <Feed />
+            )}
+          </section>
+          <Teach onTeach={teach} />
         </aside>
       </div>
     </div>
@@ -643,5 +649,33 @@ function Header({ me, interns, onDeleteMine }: { me: Me; interns: Intern[]; onDe
         <button type="button" onClick={() => void signOut()} className="hover:text-fg" title="sign out">⏻</button>
       </div>
     </header>
+  );
+}
+
+/** A row of lower-case tabs; `bare` drops the strip's own border and background for use inside a header. */
+function Tabs<T extends string>({
+  tabs,
+  value,
+  onChange,
+  bare,
+}: {
+  tabs: T[];
+  value: T;
+  onChange: (t: T) => void;
+  bare?: boolean;
+}) {
+  return (
+    <div className={`flex h-8 shrink-0 items-center gap-1 px-2 ${bare ? "" : "border-b border-line bg-panel"}`}>
+      {tabs.map((t) => (
+        <button
+          key={t}
+          type="button"
+          onClick={() => onChange(t)}
+          className={`px-2 py-0.5 transition-colors ${value === t ? "bg-raised text-fg" : "text-faint hover:text-fg"}`}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
   );
 }
