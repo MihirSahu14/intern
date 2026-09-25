@@ -24,6 +24,7 @@ const CASES: [string, Expect][] = [
   ["Write a follow-up email to someone who asked what Intern does", "action"],
   ["Email a prospect a two-line intro to Intern", "action"],
   ["Post in #general that the brain now has a community feed", "action"],
+  ["Post in #general: hi from Intern", "action"],
   ["Draft a Slack message thanking the team for testing", "action"],
   ["Write an email inviting a friend to try the public brain", "action"],
   ["Draft a short Slack update: approvals are sandbox-only", "action"],

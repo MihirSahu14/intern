@@ -2074,3 +2074,35 @@ test("purge also deletes the account a still-pending link made at Composio", asy
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/ca_7?revoke_on_delete=true"]);
 });
+
+test("the graph shows a question-and-answer chain as one intern, and no answer facts", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const root = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: a, task: "Post in #general: hi", status: "done", countsTowardCap: true }),
+  );
+  const resumed = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "Post in #general: hi\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Which channel? → #general",
+      displayTask: "Post in #general: hi",
+      resumes: root,
+      status: "running",
+      countsTowardCap: true,
+    }),
+  );
+  await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "Which channel?", body: "#general", text: "Which channel?\n#general", kind: "answer", ownerId: a, internId: root, visibility: "owner" }),
+  );
+  await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "Team says hi in #general", body: "", text: "Team says hi in #general\n", kind: "note", ownerId: a, internId: resumed }),
+  );
+
+  const { nodes, edges } = await asUser(a).query(api.facts.graph, {});
+  const interns = nodes.filter((n) => n.kind === "intern");
+  expect(interns).toHaveLength(1);
+  expect(interns[0]).toMatchObject({ id: root, label: "Post in #general: hi", detail: "running" });
+  expect(nodes.some((n) => n.label === "Which channel?")).toBe(false);
+  const note = nodes.find((n) => n.label === "Team says hi in #general")!;
+  expect(edges).toContainEqual({ source: root, target: note.id, rel: "filed" });
+});

@@ -12,7 +12,21 @@ and never ask for or repeat anyone's real contact details.`;
 
 /** Said instead of SANDBOX once the member has connected an account a draft can go out through. */
 const live = (labels: string[]) =>
-  `Drafts go out for real from ${labels.join(" and ")} once the person approves. Use real recipients only if the task names them; never invent an address.`;
+  `Drafts go out for real from ${labels.join(" and ")} once the person approves, from their own
+connected account. The sender is settled; never ask about it. Use real recipients only if the task names them; never invent an address.`;
+
+/** Heads the answers a resumed run was given, so the prompt can call them settled. */
+const ANSWERED = "ANSWERS YOU WERE GIVEN";
+
+/**
+ * The task a question resumes with: the original ask, then every answer so far
+ * as one flat list. Nesting each resume inside the last ("You asked … Original
+ * task: You asked …") read to the model as a pile of open questions.
+ */
+export function resumeTask(prior: string, question: string, answer: string): string {
+  const head = prior.includes(ANSWERED) ? prior : `${prior}\n\n${ANSWERED} (settled, do not ask again):`;
+  return `${head}\n- ${question.trim()} → ${answer.trim()}`;
+}
 
 export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = []): string {
   const learned = recalled.length
@@ -28,8 +42,10 @@ ${learned}
 ${sendsFrom.length ? live(sendsFrom) : SANDBOX}
 
 You have no browser and no tools. Work from what the brain gave you above and
-what you already know. Do not invent people, systems, dates or numbers. If a
-detail matters and you do not have it, ask rather than filling it in.
+what you already know. Do not invent people, systems, dates or numbers.
+
+The TASK outranks the brain: when they disagree (a different channel, a
+different tone), follow the task and do not ask.
 
 Write a short report of what you concluded. Plain prose, no headings.
 
@@ -52,14 +68,21 @@ message), draft it as exactly one fenced block and a human approves it:
 For Slack the channel goes in "to" and there is no subject. Always "to", never
 "channel".
 
-If something the task left out cannot be resolved from what you were given, do
-NOT pick the likely one. Stop and ask, with exactly one fenced block:
+Ask only when you are genuinely blocked: the draft would need a fact you would
+otherwise have to invent (who it goes to when a real send names no one, a price,
+a date, what "the thing" is). Then do NOT pick the likely one. Stop and ask, with
+exactly one fenced block:
 
 \`\`\`question
 {"question":"the one thing you need answered","context":"what you were doing"}
 \`\`\`
 
-At most one question per run, and only when genuinely blocked.`;
+Never ask to confirm intent, tone, wording, length or who sends it: make a
+sensible choice, say so in one line of the report, and draft. The person reads
+and edits every draft before it goes out. Anything under ${ANSWERED} is settled;
+never ask about it again.
+
+At most one question per run.`;
 }
 
 /** FNV-1a of the template itself, base36. */
