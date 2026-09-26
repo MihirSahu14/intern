@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as broadcast from "../broadcast.js";
 import type * as community from "../community.js";
 import type * as connections from "../connections.js";
+import type * as crons from "../crons.js";
 import type * as documents from "../documents.js";
 import type * as facts from "../facts.js";
 import type * as http from "../http.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   broadcast: typeof broadcast;
   community: typeof community;
   connections: typeof connections;
+  crons: typeof crons;
   documents: typeof documents;
   facts: typeof facts;
   http: typeof http;

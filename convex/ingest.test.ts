@@ -716,3 +716,100 @@ test("an upload over 5 MB, or one that isn't text, is refused", async () => {
   await settle(t);
   expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Upload a markdown, text or PDF file." });
 });
+
+// --- GitHub ------------------------------------------------------------------
+
+/** GitHub's REST API for acme/site, shaped as docs.github.com shows it (Task 7 Step 1). */
+function stubGithub(o: { private?: boolean } = {}) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
+    if (url.endsWith("/repos/acme/site/readme")) return new Response("# Site\n\nThe marketing site.");
+    if (url.includes("/repos/acme/site/issues")) {
+      return Response.json([
+        {
+          number: 2,
+          title: "Add pricing page",
+          body: "Per seat.",
+          html_url: "https://github.com/acme/site/pull/2",
+          created_at: "2026-09-20T10:00:00Z",
+          user: { login: "ann" },
+          pull_request: { url: "https://api.github.com/repos/acme/site/pulls/2" },
+        },
+        { number: 1, title: "Footer broken", body: null, html_url: "https://github.com/acme/site/issues/1", created_at: "2026-09-19T10:00:00Z", user: { login: "bo" } },
+      ]);
+    }
+    if (url.endsWith("/repos/acme/site")) {
+      return Response.json({
+        full_name: "acme/site",
+        html_url: "https://github.com/acme/site",
+        private: !!o.private,
+        visibility: o.private ? "private" : "public",
+      });
+    }
+    return new Response("{}", { status: 404 });
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+test("a public repo's README, issues and PRs become public passages, whatever 'keep private' said", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const f = stubGithub();
+  const sourceId = await asUser(a).mutation(api.sources.addLink, { input: "https://github.com/acme/site", private: true });
+  await settle(t);
+  const rows = await allPassages(t);
+  expect(rows.map((p) => p.externalId).sort()).toEqual(["issue:1", "pr:2", "readme"]);
+  expect(rows.find((p) => p.externalId === "pr:2")).toMatchObject({
+    text: "PR #2: Add pricing page\n\nPer seat.",
+    author: "ann",
+    visibility: "public",
+    ownerId: a,
+  });
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({
+    kind: "github_repo",
+    label: "acme/site",
+    externalId: "acme/site",
+    visibility: "public",
+    status: "active",
+  });
+  expect(new Headers(f.mock.calls[0][1]?.headers).get("authorization")).toBe("Bearer github_pat_test");
+});
+
+test("a private repo is refused", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubGithub({ private: true });
+  const sourceId = await asUser(a).mutation(api.sources.addLink, { input: "acme/site", private: false });
+  await settle(t);
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Only public repos can be added." });
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("without a token GitHub isn't set up yet; with one, a repo is added once", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const add = (input: string) => asUser(a).mutation(api.sources.addLink, { input, private: false });
+  await expect(add("acme/site")).rejects.toThrow(/not set up yet/);
+  expect(await t.query(api.sources.setup, {})).toMatchObject({ github: false });
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  stubGithub();
+  expect(await t.query(api.sources.setup, {})).toMatchObject({ github: true });
+  await add("acme/site");
+  await expect(add("ACME/Site")).rejects.toThrow(/already in the brain/);
+  await settle(t);
+});
+
+test("the daily refresh reads every repo again", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedSource } = setup();
+  await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site" });
+  await seedSource({ kind: "github_repo", label: "acme/old", externalId: "acme/old", status: "removed" });
+  const f = stubGithub();
+  await t.action(internal.ingest.refreshRepos, {});
+  await settle(t);
+  expect(f.mock.calls.some(([url]) => url.endsWith("/repos/acme/site"))).toBe(true);
+  expect(f.mock.calls.some(([url]) => url.includes("/repos/acme/old"))).toBe(false);
+  expect(await allPassages(t)).toHaveLength(3);
+});

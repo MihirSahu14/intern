@@ -1,9 +1,10 @@
 import { ConvexError, v } from "convex/values";
 import { SOURCES_PER_DAY, dayStart, sourceBlocked } from "../lib/caps.ts";
+import { type RepoPath, repoPath } from "../lib/github.ts";
 import { UPLOAD_MAX_BYTES, passageFact, parseCitations, urlProblem } from "../lib/ingest.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, internalMutation, internalQuery, mutation } from "./_generated/server";
+import { type MutationCtx, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { capExempt, requireMember, slackMember, visibleTo } from "./access";
 import { factCapBlocked, insertFact } from "./facts";
 
@@ -231,14 +232,31 @@ export const get = internalQuery({
   handler: async (ctx, { sourceId }) => await ctx.db.get("sources", sourceId),
 });
 
-/** A read that failed, with a reason the member can act on. Passages already read stay. */
+/** A read that failed, with a reason the member can act on. `clear` also drops its passages (a repo gone private). */
 export const fail = internalMutation({
-  args: { sourceId: v.id("sources"), error: v.string() },
+  args: { sourceId: v.id("sources"), error: v.string(), clear: v.optional(v.boolean()) },
   handler: async (ctx, a) => {
     const s = await ctx.db.get("sources", a.sourceId);
-    if (s && s.status !== "removed") await ctx.db.patch("sources", s._id, { status: "failed", error: a.error.slice(0, 200) });
+    if (!s || s.status === "removed") return null;
+    if (a.clear) await clearPassages(ctx, s._id);
+    await ctx.db.patch("sources", s._id, { status: "failed", error: a.error.slice(0, 200) });
     return null;
   },
+});
+
+/** Every repo the daily refresh reads again: active or failed, never removed. ponytail: first 500. */
+export const repos = internalQuery({
+  args: {},
+  handler: async (ctx): Promise<Id<"sources">[]> =>
+    (await ctx.db.query("sources").withIndex("by_kind_and_externalId", (q) => q.eq("kind", "github_repo")).take(500))
+      .filter((s) => s.status !== "removed")
+      .map((s) => s._id),
+});
+
+/** What this deployment can read, for the rail. Never a secret: only whether it's on. */
+export const setup = query({
+  args: {},
+  handler: async () => ({ github: !!process.env.GITHUB_TOKEN }),
 });
 
 /** An upload's id is accepted only this long after the file landed. */
@@ -257,11 +275,37 @@ async function assertCanAdd(ctx: MutationCtx, ownerId: Id<"users">) {
   if (blocked) throw new ConvexError(blocked);
 }
 
-/** A link a member pastes: a web page, plain text or markdown. Read in the background by documents.readUrl. */
+/** A public GitHub repo: public to everyone, one per repo across the community. Checked public each time it's read (ingest.syncRepo). */
+async function addRepo(ctx: MutationCtx, ownerId: Id<"users">, p: RepoPath): Promise<Id<"sources">> {
+  if (!process.env.GITHUB_TOKEN) throw new ConvexError("GitHub sources are not set up yet.");
+  const externalId = `${p.owner}/${p.repo}`.toLowerCase();
+  const rows = await ctx.db
+    .query("sources")
+    .withIndex("by_kind_and_externalId", (q) => q.eq("kind", "github_repo").eq("externalId", externalId))
+    .take(20);
+  if (rows.some((s) => s.status !== "removed")) throw new ConvexError("That repo is already in the brain.");
+  await assertCanAdd(ctx, ownerId);
+  const sourceId = await ctx.db.insert("sources", {
+    kind: "github_repo",
+    label: `${p.owner}/${p.repo}`,
+    url: `https://github.com/${p.owner}/${p.repo}`,
+    externalId,
+    ownerId,
+    visibility: "public",
+    status: "active",
+  });
+  await ctx.scheduler.runAfter(0, internal.ingest.syncRepo, { sourceId });
+  return sourceId;
+}
+
+/** A link a member pastes: a public GitHub repo, a web page, plain text or markdown. Read in the background. */
 export const addLink = mutation({
   args: { input: v.string(), private: v.boolean() },
   handler: async (ctx, a): Promise<Id<"sources">> => {
     const user = await requireMember(ctx);
+    // `owner/repo`, or a github.com link to one, is a repo; "keep private" doesn't apply.
+    const repo = repoPath(a.input);
+    if (repo) return await addRepo(ctx, user._id, repo);
     const problem = urlProblem(a.input);
     if (problem) throw new ConvexError(problem);
     const url = new URL(a.input.trim());

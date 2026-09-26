@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { ISSUE_PAGES, ISSUE_PAGE_SIZE, githubHeaders, issuesUrl, readIssues, readRepo, readmePassages, readmeUrl, repoPath, repoUrl } from "../lib/github.ts";
 import { BACKFILL_DAYS } from "../lib/ingest.ts";
 import { HISTORY_DELAY_MS, HISTORY_PAGE, SlackError, readChannels, readHistory, slackApi, slackPassage } from "../lib/slack.ts";
 import { internal } from "./_generated/api";
@@ -90,6 +91,60 @@ export const backfillChannel = internalAction({
       await ctx.runMutation(internal.sources.fail, { sourceId, error: "Couldn't read this channel's history." });
       await next(rest);
     }
+    return null;
+  },
+});
+
+/**
+ * A repo's README and its latest 200 issues and PRs, one passage each.
+ * Checked public on every read: one that has gone private since is failed
+ * and its passages cleared.
+ */
+export const syncRepo = internalAction({
+  args: { sourceId: v.id("sources") },
+  handler: async (ctx, { sourceId }) => {
+    const src: Doc<"sources"> | null = await ctx.runQuery(internal.sources.get, { sourceId });
+    const path = src ? repoPath(src.externalId) : null;
+    if (!src || src.kind !== "github_repo" || src.status === "removed" || !path) return null;
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) {
+      await ctx.runMutation(internal.sources.fail, { sourceId, error: "GitHub sources are not set up yet." });
+      return null;
+    }
+    try {
+      const get = (url: string, accept?: string) => fetch(url, { headers: githubHeaders(token, accept) });
+      const repoRes = await get(repoUrl(path));
+      // A private repo the token can't see is a 404, which reads the same way.
+      const repo = repoRes.ok ? readRepo(await repoRes.json()) : null;
+      if (!repo?.isPublic) {
+        await ctx.runMutation(internal.sources.fail, { sourceId, error: "Only public repos can be added.", clear: true });
+        return null;
+      }
+      const readmeRes = await get(readmeUrl(path), "application/vnd.github.raw+json");
+      const passages = readmeRes.ok ? readmePassages(await readmeRes.text(), repo.htmlUrl, Date.now()) : [];
+      for (let page = 1; page <= ISSUE_PAGES; page++) {
+        const res = await get(issuesUrl(path, page));
+        if (!res.ok) throw new Error(`issues page ${page}: ${res.status}`);
+        const rows: unknown = await res.json();
+        passages.push(...readIssues(rows));
+        if (!Array.isArray(rows) || rows.length < ISSUE_PAGE_SIZE) break;
+      }
+      await ctx.runMutation(internal.sources.write, { sourceId, label: repo.fullName, passages, synced: true });
+    } catch (err) {
+      console.log(`github: ${src.externalId} failed: ${errText(err)}`);
+      await ctx.runMutation(internal.sources.fail, { sourceId, error: "Couldn't read this repo from GitHub." });
+    }
+    return null;
+  },
+});
+
+/** Daily, from crons.ts: every repo read again, ten seconds apart (four calls each, far under 5,000 an hour). */
+export const refreshRepos = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    if (!process.env.GITHUB_TOKEN) return null;
+    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.repos, {});
+    for (const [i, sourceId] of ids.entries()) await ctx.scheduler.runAfter(i * 10_000, internal.ingest.syncRepo, { sourceId });
     return null;
   },
 });
