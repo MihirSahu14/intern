@@ -124,6 +124,9 @@ export class SlackError extends Error {
   }
 }
 
+/** A stuck Web API call (the network, not a 429) can't hold the event handler open indefinitely. */
+export const SLACK_API_TIMEOUT_MS = 5_000;
+
 /** One Web API call with the bot token, as a form-encoded POST. */
 export async function slackApi(
   token: string,
@@ -136,6 +139,7 @@ export async function slackApi(
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
     body,
+    signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
   });
   if (res.status === 429) throw new SlackError(`${method}: rate limited`, Number(res.headers.get("retry-after")) || 30);
   const json = obj(await res.json().catch(() => null));

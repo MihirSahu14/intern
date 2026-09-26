@@ -154,6 +154,16 @@ export default defineSchema({
   /** Slack display names, one row per Slack user, so each is asked for once. */
   slackUsers: defineTable({ slackUserId: v.string(), name: v.string() }).index("by_slackUserId", ["slackUserId"]),
 
+  /**
+   * A passage deleted in Slack, kept so a retried "message" delivery (the
+   * original post, redelivered after the delete already landed) can't bring
+   * it back. Slack channel sources are never removed, so nothing prunes this.
+   */
+  slackTombstones: defineTable({ sourceId: v.id("sources"), externalId: v.string() }).index(
+    "by_sourceId_and_externalId",
+    ["sourceId", "externalId"],
+  ),
+
   interns: defineTable({
     ownerId: v.id("users"),
     /** The working prompt this run reads and recalls against — may quote a private Q&A. */

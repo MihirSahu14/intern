@@ -249,29 +249,38 @@ const envelope = (event: Record<string, unknown>, team = "T1") => ({
 });
 const message = (o: Record<string, unknown> = {}, team = "T1") =>
   envelope({ type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "We ship on Fridays\nbecause QA is Thursday", ts: TS, ...o }, team);
-const reaction = (name: string, user: string) =>
-  envelope({ type: "reaction_added", user, reaction: name, item: { type: "message", channel: "C1", ts: TS }, item_user: "U1", event_ts: "1758800300.000400" });
-const edited = (text: string) =>
-  envelope({
-    type: "message",
-    subtype: "message_changed",
-    channel: "C1",
-    channel_type: "channel",
-    message: { type: "message", user: "U1", text, ts: TS },
-    previous_message: { type: "message", user: "U1", text: "old", ts: TS },
-    ts: "1758800100.000200",
-  });
-const deleted = () =>
-  envelope({
-    type: "message",
-    subtype: "message_deleted",
-    channel: "C1",
-    channel_type: "channel",
-    hidden: true,
-    deleted_ts: TS,
-    previous_message: { type: "message", user: "U1", text: "old", ts: TS },
-    ts: "1758800200.000300",
-  });
+const reaction = (name: string, user: string, team = "T1") =>
+  envelope(
+    { type: "reaction_added", user, reaction: name, item: { type: "message", channel: "C1", ts: TS }, item_user: "U1", event_ts: "1758800300.000400" },
+    team,
+  );
+const edited = (text: string, team = "T1") =>
+  envelope(
+    {
+      type: "message",
+      subtype: "message_changed",
+      channel: "C1",
+      channel_type: "channel",
+      message: { type: "message", user: "U1", text, ts: TS },
+      previous_message: { type: "message", user: "U1", text: "old", ts: TS },
+      ts: "1758800100.000200",
+    },
+    team,
+  );
+const deleted = (team = "T1") =>
+  envelope(
+    {
+      type: "message",
+      subtype: "message_deleted",
+      channel: "C1",
+      channel_type: "channel",
+      hidden: true,
+      deleted_ts: TS,
+      previous_message: { type: "message", user: "U1", text: "old", ts: TS },
+      ts: "1758800200.000300",
+    },
+    team,
+  );
 
 /** Slack's Web API, answered by method. A method's replies are used in order; the last one repeats. */
 function stubSlackApi(replies: Record<string, unknown[]>) {
@@ -453,4 +462,82 @@ test("slack: a member's own Composio capture of the message is adopted, not dupl
   expect((await allPassages(t))[0].promotedFactId).toBe(captured);
   await post(t, deleted());
   expect(await allFacts(t)).toHaveLength(1);
+});
+
+test("slack: a retried delivery can't undo a delete or an edit", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, reaction("brain", "U3"));
+
+  // Deleted, then the original "message" event is redelivered (a retry): it must not come back.
+  await post(t, deleted());
+  expect(await post(t, message())).toBe(200);
+  expect(await allPassages(t)).toHaveLength(0);
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("slack: a retried original message can't revert an edit", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, reaction("brain", "U3"));
+  await post(t, edited("We ship on Thursdays"));
+
+  // The original (pre-edit) "message" event redelivered: the edit stands.
+  expect(await post(t, message())).toBe(200);
+  expect((await allPassages(t))[0].text).toBe("We ship on Thursdays");
+  expect((await allFacts(t))[0]).toMatchObject({ title: "We ship on Thursdays", body: "We ship on Thursdays" });
+});
+
+test("slack: a banned or unconsented linked member's 🧠 promotes nothing", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  const banned = await t.run((ctx) => ctx.db.insert("users", { handle: "x", acceptedAt: Date.now(), bannedAt: Date.now() }));
+  const unconsented = await t.run((ctx) => ctx.db.insert("users", { handle: "y" }));
+  await linkSlack(t, banned, "U2");
+  await linkSlack(t, unconsented, "U4");
+  await post(t, message());
+  await post(t, reaction("brain", "U2"));
+  await post(t, reaction("brain", "U4"));
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("slack: an edit, a delete or a reaction from another team is ignored", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+
+  expect(await post(t, reaction("brain", "U3", "T9"))).toBe(200);
+  expect(await allFacts(t)).toHaveLength(0);
+  await post(t, reaction("brain", "U3"));
+  expect(await allFacts(t)).toHaveLength(1);
+
+  expect(await post(t, edited("hijacked", "T9"))).toBe(200);
+  expect((await allPassages(t))[0].text).toBe("We ship on Fridays\nbecause QA is Thursday");
+
+  expect(await post(t, deleted("T9"))).toBe(200);
+  expect(await allPassages(t)).toHaveLength(1);
+  expect(await allFacts(t)).toHaveLength(1);
+});
+
+test("slack: a validly-signed request with bad JSON is a 400", async () => {
+  slackEnv();
+  const { t } = setup();
+  const body = "{not json";
+  const ts = String(Math.floor(Date.now() / 1000));
+  const res = await t.fetch("/slack/events", {
+    method: "POST",
+    body,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": await slackSignature(SLACK_SECRET, ts, body),
+    },
+  });
+  expect(res.status).toBe(400);
 });

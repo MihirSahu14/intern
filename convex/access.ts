@@ -50,20 +50,31 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
 export const visibleTo = (row: { visibility?: "public" | "owner"; ownerId?: Id<"users"> }, viewer: Id<"users"> | null) =>
   row.visibility !== "owner" || (viewer !== null && row.ownerId === viewer);
 
+async function firstActiveSlackConnection(ctx: QueryCtx, slackUserId: string) {
+  const rows = await ctx.db
+    .query("connections")
+    .withIndex("by_externalUserId", (q) => q.eq("externalUserId", slackUserId))
+    .take(10);
+  return rows.find((c) => c.connector === "slack" && c.status === "active") ?? null;
+}
+
+/**
+ * The member linked to this Slack user id through Composio, regardless of
+ * their standing — even banned or not yet consented. A 🧠 from a linked
+ * account that can't write must promote nothing, never fall through to
+ * anonymous, so callers that decide that check this before `memberProblem`.
+ */
+export async function slackLinkedUser(ctx: QueryCtx, slackUserId: string): Promise<Doc<"users"> | null> {
+  const conn = await firstActiveSlackConnection(ctx, slackUserId);
+  return conn ? await ctx.db.get("users", conn.userId) : null;
+}
+
 /**
  * The member who connected this Slack user id through Composio and may still
  * write to the brain, or null. Maps a community-Slack author to an @handle
  * and a 🧠 to its member.
  */
 export async function slackMember(ctx: QueryCtx, slackUserId: string): Promise<Doc<"users"> | null> {
-  const rows = await ctx.db
-    .query("connections")
-    .withIndex("by_externalUserId", (q) => q.eq("externalUserId", slackUserId))
-    .take(10);
-  for (const c of rows) {
-    if (c.connector !== "slack" || c.status !== "active") continue;
-    const u = await ctx.db.get("users", c.userId);
-    if (u && !memberProblem(u)) return u;
-  }
-  return null;
+  const u = await slackLinkedUser(ctx, slackUserId);
+  return u && !memberProblem(u) ? u : null;
 }

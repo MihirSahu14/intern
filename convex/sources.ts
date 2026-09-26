@@ -160,6 +160,11 @@ export const passageInput = v.object({
  * to a source that was removed (or purged) meanwhile. A passage takes its
  * source's visibility and owner. `label`/`cursor` update the source;
  * `synced` marks a read finished.
+ *
+ * `insertOnly` (the Slack event path): an existing `(sourceId, externalId)`
+ * is left exactly as it is — Slack's own edit/delete events are the only way
+ * that changes — and a tombstoned key (see `slack.forget`) is skipped rather
+ * than recreated, so a retried delivery can neither revert nor resurrect one.
  */
 export const write = internalMutation({
   args: {
@@ -168,6 +173,7 @@ export const write = internalMutation({
     label: v.optional(v.string()),
     cursor: v.optional(v.union(v.string(), v.null())),
     synced: v.optional(v.boolean()),
+    insertOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, a) => {
     const s = await ctx.db.get("sources", a.sourceId);
@@ -180,14 +186,39 @@ export const write = internalMutation({
         .query("passages")
         .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", s._id).eq("externalId", row.externalId))
         .unique();
-      if (existing) await rewritePassage(ctx, existing, row.text, { author: row.author, authorHandle, url: row.url, at: row.at });
-      else await ctx.db.insert("passages", { ...row, authorHandle, sourceId: s._id, visibility: s.visibility, ownerId: s.ownerId });
+      if (existing) {
+        // A lookup that failed this time (Slack API down, no bot token) never
+        // blanks an author already on file; it only ever fills one in.
+        if (!a.insertOnly) {
+          await rewritePassage(ctx, existing, row.text, {
+            ...(row.author !== undefined ? { author: row.author } : {}),
+            authorHandle,
+            url: row.url,
+            at: row.at,
+          });
+        }
+        continue;
+      }
+      if (a.insertOnly) {
+        const gone = await ctx.db
+          .query("slackTombstones")
+          .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", s._id).eq("externalId", row.externalId))
+          .unique();
+        if (gone) continue;
+      }
+      await ctx.db.insert("passages", { ...row, authorHandle, sourceId: s._id, visibility: s.visibility, ownerId: s.ownerId });
     }
-    await ctx.db.patch("sources", s._id, {
-      ...(a.label ? { label: a.label.slice(0, 120) } : {}),
-      ...(a.cursor !== undefined ? { cursor: a.cursor ?? undefined } : {}),
-      ...(a.synced ? { lastSyncedAt: Date.now(), status: "active" as const, error: undefined } : {}),
-    });
+    const patch: Partial<Pick<Doc<"sources">, "label" | "cursor" | "lastSyncedAt" | "status" | "error">> = {};
+    if (a.label) patch.label = a.label.slice(0, 120);
+    if (a.cursor !== undefined) patch.cursor = a.cursor ?? undefined;
+    if (a.synced) {
+      patch.lastSyncedAt = Date.now();
+      patch.status = "active";
+      patch.error = undefined;
+    }
+    // Skipped when there's nothing to patch: a busy channel's every message
+    // would otherwise still write the source row, and contend over it.
+    if (Object.keys(patch).length) await ctx.db.patch("sources", s._id, patch);
     return null;
   },
 });

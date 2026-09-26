@@ -4,7 +4,7 @@ import { readChannelName, readSlackEvent, readUserName, slackApi, slackPassage, 
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type ActionCtx, type QueryCtx, httpAction, internalMutation, internalQuery } from "./_generated/server";
-import { slackMember } from "./access";
+import { memberProblem, slackLinkedUser } from "./access";
 import { factMatches, promotePassage, rewritePassage } from "./sources";
 
 /**
@@ -104,15 +104,33 @@ export const edit = internalMutation({
   },
 });
 
-/** Deleted in Slack means deleted in the brain: the passage, and its promoted fact if nobody has changed it. */
+/**
+ * Deleted in Slack means deleted in the brain: the passage, and its promoted
+ * fact if nobody has changed it. A tombstone stays behind (keyed the same as
+ * the passage was) so a retried "message" delivery — the original post,
+ * redelivered after this delete already landed — can't bring it back; only
+ * `write`'s insert path ever checks it, so it costs nothing elsewhere.
+ */
 export const forget = internalMutation({
   args: { channel: v.string(), ts: v.string() },
   handler: async (ctx, a) => {
-    const p = await passageAt(ctx, a.channel, a.ts);
-    if (!p) return null;
-    const f = p.promotedFactId ? await ctx.db.get("facts", p.promotedFactId) : null;
-    if (f && factMatches(f, p.text)) await ctx.db.delete("facts", f._id);
-    await ctx.db.delete("passages", p._id);
+    const src = await channelSource(ctx, a.channel);
+    if (!src) return null;
+    const externalId = `${a.channel}:${a.ts}`;
+    const p = await ctx.db
+      .query("passages")
+      .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", src._id).eq("externalId", externalId))
+      .unique();
+    if (p) {
+      const f = p.promotedFactId ? await ctx.db.get("facts", p.promotedFactId) : null;
+      if (f && factMatches(f, p.text)) await ctx.db.delete("facts", f._id);
+      await ctx.db.delete("passages", p._id);
+    }
+    const tomb = await ctx.db
+      .query("slackTombstones")
+      .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", src._id).eq("externalId", externalId))
+      .unique();
+    if (!tomb) await ctx.db.insert("slackTombstones", { sourceId: src._id, externalId });
     return null;
   },
 });
@@ -121,17 +139,21 @@ export const forget = internalMutation({
  * 🧠 on a message: a public fact, attributed to the reactor if they're a
  * member who linked this Slack account, owned by nobody otherwise. Filed
  * under the same key a member's own Composio 🧠 uses, so the two never twin.
+ * A reactor linked to a member who may not currently write (banned, not yet
+ * consented) promotes nothing at all — never falls through to anonymous, or
+ * a blocked member's own reaction would credit a stranger.
  */
 export const react = internalMutation({
   args: { channel: v.string(), ts: v.string(), user: v.string() },
   handler: async (ctx, a) => {
     const p = await passageAt(ctx, a.channel, a.ts);
     if (!p) return null;
-    const member = await slackMember(ctx, a.user);
+    const linked = await slackLinkedUser(ctx, a.user);
+    if (linked && memberProblem(linked)) return null;
     await promotePassage(
       ctx,
       p,
-      member ? { ownerId: member._id, visibility: "public", source: `slack:${a.channel}:${a.ts}` } : { visibility: "public" },
+      linked ? { ownerId: linked._id, visibility: "public", source: `slack:${a.channel}:${a.ts}` } : { visibility: "public" },
     );
     return null;
   },
@@ -181,6 +203,13 @@ export const events = httpAction(async (ctx, req) => {
       channel: e.channel,
       name: token ? await channelName(token, e.channel) : undefined,
     }));
-  await ctx.runMutation(internal.sources.write, { sourceId, passages: [slackPassage(e, await authorName(ctx, token, e.user))] });
+  // A new message only ever inserts: a redelivered original after a later
+  // edit or delete must never revert or resurrect it — those are the only
+  // ways an existing Slack passage changes.
+  await ctx.runMutation(internal.sources.write, {
+    sourceId,
+    passages: [slackPassage(e, await authorName(ctx, token, e.user))],
+    insertOnly: true,
+  });
   return done("stored");
 });
