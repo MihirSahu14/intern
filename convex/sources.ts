@@ -1,11 +1,14 @@
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { SOURCES_PER_DAY, dayStart, sourceBlocked } from "../lib/caps.ts";
 import { type RepoPath, repoPath } from "../lib/github.ts";
-import { UPLOAD_MAX_BYTES, passageFact, parseCitations, urlProblem } from "../lib/ingest.ts";
+import { PASSAGE_EXCERPT, UPLOAD_MAX_BYTES, passageFact, parseCitations, urlProblem } from "../lib/ingest.ts";
+import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, internalQuery, mutation, query } from "./_generated/server";
-import { capExempt, requireMember, slackMember, visibleTo } from "./access";
+import { capExempt, ownerView, requireMember, slackMember, visibleTo } from "./access";
+import { broadcast } from "./broadcast";
 import { factCapBlocked, insertFact } from "./facts";
 
 /**
@@ -220,6 +223,15 @@ export const write = internalMutation({
       patch.status = "active";
       patch.error = undefined;
     }
+    // A member's public source is announced on its first read, under the
+    // label it has by then (a page's title). Private ones never are.
+    if (a.synced && !s.lastSyncedAt && s.ownerId && s.visibility === "public") {
+      await broadcast(ctx, {
+        type: "added_source",
+        handle: (await ownerView(ctx, s.ownerId)).handle,
+        label: redactEmails(a.label ?? s.label),
+      });
+    }
     // Skipped when there's nothing to patch: a busy channel's every message
     // would otherwise still write the source row, and contend over it.
     if (Object.keys(patch).length) await ctx.db.patch("sources", s._id, patch);
@@ -376,5 +388,44 @@ export const addUpload = mutation({
     });
     await ctx.scheduler.runAfter(0, internal.documents.readUpload, { sourceId });
     return sourceId;
+  },
+});
+
+/**
+ * A source node's recent passages, for the rail: newest 20, each redacted
+ * (like every graph label) and cut to PASSAGE_EXCERPT, promotable. The id
+ * comes from the client, so the source and every passage go through `visibleTo`.
+ */
+export const passages = query({
+  args: { sourceId: v.id("sources") },
+  handler: async (ctx, { sourceId }) => {
+    const viewer = await getAuthUserId(ctx);
+    const s = await ctx.db.get("sources", sourceId);
+    if (!s || s.status === "removed" || !visibleTo(s, viewer)) return null;
+    const rows = (
+      await ctx.db
+        .query("passages")
+        .withIndex("by_sourceId_and_at", (q) => q.eq("sourceId", sourceId))
+        .order("desc")
+        .take(20)
+    ).filter((p) => visibleTo(p, viewer));
+    return {
+      label: redactEmails(s.label),
+      kind: s.kind,
+      url: s.url ?? null,
+      status: s.status,
+      error: s.error ?? null,
+      syncedAt: s.lastSyncedAt ?? null,
+      mine: viewer !== null && s.ownerId === viewer,
+      passages: rows.map((p) => ({
+        _id: p._id,
+        // Redacted before the cut, so an address split at the edge can't slip through half-shown.
+        text: redactEmails(p.text).slice(0, PASSAGE_EXCERPT),
+        author: p.authorHandle ? `@${p.authorHandle}` : (p.author ?? null),
+        at: p.at,
+        url: p.url ?? null,
+        promoted: !!p.promotedFactId,
+      })),
+    };
   },
 });

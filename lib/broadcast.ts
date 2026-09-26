@@ -10,7 +10,8 @@ export type BroadcastEvent =
   | { type: "taught"; handle: string; title: string }
   | { type: "learned"; handle: string; title: string }
   | { type: "drafted"; handle: string; kind: "email" | "slack" | "calendar" }
-  | { type: "sent"; handle: string; connector: "gmail" | "slack" };
+  | { type: "sent"; handle: string; connector: "gmail" | "slack" }
+  | { type: "added_source"; handle: string; label: string };
 
 /**
  * A member's own words, trimmed, with every link swapped out: the community's
@@ -22,21 +23,23 @@ export type BroadcastEvent =
  * an anchor.
  * ponytail: scheme and www. only; a bare `evil.com` stays text (Slack may still link it).
  */
-const cut = (s: string) => s.replace(/(?:https?:\/\/|www\.)\S+/gi, "[link]").slice(0, 120);
+export const stripLinks = (s: string) => s.replace(/(?:https?:\/\/|www\.)\S+/gi, "[link]").slice(0, 120);
 
 export function broadcastText(e: BroadcastEvent, siteUrl: string): string {
   const what =
     e.type === "joined"
       ? " joined the brain"
       : e.type === "taught"
-        ? ` taught the brain: ${cut(e.title)}`
+        ? ` taught the brain: ${stripLinks(e.title)}`
         : e.type === "learned"
-          ? ` corrected a draft and the brain learned: ${cut(e.title)}`
-          : e.type === "drafted"
-            ? `'s intern finished with ${e.kind === "email" ? "an email" : `a ${e.kind}`} draft`
-            : e.connector === "gmail"
-              ? " sent an email"
-              : " posted in Slack";
+          ? ` corrected a draft and the brain learned: ${stripLinks(e.title)}`
+          : e.type === "added_source"
+            ? ` added a source: ${stripLinks(e.label)}`
+            : e.type === "drafted"
+              ? `'s intern finished with ${e.kind === "email" ? "an email" : `a ${e.kind}`} draft`
+              : e.connector === "gmail"
+                ? " sent an email"
+                : " posted in Slack";
   return `@${e.handle}${what} · ${siteUrl}/u/${encodeURIComponent(e.handle)}`;
 }
 

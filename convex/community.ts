@@ -1,5 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
+import { stripLinks } from "../lib/broadcast.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { query } from "./_generated/server";
 import { ownerView, visibleTo } from "./access";
@@ -9,11 +10,12 @@ export const feed = query({
   args: {},
   handler: async (ctx) => {
     const viewer = await getAuthUserId(ctx);
-    const [interns, facts, approved, sent] = await Promise.all([
+    const [interns, facts, approved, sent, sources] = await Promise.all([
       ctx.db.query("interns").order("desc").take(30),
       ctx.db.query("facts").order("desc").take(30),
       ctx.db.query("actions").withIndex("by_status", (q) => q.eq("status", "approved")).order("desc").take(15),
       ctx.db.query("actions").withIndex("by_status", (q) => q.eq("status", "sent")).order("desc").take(15),
+      ctx.db.query("sources").order("desc").take(15),
     ]);
     const events: { at: number; ownerId: (typeof interns)[number]["ownerId"]; text: string }[] = [
       // A question-resumed `task` quotes the answer; `displayTask` (the
@@ -40,6 +42,12 @@ export const feed = query({
               }]
             : [],
         ),
+      // A member's public source, once it has been read: the line the broadcast posts.
+      ...sources.flatMap((s) =>
+        s.ownerId && s.visibility === "public" && s.status !== "removed" && s.lastSyncedAt
+          ? [{ at: s.lastSyncedAt, ownerId: s.ownerId, text: `added a source: ${redactEmails(stripLinks(s.label))}` }]
+          : [],
+      ),
       ...[...approved, ...sent].map((a) => ({
         at: a.sentAt ?? a.decidedAt ?? a._creationTime,
         ownerId: a.ownerId,
@@ -112,7 +120,8 @@ export const evals = query({
  * One member's public page: what they taught the brain and what their
  * interns did. No private facts, drafts or recipients — this is what any
  * signed-out visitor sees, so it never scopes by viewer. Unknown, unconsented
- * or banned handles are null, and the page says so.
+ * or banned handles are null, and the page says so. Sources: public, not
+ * removed; a private document never shows.
  *
  * ponytail: newest 200 facts filtered to 50 public ones; last 1,000 actions
  * for the counts. Aggregate if anyone outgrows that.
@@ -123,10 +132,11 @@ export const member = query({
     const u = await ctx.db.query("users").withIndex("by_handle", (q) => q.eq("handle", handle)).unique();
     if (!u || !u.acceptedAt || u.bannedAt) return null;
     const joinedAt = u.acceptedAt;
-    const [facts, interns, actions] = await Promise.all([
+    const [facts, interns, actions, sources] = await Promise.all([
       ctx.db.query("facts").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).order("desc").take(200),
       ctx.db.query("interns").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).order("desc").take(50),
       ctx.db.query("actions").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).take(1000),
+      ctx.db.query("sources").withIndex("by_ownerId", (q) => q.eq("ownerId", u._id)).order("desc").take(50),
     ]);
     return {
       handle: u.handle ?? handle,
@@ -142,6 +152,9 @@ export const member = query({
       interns: interns.map((i) => ({ _id: i._id, task: redactEmails(i.displayTask ?? i.task), status: i.status, at: i._creationTime })),
       approved: actions.filter((a) => a.decision === "approved_unedited" || a.decision === "edited").length,
       sent: actions.filter((a) => a.status === "sent").length,
+      sources: sources
+        .filter((s) => s.visibility === "public" && s.status !== "removed")
+        .map((s) => ({ _id: s._id, label: redactEmails(s.label), kind: s.kind, url: s.url ?? null, at: s._creationTime })),
     };
   },
 });

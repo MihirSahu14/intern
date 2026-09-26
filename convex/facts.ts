@@ -161,8 +161,9 @@ export const archive = internalQuery({
  * show only that they exist. Only GitHub handle and avatar are shown for
  * people.
  *
- * ponytail: newest 400 facts / 60 interns / 60 drafts. Paginate if the
- * community outgrows one screen.
+ * ponytail: newest 400 facts / 60 interns / 60 drafts / 60 sources. A
+ * promoted fact whose source fell outside the 60 hangs off whoever promoted
+ * it, or nothing. Paginate if the community outgrows one screen.
  */
 export const graph = query({
   args: {},
@@ -171,6 +172,7 @@ export const graph = query({
     const facts = (await ctx.db.query("facts").order("desc").take(400)).filter((f) => visibleTo(f, viewer));
     const interns = await ctx.db.query("interns").order("desc").take(60);
     const actions = await ctx.db.query("actions").order("desc").take(60);
+    const sources = (await ctx.db.query("sources").order("desc").take(60)).filter((s) => s.status !== "removed" && visibleTo(s, viewer));
 
     type Node = { id: string; label: string; kind: "fact" | "intern" | "action" | "contact" | "source"; weight: number; detail?: string; meta?: Record<string, string | number | null> };
     const nodes = new Map<string, Node>();
@@ -215,14 +217,33 @@ export const graph = query({
       nodes.set(rootId, { id: rootId, label: task.slice(0, 56), kind: "intern", weight: 5, detail: i.status });
       edges.push({ source: await person(root.ownerId), target: rootId, rel: "briefed" });
     }
+    // One node per source; passages are never drawn. A private document
+    // shows only to its owner. Labels are redacted like every other.
+    for (const s of sources) {
+      const key = `src:${s._id}`;
+      nodes.set(key, {
+        id: key,
+        label: redactEmails(s.label).slice(0, 56),
+        kind: "source",
+        weight: 6,
+        detail: `${s.kind.replace("_", " ")} · ${s.status}`,
+      });
+      if (s.ownerId) edges.push({ source: await person(s.ownerId), target: key, rel: "added" });
+    }
     for (const f of facts) {
       // Answers to an intern's questions stay in recall, not on the map.
       if (f.kind === "answer") continue;
       nodes.set(f._id, { id: f._id, label: redactEmails(f.title).slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind } });
+      // A promoted fact hangs off its source while that's on the map, else
+      // off whoever promoted it. Only a fact nobody filed, taught or promoted
+      // is a starter fact: an ownerless 🧠 fact whose passage is gone floats.
+      const from = f.fromPassageId ? await ctx.db.get("passages", f.fromPassageId) : null;
+      const src = from ? `src:${from.sourceId}` : null;
       const filer = f.internId && rootOf(f.internId);
-      if (filer) edges.push({ source: filer, target: f._id, rel: "filed" });
+      if (src && nodes.has(src)) edges.push({ source: src, target: f._id, rel: "from" });
+      else if (filer) edges.push({ source: filer, target: f._id, rel: "filed" });
       else if (f.ownerId) edges.push({ source: await person(f.ownerId), target: f._id, rel: "taught" });
-      else {
+      else if (!f.fromPassageId) {
         nodes.set("src:seed", { id: "src:seed", label: "starter facts", kind: "source", weight: 6 });
         edges.push({ source: "src:seed", target: f._id, rel: "seeded" });
       }

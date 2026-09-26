@@ -842,3 +842,81 @@ test("the daily refresh reads every repo again", async () => {
   expect(f.mock.calls.some(([url]) => url.includes("/repos/acme/old"))).toBe(false);
   expect(await allPassages(t)).toHaveLength(3);
 });
+
+// --- graph, rail, pages, feed, broadcast ---------------------------------------
+
+test("a source is one node; facts promoted from it hang off it; a private one shows only to its owner", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const channel = await seedSource({ kind: "slack_channel", label: "#general", externalId: "C1" });
+  const p = await seedPassage(channel, "We ship on Fridays");
+  await seedPassage(channel, "not promoted, never drawn");
+  await asUser(a).mutation(api.sources.promote, { passageId: p });
+  const factId = (await allFacts(t))[0]._id;
+  // A 🧠 from someone who isn't a member: nobody owns the fact, and it still hangs off its source, not "starter facts".
+  const q = await seedPassage(channel, "QA is Thursday");
+  const orphan = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "QA is Thursday", body: "QA is Thursday", kind: "note", fromPassageId: q, text: "QA is Thursday\nQA is Thursday" }),
+  );
+  const secret = await seedSource({ label: "A's deal notes for ann@acme.com", ownerId: a, visibility: "owner" });
+
+  const theirs = await asUser(b).query(api.facts.graph, {});
+  expect(theirs.nodes.filter((n) => n.kind === "source").map((n) => n.label)).toEqual(["#general"]);
+  expect(theirs.edges).toContainEqual({ source: `src:${channel}`, target: factId, rel: "from" });
+  expect(theirs.edges).toContainEqual({ source: `src:${channel}`, target: orphan, rel: "from" });
+  expect(JSON.stringify(theirs)).not.toMatch(/never drawn|deal notes/);
+
+  const mine = await asUser(a).query(api.facts.graph, {});
+  expect(mine.nodes.find((n) => n.id === `src:${secret}`)?.label).toBe("A's deal notes for [email]");
+  expect(mine.edges).toContainEqual({ source: `user:${a}`, target: `src:${secret}`, rel: "added" });
+});
+
+test("a source's passages are listed for whoever can see them, redacted and cut to 400 characters", async () => {
+  const { seedUser, asUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const doc = await seedSource({ label: "A's notes", ownerId: a, visibility: "owner", lastSyncedAt: Date.UTC(2026, 8, 24) });
+  const p = await seedPassage(doc, `mail ann@acme.com ${"x".repeat(600)}`, { ownerId: a, visibility: "owner" });
+  expect(await asUser(b).query(api.sources.passages, { sourceId: doc })).toBeNull();
+  const view = await asUser(a).query(api.sources.passages, { sourceId: doc });
+  expect(view).toMatchObject({ label: "A's notes", mine: true, status: "active", syncedAt: Date.UTC(2026, 8, 24) });
+  expect(view?.passages).toEqual([
+    { _id: p, text: `mail [email] ${"x".repeat(387)}`, author: null, at: Date.UTC(2026, 8, 18), url: null, promoted: false },
+  ]);
+});
+
+test("member pages list public sources; the feed says who added one, once it's read", async () => {
+  const { t, seedUser, seedSource } = setup();
+  const a = await seedUser("ann");
+  await seedSource({ label: "Handbook", ownerId: a, url: "https://example.com/handbook", lastSyncedAt: Date.now() });
+  await seedSource({ label: "Deal notes", ownerId: a, visibility: "owner", lastSyncedAt: Date.now() });
+  await seedSource({ label: "Gone", ownerId: a, status: "removed", lastSyncedAt: Date.now() });
+  await seedSource({ label: "Still reading", ownerId: a });
+
+  const m = await t.query(api.community.member, { handle: "ann" });
+  expect(m?.sources.map((s) => s.label).sort()).toEqual(["Handbook", "Still reading"]);
+  expect(JSON.stringify(m)).not.toMatch(/Deal notes/);
+  const feed = (await t.query(api.community.feed, {})).map((e) => e.text);
+  expect(feed).toContain("added a source: Handbook");
+  expect(feed.join("\n")).not.toMatch(/Deal notes|Gone|Still reading/);
+});
+
+test("the first read of a public source is announced once; a private one never", async () => {
+  vi.stubEnv("BROADCAST_SLACK_WEBHOOK_URL", "https://hooks.slack.test/T1/B1/x");
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => new Response(""));
+  vi.stubGlobal("fetch", f);
+  const { t, seedUser, seedSource } = setup();
+  const a = await seedUser("a");
+  const pub = await seedSource({ ownerId: a });
+  const priv = await seedSource({ ownerId: a, visibility: "owner" });
+  const count = async () => (await t.run((ctx) => ctx.db.query("broadcasts").collect()))[0]?.count ?? 0;
+
+  await t.mutation(internal.sources.write, { sourceId: priv, passages: [], label: "Deal notes", synced: true });
+  expect(await count()).toBe(0);
+  await t.mutation(internal.sources.write, { sourceId: pub, passages: [], label: "Handbook", synced: true });
+  await t.mutation(internal.sources.write, { sourceId: pub, passages: [], synced: true });
+  expect(await count()).toBe(1);
+  await settle(t);
+  expect(JSON.parse(String(f.mock.calls[0][1]?.body)).text).toMatch(/^@a added a source: Handbook · /);
+});
