@@ -89,11 +89,22 @@ export const go = internalAction({
       // rewrite call — at most one extra per run, whichever missed first.
       // Whatever question survives that is ignored, so nothing ever parks
       // `waiting` from here — no prompt rule made either deterministic.
+      // Outbound or not is judged on the member's own ask, not on answers a
+      // resumed task carries.
       if (!usable(report)) {
         const asked = !!parseQuestionBlock(report);
-        if (asked || wantsDraft(started.task)) {
+        // A cancelled run spends nothing more; `finish` records its end.
+        if ((asked || wantsDraft(started.ask)) && !(await ctx.runQuery(internal.interns.cancelled, { internId }))) {
           await say("sys", asked ? "drafting instead of asking" : "no draft in the reply, drafting one");
-          report = await pass(rewrite(prompt, report, asked ? REWRITE : NO_DRAFT));
+          try {
+            report = await pass(rewrite(prompt, report, asked ? REWRITE : NO_DRAFT));
+          } catch (err) {
+            // The first reply is still a finished run: keep it rather than
+            // failing the brief over the optional second call. Its tokens are
+            // already in `usage`, and so is whatever the second call billed.
+            console.log(`run.go: rewrite failed for ${internId}: ${String(err)}`);
+            await say("sys", "rewrite failed — kept the first reply");
+          }
         }
       }
       if (parseQuestionBlock(report)) await say("sys", "ignored a question — interns draft instead");

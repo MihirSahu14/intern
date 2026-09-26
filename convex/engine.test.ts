@@ -242,6 +242,81 @@ test("a task that isn't outbound can end in prose: one call, no draft", async ()
   expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none", tokensIn: 100, tokensOut: 50 });
 });
 
+/** One model reply as an SSE body, with its own usage frame (omitted when `usage` is null). */
+const sse = (text: string, usage: { prompt_tokens: number; completion_tokens: number } | null = { prompt_tokens: 100, completion_tokens: 50 }) =>
+  [{ choices: [{ delta: { content: text } }] }, ...(usage ? [{ usage }] : [])].map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n";
+
+test("a rewrite call that fails keeps the first reply: the brief finishes on it, billed for both", async () => {
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  const first = "Here's an intro you could send: Intern drafts, you approve.\n```fact\n" +
+    '{"title":"Intros stay two lines","body":"short","kind":"note"}\n```';
+  const replies = [
+    () => new Response(sse(first)),
+    // Busy: a 429 before anything streams.
+    () => new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }),
+    // Billed, then nothing: dies as an empty report after its usage frame.
+    () => new Response(sse("", { prompt_tokens: 300, completion_tokens: 7 })),
+  ];
+  for (const second of [replies[1], replies[2]]) {
+    const calls = [replies[0], second];
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => calls[call++]()));
+    const r = await runLive("Email a prospect a two-line intro to Intern");
+
+    expect(call).toBe(2);
+    expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none", countsTowardCap: true });
+    expect(r.intern?.summary).toContain("Here's an intro you could send");
+    expect(r.intern?.error).toBeUndefined();
+    expect(r.logs).toContain("rewrite failed — kept the first reply");
+    // The 429 billed nothing; the empty reply billed its usage frame too.
+    expect([r.intern?.tokensIn, r.intern?.tokensOut]).toEqual(second === replies[1] ? [100, 50] : [400, 57]);
+    expect(r.usage[0].costUsd).toBeCloseTo(second === replies[1] ? costUsd(100, 50) : costUsd(400, 57));
+  }
+});
+
+test("a run cancelled during its first call makes no rewrite call", async () => {
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "Email a prospect an intro", status: "queued", countsTowardCap: true }),
+  );
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  const f = vi.fn(async () => {
+    // The member hits cancel while the model is still answering.
+    await t.run((ctx) => ctx.db.patch("interns", internId, { status: "cancelled" }));
+    return new Response(sse("Here's an intro, in prose."));
+  });
+  vi.stubGlobal("fetch", f);
+
+  await t.action(internal.run.go, { internId });
+
+  expect(f).toHaveBeenCalledTimes(1);
+  const row = await t.run((ctx) => ctx.db.get("interns", internId));
+  expect(row).toMatchObject({ status: "cancelled", tokensIn: 100, tokensOut: 50 });
+  expect(row?.endedAt).toBeTypeOf("number");
+});
+
+test("outbound is judged on the member's own ask, not on answers a resumed task carries", async () => {
+  const f = stubModel("Intern drafts, you approve, the brain learns from your edits.");
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: userId,
+      task: "What can Intern do?\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- For whom? → the people I email",
+      displayTask: "What can Intern do?",
+      status: "queued",
+      countsTowardCap: true,
+    }),
+  );
+
+  await t.action(internal.run.go, { internId });
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("done");
+});
+
 test("a draft always wins over a question in the same reply, with no rewrite call", async () => {
   vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
   vi.stubEnv("COMMUNITY_SLACK_CHANNEL", "#welcome");

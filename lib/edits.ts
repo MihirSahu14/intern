@@ -72,9 +72,11 @@ export const correctionFromReject = (kind: string, draft: Draft, reason: string)
 /**
  * A `[bracketed placeholder]` the intern left for the person to fill in
  * (lib/brief.ts tells it to). The lookahead spares a markdown link's
- * `[text](url)`; the length cap and no-newline keep prose brackets out.
+ * `[text](url)`; the length cap and no-newline keep prose brackets out; two
+ * or more characters with at least one letter spare footnotes and indexes
+ * (`[1]`, `arr[0]`) and checkboxes (`[ ]`, `[x]`).
  */
-const PLACEHOLDER = /\[[^\]\n]{1,60}\](?!\()/;
+const PLACEHOLDER = /\[(?=[^\]\n]*\p{L})[^\]\n]{2,60}\](?!\()/u;
 
 export const UNFILLED = "Fill in the [bracketed] parts before sending.";
 

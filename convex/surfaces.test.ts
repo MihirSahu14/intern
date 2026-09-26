@@ -753,6 +753,29 @@ test("a live draft still holding a [placeholder] can't be sent until it's filled
   expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
 });
 
+test("a [placeholder] in cc blocks a live send until cc itself is edited", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await t.run((ctx) =>
+    ctx.db.patch("actions", actionId, { draft: { to: ["ann@acme.com"], cc: ["[manager]"], subject: "Pricing", body: "Numbers attached." } }),
+  );
+  await seedActive(a);
+  stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+  // What the outbox card sends: every field, cc included.
+  await asUser(a).mutation(api.outbox.decide, {
+    actionId,
+    decision: "approve",
+    edits: { to: ["ann@acme.com"], cc: ["boss@acme.com"], subject: "Pricing", body: "Numbers attached." },
+  });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(await t.run((ctx) => ctx.db.get("actions", actionId))).toMatchObject({ status: "sent", accepted: { cc: ["boss@acme.com"] } });
+});
+
 test("a dead-grant-shaped failure never shows Composio's raw reason — only the fixed reconnect copy — and can be retried", async () => {
   composioEnv();
   const { t, seedUser, asUser, seedDraft, seedActive } = setup();
@@ -1119,6 +1142,7 @@ test("an intern whose owner connected Gmail is briefed to send for real", async 
   // Slack has no label here, so it sends but says nothing about who "me" is there.
   expect(await t.mutation(internal.interns.start, { internId })).toEqual({
     task: "t",
+    ask: "t",
     ownerId: a,
     sendsFrom: ["Gmail", "Slack"],
     self: { handle: "a", accounts: [{ kind: "email", label: "Gmail", account: "ann@acme.com" }] },
@@ -1133,6 +1157,7 @@ test("without Composio's env the intern stays in the sandbox", async () => {
   const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
   expect(await t.mutation(internal.interns.start, { internId })).toEqual({
     task: "t",
+    ask: "t",
     ownerId: a,
     sendsFrom: [],
     self: { handle: "a", accounts: [] },

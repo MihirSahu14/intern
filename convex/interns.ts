@@ -6,7 +6,7 @@ import { CONNECTORS, type ConnectorKey, connectorFor, isConfigured } from "../li
 import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
+import { type MutationCtx, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { capExempt, ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
@@ -252,8 +252,15 @@ export const start = internalMutation({
     // ponytail: "#all-intern-community" is the default channel Slack gave the prod
     // workspace; set COMMUNITY_SLACK_CHANNEL if it's renamed or another community runs this.
     const slackChannel = process.env.COMMUNITY_SLACK_CHANNEL || (process.env.COMMUNITY_SLACK_TEAM_ID ? "#all-intern-community" : undefined);
-    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, slackChannel };
+    // `ask` is the member's own words: a question-resumed `task` also carries answers.
+    return { task: i.task, ask: i.displayTask ?? i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, slackChannel };
   },
+});
+
+/** Whether the member cancelled this run mid-flight: `run.go` checks it before spending a second call. */
+export const cancelled = internalQuery({
+  args: { internId: v.id("interns") },
+  handler: async (ctx, { internId }) => (await ctx.db.get("interns", internId))?.status === "cancelled",
 });
 
 export const noteRecall = internalMutation({

@@ -128,6 +128,7 @@ function Pending({
   // Start from any edits saved while the person went to connect their account.
   const start = action.accepted ?? action.draft;
   const [to, setTo] = useState(start.to.join(", "));
+  const [cc, setCc] = useState((start.cc ?? []).join(", "));
   const [subject, setSubject] = useState(start.subject);
   const [body, setBody] = useState(start.body);
   const [rejecting, setRejecting] = useState(false);
@@ -138,6 +139,7 @@ function Pending({
 
   const changed: (keyof Draft)[] = [
     list(to).join(", ") !== action.draft.to.join(", ") ? "to" : null,
+    list(cc).join(", ") !== (action.draft.cc ?? []).join(", ") ? "cc" : null,
     subject.trim() !== action.draft.subject.trim() ? "subject" : null,
     body.trim() !== action.draft.body.trim() ? "body" : null,
   ].filter(Boolean) as (keyof Draft)[];
@@ -148,7 +150,7 @@ function Pending({
   const approve = () =>
     onDecide(action.id, {
       decision: "approve",
-      edits: changed.length || action.accepted ? { to: list(to), subject, body } : undefined,
+      edits: changed.length || action.accepted ? { to: list(to), cc: list(cc), subject, body } : undefined,
     });
   // Drafted under the sandbox prompt, whose recipients may be placeholders
   // (#general, name@example.com) — unless every recipient is one the member
@@ -161,7 +163,10 @@ function Pending({
   // The server refuses this too (outbox.decide) when neither is true.
   const recipientBlocked = showPlaceholderNote && !briefAllows;
   // A real send can't carry a [placeholder]; the server refuses it too.
-  const unfilled = !!via && hasPlaceholder({ to: list(to), cc: start.cc, subject, body });
+  const unfilled = !!via && hasPlaceholder({ to: list(to), cc: list(cc), subject, body });
+  // Editable wherever a cc can go out (email), or wherever the draft has one:
+  // a [placeholder] in a field the member can't reach would block it for good.
+  const showCc = action.kind === "email" || !!start.cc?.length;
   const blocked = recipientBlocked || unfilled;
 
   return (
@@ -188,6 +193,7 @@ function Pending({
       ) : (
         <div className="mt-2 space-y-1.5">
           <Field label="to" value={to} onChange={setTo} />
+          {showCc ? <Field label="cc" value={cc} onChange={setCc} /> : null}
           <Field label="subj" value={subject} onChange={setSubject} />
           <textarea
             value={body}
