@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
+import { REWRITE } from "../lib/brief.ts";
 import { DAILY_BUDGET_USD, DAY_WINDOW, costUsd, dayKey } from "../lib/caps.ts";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -119,12 +120,19 @@ test("a missing MODEL_API_KEY fails the run through run.go with setup copy, no b
   expect(f).not.toHaveBeenCalled();
 });
 
-/** The model, stubbed: one SSE stream carrying `report`. Returns the fetch mock, whose body holds the prompt. */
-function stubModel(report: string) {
+/**
+ * The model, stubbed: one SSE stream per call, carrying the next of `reports`
+ * (the last repeats), each billed 100 in / 50 out. Returns the fetch mock,
+ * whose bodies hold the prompts.
+ */
+function stubModel(...reports: string[]) {
   vi.stubEnv("MODEL_API_KEY", "test-key");
-  const frames = [{ choices: [{ delta: { content: report } }] }, { usage: { prompt_tokens: 100, completion_tokens: 50 } }];
-  const sse = frames.map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n";
-  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => new Response(sse));
+  let call = 0;
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => {
+    const report = reports[Math.min(call++, reports.length - 1)];
+    const frames = [{ choices: [{ delta: { content: report } }] }, { usage: { prompt_tokens: 100, completion_tokens: 50 } }];
+    return new Response(frames.map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n");
+  });
   vi.stubGlobal("fetch", f);
   return f;
 }
@@ -140,6 +148,13 @@ const ASKING = [
   "```",
 ].join("\n");
 
+const DRAFTING = [
+  "Drafted it.",
+  "```action",
+  '{"kind":"email","to":["[recipient]"],"subject":"What Intern does","body":"It drafts; you approve.","rationale":"asked to","sources":[]}',
+  "```",
+].join("\n");
+
 /** Composio configured and an active grant for `connector`: the run is briefed live. */
 function seedLive(t: ReturnType<typeof setup>["t"], userId: Id<"users">, connector: "gmail" | "slack", accountLabel?: string) {
   vi.stubEnv("COMPOSIO_API_KEY", "key");
@@ -149,31 +164,65 @@ function seedLive(t: ReturnType<typeof setup>["t"], userId: Id<"users">, connect
   );
 }
 
-test("a fresh live run parks on its one question; dismissed and retried, it can't ask again", async () => {
-  const f = stubModel(ASKING);
-  const { t, seedUser, asUser } = setup();
+/** A queued live run for a fresh member, run through `run.go`. */
+async function runLive(task: string) {
+  const { t, seedUser } = setup();
   const userId = await seedUser("a");
   await seedLive(t, userId, "gmail");
-  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail the customer", status: "queued", countsTowardCap: true }));
-
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task, status: "queued", countsTowardCap: true }));
   await t.action(internal.run.go, { internId });
+  return {
+    intern: await t.run((ctx) => ctx.db.get("interns", internId)),
+    questions: await t.run((ctx) => ctx.db.query("questions").collect()),
+    actions: await t.run((ctx) => ctx.db.query("actions").collect()),
+    logs: (await t.run((ctx) => ctx.db.query("logs").collect())).map((l) => l.text),
+    usage: await t.run((ctx) => ctx.db.query("usage").collect()),
+  };
+}
 
-  expect(promptOf(f)).toContain("```question");
-  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("waiting");
-  const [q] = await t.run((ctx) => ctx.db.query("questions").collect());
-  expect(q).toBeDefined();
-
-  // Dismissing cancels the intern; a retry runs the same row again — same brief, question spent.
-  await asUser(userId).mutation(api.questions.dismiss, { questionId: q._id });
-  await asUser(userId).mutation(api.interns.retry, { internId });
-  await t.action(internal.run.go, { internId });
-
-  expect(promptOf(f, 1)).toContain("You already asked your one question.");
-  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(1);
-  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("done");
+test("the prompt never offers a question block", async () => {
+  const f = stubModel(DRAFTING);
+  await runLive("mail the customer");
+  expect(promptOf(f)).not.toContain("```question");
+  expect(promptOf(f)).toContain("You can't ask questions.");
 });
 
-test("a draft always wins over a question in the same report", async () => {
+test("a reply that asks gets one rewrite call, and the draft from it lands; both calls are billed", async () => {
+  const f = stubModel(ASKING, DRAFTING);
+  const r = await runLive("mail the customer what Intern does");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  const second = promptOf(f, 1);
+  expect(second.startsWith(promptOf(f, 0))).toBe(true);
+  expect(second).toContain(ASKING);
+  expect(second).toContain(REWRITE);
+  expect(r.questions).toHaveLength(0);
+  expect(r.actions).toEqual([expect.objectContaining({ status: "pending", draft: expect.objectContaining({ to: ["[recipient]"] }) })]);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 200, tokensOut: 100 });
+  expect(r.usage[0].costUsd).toBeCloseTo(costUsd(200, 100));
+  expect(r.logs).toContain("drafting instead of asking");
+});
+
+test("a reply that asks twice still never parks: the question is ignored and the run is done", async () => {
+  const f = stubModel(ASKING, ASKING);
+  const r = await runLive("mail the customer");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  expect(r.questions).toHaveLength(0);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none" });
+  expect(r.logs).toContain("ignored a question — interns draft instead");
+});
+
+test("a reply that drafts is the only model call", async () => {
+  const f = stubModel(DRAFTING);
+  const r = await runLive("mail the customer");
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 100, tokensOut: 50 });
+  expect(r.logs).not.toContain("drafting instead of asking");
+});
+
+test("a draft always wins over a question in the same reply, with no rewrite call", async () => {
   vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
   vi.stubEnv("COMMUNITY_SLACK_CHANNEL", "#welcome");
   const f = stubModel(
@@ -194,12 +243,13 @@ test("a draft always wins over a question in the same report", async () => {
 
   await t.action(internal.run.go, { internId });
 
+  expect(f).toHaveBeenCalledTimes(1);
   expect(promptOf(f)).toContain("A Slack post with no channel goes to #welcome.");
   expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(0);
   expect(await t.run((ctx) => ctx.db.query("actions").collect())).toEqual([expect.objectContaining({ kind: "slack", status: "pending" })]);
   expect(await t.run((ctx) => ctx.db.get("interns", internId))).toMatchObject({ status: "done", parseOutcome: "action" });
   const logs = await t.run((ctx) => ctx.db.query("logs").collect());
-  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "drafted instead of asking" }));
+  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "ignored a question — interns draft instead" }));
 });
 
 test("an email with no recipient is drafted to [recipient] and can't send until 'to' is filled in", async () => {
@@ -232,35 +282,6 @@ test("an email with no recipient is drafted to [recipient] and can't send until 
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   vi.useRealTimers();
   expect(await t.run((ctx) => ctx.db.get("actions", action._id))).toMatchObject({ status: "sent", accepted: { to: ["new@customer.com"] } });
-});
-
-test("a resumed run never asks again: its question is dropped, the rest still counts", async () => {
-  const f = stubModel(ASKING);
-  const { t, seedUser } = setup();
-  const userId = await seedUser("a");
-  const parked = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "done", countsTowardCap: true }));
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", {
-      ownerId: userId,
-      task: "mail me\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Who is me? → mine",
-      displayTask: "mail me",
-      status: "queued",
-      resumes: parked,
-      countsTowardCap: true,
-    }),
-  );
-
-  await t.action(internal.run.go, { internId });
-
-  const prompt = promptOf(f);
-  expect(prompt).not.toContain("```question");
-  expect(prompt).toContain("You already asked your one question.");
-  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(0);
-  expect(await t.run((ctx) => ctx.db.get("interns", internId))).toMatchObject({ status: "done", parseOutcome: "none" });
-  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toHaveLength(1);
-  const logs = await t.run((ctx) => ctx.db.query("logs").collect());
-  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "didn't ask again — one question per brief" }));
-  expect(logs.some((l) => /No question was asked/.test(l.text))).toBe(false);
 });
 
 test("the owner's intern is told who \"me\" is, and the address goes nowhere else", async () => {

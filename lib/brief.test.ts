@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
-import { PROMPT_VERSION, type Self, brief, resumeTask } from "./brief.ts";
+import { PROMPT_VERSION, REWRITE, type Self, brief, resumeTask, rewrite } from "./brief.ts";
 
 const ME: Self = {
   handle: "ann",
@@ -48,37 +48,27 @@ test("the task outranks the brain, and a missing detail is a placeholder, not a 
   assert.match(text, /\[bracketed placeholder\]/);
 });
 
-test("the sandbox never offers the question block: it can't send, so it drafts", () => {
-  const text = brief("x", []);
-  assert.ok(!text.includes("```question"));
-  assert.ok(!text.includes("Ask only when you cannot"));
-  assert.match(text, /Here you never ask a question: every gap, the recipient included, gets a\nplaceholder\. When in doubt, draft\./);
-});
-
-test("a fresh live brief drafts even without a recipient, and asks only when nothing could be drafted", () => {
-  const text = brief("x", [], ["Gmail", "Slack"], ME, false, "#all-intern-community");
-  assert.match(text, /An unnamed recipient is not a question either\. A Slack post with no channel goes to #all-intern-community\./);
-  assert.match(text, /"to":\["\[recipient\]"\]; the member fills it in before it can send\./);
-  assert.match(text, /Ask only when you cannot write any meaningful draft at all: the task says\nnothing about what to write\./);
-  assert.match(text, /When in\ndoubt, draft\./);
-  assert.ok(text.includes("```question"));
-  assert.match(text, /At most one\nquestion per brief\./);
-  assert.ok(!text.includes("already asked your one question"));
-  // No community channel configured: no line naming one.
-  const noChannel = brief("x", [], ["Slack"], ME);
-  assert.ok(!noChannel.includes("A Slack post with no channel goes to"));
-  assert.match(noChannel, /An unnamed recipient is not a question either\.\n/);
-});
-
-test("a resumed brief has no question block and says to draft now, live or not", () => {
-  for (const text of [brief("x", [], [], undefined, true), brief("x", [], ["Gmail"], ME, true)]) {
+test("no brief, sandbox or live, offers a question block: asking becomes a placeholder", () => {
+  for (const text of [brief("x", []), brief("x", [], ["Gmail", "Slack"], ME, "#all-intern-community"), brief("x", [], ["Gmail"])]) {
     assert.ok(!text.includes("```question"));
-    assert.ok(!text.includes("Ask only when you cannot"));
-    assert.match(text, /You already asked your one question\. Do not ask another: draft now, using\n\[placeholders\] for anything still missing\./);
-    // The placeholder rule and the settled answers still hold.
-    assert.match(text, /A missing detail is not a question\./);
-    assert.match(text, /ANSWERS YOU WERE GIVEN is settled/);
+    assert.match(text, /You can't ask questions\. Anything you'd need to ask becomes a \[placeholder\] in\nthe draft, which the person fills in before approving\./);
+    assert.match(text, /When in doubt, draft\.$/);
   }
+});
+
+test("live, an unnamed recipient is the default channel or [recipient], never a stall", () => {
+  const text = brief("x", [], ["Gmail", "Slack"], ME, "#all-intern-community");
+  assert.match(text, /A Slack post with no channel goes to #all-intern-community\./);
+  assert.match(text, /"to":\["\[recipient\]"\]; the member fills it\nin before it can send\./);
+  // No community channel configured: no line naming one.
+  assert.ok(!brief("x", [], ["Slack"], ME).includes("A Slack post with no channel goes to"));
+  // The sandbox has its own placeholder recipients.
+  assert.ok(!brief("x", []).includes("[recipient]"));
+});
+
+test("the rewrite a run sends after a reply that asked carries the prompt, the reply and the instruction", () => {
+  assert.equal(rewrite("P", "R"), `P\n\nYOUR FIRST ANSWER:\nR\n\n${REWRITE}`);
+  assert.match(REWRITE, /^Asking isn't available\. Rewrite your answer now: draft it, using \[placeholders\] for anything you would have asked\.$/);
 });
 
 test("YOU WORK FOR resolves me, with only the parts that exist, keyed on the connector's kind", () => {
@@ -98,8 +88,8 @@ test("YOU WORK FOR resolves me, with only the parts that exist, keyed on the con
   assert.ok(!brief("x", [], [], { accounts: [] }).includes("YOU WORK FOR:"));
 });
 
-test("every brief, fresh or resumed, knows what Intern is, from the code's own connectors and cap", () => {
-  for (const text of [brief("x", []), brief("x", [], ["Gmail"], undefined, true)]) {
+test("every brief, sandbox or live, knows what Intern is, from the code's own connectors and cap", () => {
+  for (const text of [brief("x", []), brief("x", [], ["Gmail"])]) {
     const at = text.indexOf("WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the task is about Intern itself):");
     assert.ok(at >= 0);
     const about = text.slice(at);

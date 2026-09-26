@@ -191,31 +191,6 @@ test("other people's interns: addresses redacted, report and streamed output wit
   expect((await t.query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
 });
 
-test("a stuck intern's warn log names no text, only that it asked", async () => {
-  const { t, seedUser, asUser } = setup();
-  const a = await seedUser("a");
-  const b = await seedUser("b");
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "running", countsTowardCap: true }),
-  );
-  await t.mutation(internal.interns.finish, {
-    internId,
-    report: "stuck",
-    tokensIn: 1,
-    tokensOut: 1,
-    latencyMs: 1,
-    facts: [],
-    question: { question: "What is Ann's phone number?", context: "drafting the email" },
-  });
-
-  const forB = (await asUser(b).query(api.interns.logs, {})).map((l) => l.text);
-  expect(forB.some((line) => line.includes("phone number"))).toBe(false);
-  expect(forB).toContain("asks a question");
-
-  const forA = (await asUser(a).query(api.interns.logs, {})).map((l) => l.text);
-  expect(forA).toContain("asks a question");
-});
-
 test("answering a question files the answer owner-only and a resumed intern's task shows only the original ask", async () => {
   const { t, seedUser, asUser } = setup();
   const a = await seedUser("a");
@@ -1147,7 +1122,6 @@ test("an intern whose owner connected Gmail is briefed to send for real", async 
     ownerId: a,
     sendsFrom: ["Gmail", "Slack"],
     self: { handle: "a", accounts: [{ kind: "email", label: "Gmail", account: "ann@acme.com" }] },
-    resumed: false,
     slackChannel: "#all-intern-community",
   });
 });
@@ -1162,7 +1136,6 @@ test("without Composio's env the intern stays in the sandbox", async () => {
     ownerId: a,
     sendsFrom: [],
     self: { handle: "a", accounts: [] },
-    resumed: false,
   });
 });
 

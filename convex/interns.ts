@@ -248,15 +248,11 @@ export const start = internalMutation({
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION, sendsFrom: live });
     const sendsFrom = CONNECTORS.filter((c) => live.includes(c.key)).map((c) => c.label);
     const handle = (await ctx.db.get("users", i.ownerId))?.handle;
-    // A brief gets one question (see run.go): this run's is spent if it
-    // resumes an answered one, or if this very intern already asked — a
-    // dismissed or cancelled question followed by a retry.
-    const resumed = !!i.resumes || !!(await ctx.db.query("questions").withIndex("by_internId", (q) => q.eq("internId", internId)).first());
     // Where a Slack post with no channel goes, so an unnamed channel is never a question.
     // ponytail: "#all-intern-community" is the default channel Slack gave the prod
     // workspace; set COMMUNITY_SLACK_CHANNEL if it's renamed or another community runs this.
     const slackChannel = process.env.COMMUNITY_SLACK_CHANNEL || (process.env.COMMUNITY_SLACK_TEAM_ID ? "#all-intern-community" : undefined);
-    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed, slackChannel };
+    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, slackChannel };
   },
 });
 
@@ -311,8 +307,6 @@ export const finish = internalMutation({
       v.object({ kind: actionKind, title: v.string(), draft, rationale: v.string(), sources: v.array(v.string()) }),
     ),
     actionError: v.optional(v.string()),
-    question: v.optional(v.object({ question: v.string(), context: v.string() })),
-    questionError: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const intern = await ctx.db.get("interns", a.internId);
@@ -332,21 +326,6 @@ export const finish = internalMutation({
 
     if (intern.status === "cancelled") {
       await ctx.db.patch("interns", a.internId, base);
-      return null;
-    }
-
-    if (a.question) {
-      await ctx.db.insert("questions", {
-        ownerId: intern.ownerId,
-        internId: a.internId,
-        question: a.question.question,
-        context: a.question.context,
-        status: "open",
-      });
-      await ctx.db.patch("interns", a.internId, { ...base, status: "waiting", parseOutcome: "question" });
-      // The question text is owner-only (questions.list); the public log line
-      // never carries it.
-      await log("warn", "asks a question");
       return null;
     }
 
@@ -390,11 +369,6 @@ export const finish = internalMutation({
     } else if (a.actionError) {
       await log("err", `${a.actionError}. Nothing was queued.`);
       parseOutcome = `action_malformed:${a.actionError}`;
-    } else if (a.questionError) {
-      // A dropped intent is indistinguishable from no intent unless it's
-      // surfaced — same argument as actionError above.
-      await log("err", `${a.questionError}. No question was asked.`);
-      parseOutcome = `question_malformed:${a.questionError}`;
     }
 
     await ctx.db.patch("interns", a.internId, { ...base, status: "done", parseOutcome });

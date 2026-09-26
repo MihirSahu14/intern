@@ -5,8 +5,8 @@ A terminal for one public, shared brain.
 Sign in with GitHub and you are in the same brain as everyone else: a graph of
 what the community has taught it, and **interns** — short runs you dispatch at a
 brief and watch. An intern recalls what is already in the brain, thinks, and
-either files what it learned, asks a question it can't answer from the brain, or
-drafts something and stops for you.
+files what it learned and drafts something and stops for you. It never asks:
+anything it can't settle becomes a `[placeholder]` you fill in before approving.
 
 Everything anyone does is public by design. Nothing is ever sent.
 
@@ -19,8 +19,8 @@ npx convex dev     # the backend (one watcher at a time)
 
 ```
 spawn (mutation)          caps checked, row inserted, action scheduled
-  → internal.run.go       recall → one streamed model call → parse
-      → finish (mutation) facts, a draft, or a question — one transaction
+  → internal.run.go       recall → one streamed model call (two if it asked) → parse
+      → finish (mutation) facts and a draft — one transaction
 ```
 
 There is no separate agent service. The whole run is a Convex action calling
@@ -28,9 +28,9 @@ any OpenAI-compatible model over plain `fetch` (`lib/model.ts`; Groq by
 default), so the API key lives on the Convex deployment and never reaches a
 browser.
 
-An intern ends its report with a fenced ` ```action ` or ` ```question ` block.
-`lib/action-block.ts` and `lib/parse.ts` parse them, and say *why* a block was
-unusable rather than dropping it — the cockpit shows that as a failed parse, and
+An intern ends its report with a fenced ` ```action ` block, which
+`lib/action-block.ts` parses, saying *why* a block was unusable rather than
+dropping it — the cockpit shows that as a failed parse, and
 `/stats` counts it.
 
 ## Approvals are a sandbox
@@ -46,13 +46,17 @@ reason and the reason is filed as a *correction*. The next intern recalls both
 before it starts. No training job — a correction is a fact, facts are retrieved
 by the next brief, behaviour changes.
 
-## Asking instead of guessing
+## Placeholders instead of questions
 
-When the brief leaves out something the brain can't settle — who someone reports
-to, which of two people was meant — the intern parks and asks. Answering files
-the answer as a fact **first**, so every future task has it, then dispatches a
-fresh intern that picks the work back up with the answer attached (subject to
-the caps).
+When the brief leaves out something the brain can't settle — who it goes to, a
+date, which of two people was meant — the intern doesn't stop to ask. The prompt
+offers no way to, and if a reply asks anyway `run.go` makes one rewrite call
+telling it to draft. The gap becomes a `[placeholder]` in the draft, and a real
+send is refused until every placeholder is filled in.
+
+Older questions from before this still show in the cockpit. Answering one files
+the answer as a fact **first**, then dispatches a fresh intern with the answer
+attached (subject to the caps).
 
 ## Caps
 
@@ -90,7 +94,7 @@ convex/interns.ts   spawn, cancel, and every write a finished run makes
 convex/run.ts       the action: recall → the model → parse → finish
 convex/facts.ts     teach, recall, and the graph the cockpit draws
 convex/outbox.ts    approve/reject, and the fact each decision leaves behind
-convex/questions.ts what interns are parked on, and resuming them
+convex/questions.ts older open questions, and resuming them
 convex/community.ts the feed, the landing counts, /stats
 convex/users.ts     consent, delete-my-stuff, ban
 

@@ -2,7 +2,8 @@
  * Offline eval: 28 fixed briefs through the current prompt, sandbox by
  * default; `EVAL_LIVE=1` runs every brief as a connected member (see LIVE).
  * Checks the one thing that has silently broken before: does a brief that
- * should draft produce a *usable* action block instead of a question?
+ * should draft produce a *usable* action block? Like run.go, a reply that
+ * asks instead gets one rewrite call, and the second reply is graded.
  *
  *   npm run eval
  *
@@ -13,11 +14,11 @@
  * rate — a model outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
-import { PROMPT_VERSION, type Self, brief } from "../lib/brief.ts";
+import { PROMPT_VERSION, type Self, brief, rewrite } from "../lib/brief.ts";
 import { stream } from "../lib/model.ts";
 import { parseQuestionBlock } from "../lib/parse.ts";
 
-type Expect = "action" | "question" | "any";
+type Expect = "action" | "any";
 
 /** How a brief is run: who it works for and what it could send from. Unset means sandbox, nobody. */
 type Mode = { self?: Self; sendsFrom?: string[]; slackChannel?: string };
@@ -67,9 +68,9 @@ const CASES: [string, Expect, Mode?][] = [
   ["Post in #all-intern-community: welcome to the new members", "action"],
   ["Draft a Slack message to the team about today's progress", "action"],
   ["Write an email to the team with Intern's features and limits", "action"],
-  // Vague briefs: drafting with [placeholders] (a "[recipient]" included) is
-  // the default now, but asking isn't wrong when there's truly nothing to draft.
-  // This one runs live (Gmail, nobody named) even without EVAL_LIVE.
+  // Vague and info briefs: a draft with [placeholders] (a "[recipient]"
+  // included) or a plain answer both pass. This one runs live (Gmail, nobody
+  // named) even without EVAL_LIVE.
   ["Email the new customer a welcome note", "any", { sendsFrom: ["Gmail"], self: { handle: "tester", accounts: [] } }],
   ["Email Sarah about the thing we discussed", "any"],
   ["Send the pricing to our biggest customer", "any"],
@@ -83,18 +84,38 @@ const CASES: [string, Expect, Mode?][] = [
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const complete = async (prompt: string) => {
+  let text = "";
+  for await (const c of stream(prompt)) text += c.text ?? "";
+  return text;
+};
+const drafted = (report: string) => {
+  const a = parseActionBlock(report);
+  return !!a && !("error" in a);
+};
 
 let attempted = 0;
 let usable = 0;
 let matched = 0;
 let errored = 0;
+let rewritten = 0;
 
 console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs · ${LIVE ? "live (EVAL_LIVE=1)" : "sandbox"}\n`);
 for (const [task, expect, mode] of CASES) {
   const { self, sendsFrom = [], slackChannel } = LIVE ?? mode ?? {};
+  const prompt = brief(task, [], sendsFrom, self, slackChannel);
   let report = "";
+  let askedFirst = false;
   try {
-    for await (const c of stream(brief(task, [], sendsFrom, self, false, slackChannel))) report += c.text ?? "";
+    report = await complete(prompt);
+    // Mirrors run.go: a reply that asks without a draft gets one rewrite call,
+    // and the second reply is what's graded.
+    if (parseQuestionBlock(report) && !drafted(report)) {
+      askedFirst = true;
+      rewritten++;
+      await sleep(6000);
+      report = await complete(rewrite(prompt, report));
+    }
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
     errored++;
@@ -110,12 +131,14 @@ for (const [task, expect, mode] of CASES) {
   if (ok) matched++;
   // A miss says why: the question it asked instead, or what was malformed.
   const why = [
+    askedFirst ? (got === "action" ? "asked, then drafted" : "asked, and the rewrite didn't draft") : null,
     action && "error" in action ? `action: ${action.error}` : null,
     !ok && question ? ("error" in question ? `question: ${question.error}` : `asked: ${question.question}`) : null,
   ].filter(Boolean);
   console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${why.map((w) => `\n     ${w}`).join("")}`);
   await sleep(6000);
 }
+if (rewritten) console.log(`\n${rewritten} brief${rewritten === 1 ? "" : "s"} asked first and got the rewrite call`);
 
 // `attempted` (action blocks seen, malformed or not) is 0 whenever nothing
 // could be rated — either every call errored, or none of the "action"

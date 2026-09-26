@@ -114,9 +114,9 @@ export default function Landing() {
               body="The outbox keeps both halves: what the intern proposed and what you were actually willing to send. That difference becomes a fact the next intern reads first."
             />
             <Panel
-              title="It drafts, then asks only if it must"
+              title="It never stalls"
               accent="text-k-question"
-              body="Missing details become [placeholders] you fill in before approving. The intern asks once, and only when there's nothing it could draft."
+              body="Missing details become [placeholders] you fill in before approving. There's no question to answer and no guess sent without you."
             />
           </div>
         </section>
