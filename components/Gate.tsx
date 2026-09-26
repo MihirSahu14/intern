@@ -50,12 +50,15 @@ const joinSeen = () => {
 function Member() {
   const me = useQuery(api.users.viewer, {});
   // The invite is connections.mine's (https-only, env-driven); no second copy of that check.
-  const slack = useQuery(api.connections.mine, {})?.find((c) => c.key === "slack");
+  const connections = useQuery(api.connections.mine, {});
+  const slack = connections?.find((c) => c.key === "slack");
   const [seen, setSeen] = useState(joinSeen);
   if (me === undefined) return <Wait text="loading" />;
   if (me === null) return <SignIn />;
   if (me.banned) return <Banned />;
   if (!me.accepted) return <Consent />;
+  // Until it's known whether the join step shows, show neither it nor the cockpit.
+  if (connections === undefined && !seen) return <Wait text="loading" />;
   if (slack?.invite && !slack.connected && !seen) {
     const done = () => {
       try {

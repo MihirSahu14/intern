@@ -697,13 +697,15 @@ its `slack:<channel>:<ts>` key and files nothing new.
 When it expires, every repo's next daily read fails with "Couldn't read this
 repo from GitHub." until it's replaced.
 
-### 3. Deploy and set env (needs Mihir's go-ahead)
+### 3. Deploy and set env (Mihir + Claude, ~15 min, needs your go-ahead)
 
 1. `npx convex deploy` (prod). The schema is additive (`sources`,
-   `passages`, `slackUsers`, `facts.fromPassageId`,
-   `connections.by_externalUserId`), so it's safe before the frontend. It's
-   also the first bundle of `convex/documents.ts` (`"use node"`, `unpdf`,
-   which declares `engines.node >= 22`): `convex.json` now pins
+   `passages`, `slackUsers`, `slackTombstones`, `facts.fromPassageId`,
+   `connections.by_externalUserId`), so it's safe before the frontend. It
+   adds a second daily cron, `sweep unclaimed uploads` (stored files past the
+   upload hour that no source kept). It's also the first bundle of
+   `convex/documents.ts` (`"use node"`, `unpdf`, which declares
+   `engines.node >= 22`): `convex.json` now pins
    `node.nodeVersion` to `"22"` for this. If the bundler still rejects
    `unpdf`, add `"externalPackages": ["unpdf"]` under `node` in
    `convex.json` and deploy again. The brief's `PROMPT_VERSION` changes with
