@@ -589,3 +589,182 @@ the grant lives on at Composio with no row pointing at it. The Convex logs say
 `composio delete ca_… failed`; delete that account by hand in the Composio
 dashboard. A connect the member finishes *while* their purge runs is refused
 (no row of theirs is left) and its account deleted without revoke.
+
+## Ingestion: setup
+
+Sources feed the brain: the community Slack's public channels (live, plus 90
+days back), documents members add, and public GitHub repos become
+**passages** interns recall ("FROM THE ARCHIVE" in the brief; cited as
+`[p:<id>]` in a draft's sources, never in prose). A 🧠, the promote button or
+an approved draft that cited one turns a passage into a fact. No model calls,
+no paid services. Everything below is manual and uses Mihir's own accounts;
+nothing here runs `npx convex dev/deploy/run/env` for you.
+
+**Deployments:** prod `neighborly-peacock-427` (site
+`https://intern-brain.vercel.app`). The dev deployment
+`graceful-albatross-202` still carries incompatible hackathon rows (see
+"Public MVP"); test on a fresh or local deployment, with its own Slack app in
+a test workspace pointed at that deployment's `/slack/events`.
+
+### Env vars
+
+All Convex env vars, set from your own terminal (`npx convex env set [--prod]
+NAME value` in PowerShell — never paste a secret into chat, and never set
+them in Vercel). Each is optional; unset means that part is off.
+
+| Var | Unset means | Where it comes from |
+|---|---|---|
+| `SLACK_BRAIN_SIGNING_SECRET` | every `/slack/events` call is a 401: no live Slack | Intern Brain app → Basic Information → App Credentials → Signing Secret |
+| `SLACK_BRAIN_BOT_TOKEN` | no backfill; authors and new channels show as bare Slack ids | Intern Brain app → OAuth & Permissions → Bot User OAuth Token (`xoxb-…`), after installing to the workspace |
+| `GITHUB_TOKEN` | repos show "github repos: not set up yet" and can't be added | a fine-grained token, public repositories, read-only (below) |
+| `COMMUNITY_SLACK_TEAM_ID` | **already set** (see "Community Slack" above). Ingestion reuses it: unset, every event is ignored (200, nothing stored) | the community workspace's `T…` id |
+| `COMMUNITY_SLACK_INVITE_URL` | **already set**. Also drives the one-time "Join the community Slack →" step after consent (hidden once the member's Slack is connected) | the workspace's never-expiring invite link |
+
+`CAP_EXEMPT_HANDLES` also skips the 5 sources/day cap.
+
+### 1. The "Intern Brain" Slack app (Mihir, ~20 min)
+
+A separate app from "Intern" (the one members connect through Composio): a
+Slack app delivers its events to one Request URL, and Intern's go to
+Composio. Keep it **internal** (installed in the community workspace only,
+never distributed), which keeps `conversations.history` at Tier 3 for the
+backfill.
+
+1. `api.slack.com/apps` → Create New App → From a manifest → the community
+   workspace → paste:
+   ```yaml
+   display_information:
+     name: Intern Brain
+     description: Reads this workspace's public channels into the Intern community brain.
+   features:
+     bot_user:
+       display_name: Intern Brain
+       always_online: false
+   oauth_config:
+     scopes:
+       bot:
+         - channels:history
+         - channels:join
+         - channels:read
+         - reactions:read
+         - users:read
+   settings:
+     org_deploy_enabled: false
+     socket_mode_enabled: false
+     token_rotation_enabled: false
+   ```
+   No event subscriptions yet: Slack verifies the Request URL the moment it's
+   saved, which needs the code deployed and the signing secret set first
+   (step 3). **Never add `groups:*`, `im:*` or `mpim:*`**: private channels
+   and DMs are never read. `channels:join` lets the backfill join public
+   channels; a bot reads history and hears messages only where it's a member.
+2. Install to Workspace. Copy the Bot User OAuth Token
+   (`SLACK_BRAIN_BOT_TOKEN`) and the Signing Secret
+   (`SLACK_BRAIN_SIGNING_SECRET`) — paste both into the env-var commands in
+   your own terminal (below), not into chat.
+3. After the deploy and env below: Features → Event Subscriptions → on →
+   Request URL `https://neighborly-peacock-427.convex.site/slack/events` (it
+   should say Verified) → Subscribe to bot events: `message.channels`,
+   `reaction_added` → Save, and reinstall if Slack asks. Equivalent manifest
+   addition under `settings`:
+   ```yaml
+     event_subscriptions:
+       request_url: https://neighborly-peacock-427.convex.site/slack/events
+       bot_events:
+         - message.channels
+         - reaction_added
+   ```
+4. **Tell the workspace.** Set `#all-intern-community`'s description (or
+   `COMMUNITY_SLACK_CHANNEL`'s, if renamed), and pin a message there:
+   "Public channels are read into the Intern brain
+   (https://intern-brain.vercel.app). Private channels and DMs never are."
+
+A member who 🧠s a message now reaches both paths (their Composio grant and
+Intern Brain). That's expected: the second one finds the first one's fact by
+its `slack:<channel>:<ts>` key and files nothing new.
+
+### 2. The GitHub token (Mihir, ~5 min)
+
+1. Go to `github.com/settings/personal-access-tokens/new`.
+2. Name it `intern-brain-read`; expiration: the longest allowed (put the
+   renewal in your calendar).
+3. Resource owner: your account. Repository access: **Public repositories**
+   (read-only, no extra permissions).
+4. Generate, and keep the value for the env-var step below — that's
+   `GITHUB_TOKEN`: one token for the whole community, because GitHub's
+   anonymous limit is 60 calls an hour.
+
+When it expires, every repo's next daily read fails with "Couldn't read this
+repo from GitHub." until it's replaced.
+
+### 3. Deploy and set env (needs Mihir's go-ahead)
+
+1. `npx convex deploy` (prod). The schema is additive (`sources`,
+   `passages`, `slackUsers`, `facts.fromPassageId`,
+   `connections.by_externalUserId`), so it's safe before the frontend. It's
+   also the first bundle of `convex/documents.ts` (`"use node"`, `unpdf`,
+   which declares `engines.node >= 22`): `convex.json` now pins
+   `node.nodeVersion` to `"22"` for this. If the bundler still rejects
+   `unpdf`, add `"externalPackages": ["unpdf"]` under `node` in
+   `convex.json` and deploy again. The brief's `PROMPT_VERSION` changes with
+   this deploy (the archive section), so `/stats` starts a new series.
+2. Set the three new vars with `--prod`, from your own terminal (the two
+   `COMMUNITY_SLACK_*` ones are already there):
+   ```
+   npx convex env set --prod SLACK_BRAIN_SIGNING_SECRET <signing secret>
+   npx convex env set --prod SLACK_BRAIN_BOT_TOKEN <xoxb-…>
+   npx convex env set --prod GITHUB_TOKEN <github_pat_…>
+   ```
+3. Then Event Subscriptions (section 1, step 3).
+4. Merge to `main`; Vercel deploys the cockpit.
+5. **Refresh the seeded "What Intern is" fact.** `seed:run` never re-runs on
+   a deployment that already has starter facts, so prod's row still needs
+   the sentence now in `convex/seed.ts`. Claude runs `npx convex run --prod
+   seed:refresh` after deploy (with your yes, prod): it finds each ownerless
+   seed fact by title and patches `body`/`text` when they differ from
+   `SEED`; a second run updates 0.
+
+### 4. Backfill (Mihir, from the Convex dashboard, ~2 min)
+
+1. Prod dashboard → Functions → `ingest:backfillSlack` → Run with `{}`.
+
+It returns `{ channels: N }`, joins each public channel, and reads its last
+90 days one page every 1.5 s, one channel after another; the logs show
+`backfill:` only on failure. Safe to re-run at any time: passages upsert and
+a channel part-way through resumes from its source's `cursor`. **Re-run it
+after creating a public channel**, so the bot joins it; until then that
+channel isn't read.
+
+### 5. First-live checklist
+
+- [ ] Post in a public channel: within seconds a `#channel` source node is in
+      the graph; clicking it lists the message under the poster's name (or
+      `@handle` if they connected that Slack account).
+- [ ] Edit it: the passage changes. React 🧠: a public fact hangs off the
+      channel node, once, even though your own Composio 🧠 also fired.
+      Delete the message: passage and fact both go.
+- [ ] Post in a private channel and DM the bot: nothing appears.
+- [ ] Brief an intern about something said in Slack: its log says `read N
+      passages from the archive`, and no `[p:…]` id shows in its prose;
+      approve a draft whose sources cite `[p:…]`: the passage becomes a
+      fact, once.
+- [ ] Add a URL, a markdown upload, a PDF with text and a scanned PDF (the
+      scan fails: "That PDF has no text in it…"), a private document (a second
+      account can't see it in the graph, the rail or recall), and a public
+      repo `owner/repo` (README, issues and PRs as passages; a private repo
+      fails "Only public repos can be added."). The sixth source of the day
+      is refused, under the form.
+- [ ] Remove a source: its passages go, promoted facts stay. The feed and the
+      broadcast channel show "@you added a source: …" for public ones only;
+      `/u/<you>` lists them.
+- [ ] Sign in fresh with an account whose Slack isn't connected: after the
+      notice (which now names sources and the community Slack), one "Join the
+      community Slack →" step with Skip.
+
+### Admin
+
+`sources`, `passages` and `slackUsers` are in the Convex dashboard's data
+tables. `users:ban` purges a member's documents, repos, their passages and
+uploaded files (Slack passages belong to the community and stay; deleting the
+message in Slack removes one). The `/slack/events` log lines name event ids
+and kinds only, never message text.
