@@ -20,11 +20,11 @@ const SEED = [
     title: "What Intern is",
     body: `We build Intern. Two halves that need each other.
 
-The brain: a live knowledge graph of how the company actually works — people, systems, docs, SOPs, policies, decisions. It is fed continuously from the tools already in use (Slack, Gmail, Notion, Google Workspace) and keeps updating as work happens. Underneath it is an append-only log of observations; facts are the promoted, citable, deduplicated layer derived from that log, each with provenance, a confidence that rises as independent observations corroborate it, and a validity window. Facts supersede rather than overwrite, so what was true in February is still answerable in September.
+The brain: one shared set of facts about how the community works — people, decisions, conventions, what was sent — drawn as a live graph. Everyone who signs in with GitHub reads the same brain and adds to it: by teaching a fact directly, or through what their interns file back. Feeding it continuously from Slack and documents is the next step, not something it does today.
 
-The interns: long-running agents anyone can assign work to, by voice or text. An intern reads the brain to resolve what the brief left out — who someone reports to, which channel, which convention — and asks rather than guesses when the brain does not say. It works the task end to end in the real systems using the requester's own connected accounts, so it can only ever touch what that person could touch.
+The interns: agents anyone signed in can brief in one sentence of text. An intern reads the brain first — the facts that bear on the task, including past corrections — then drafts. Where a detail is missing it writes a [placeholder] for the person to fill in rather than guessing or stalling. A draft goes out through the requester's own connected Gmail or Slack, so it can only ever reach what that person could reach.
 
-Anything consequential — a send, a payment, an access grant, anything externally visible — stops and hands over to a person, with the draft, the reasoning, and the facts it used. Interns have no send tool. What the person changes before approving is appended back to the log and becomes a preference the next brief retrieves, which is the entire learning loop: no rule was written and there is no training job.
+Anything that goes out stops and waits for a person, with the draft, the reasoning and the facts it used. Interns cannot send on their own. What the person changes before approving is saved as a fact the next intern reads first, which is the entire learning loop: no rule was written and there is no training job.
 
 Interns are the write path to the brain. The graph is the read path.
 
