@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
-import { REWRITE } from "../lib/brief.ts";
+import { NO_DRAFT, REWRITE } from "../lib/brief.ts";
 import { DAILY_BUDGET_USD, DAY_WINDOW, costUsd, dayKey } from "../lib/caps.ts";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -220,6 +220,26 @@ test("a reply that drafts is the only model call", async () => {
   expect(f).toHaveBeenCalledTimes(1);
   expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 100, tokensOut: 50 });
   expect(r.logs).not.toContain("drafting instead of asking");
+});
+
+test("an outbound task answered in prose gets one rewrite call, and the draft from it lands", async () => {
+  const f = stubModel("Here's a short intro you could send: Intern drafts, you approve.", DRAFTING);
+  const r = await runLive("Email a prospect a two-line intro to Intern");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  expect(promptOf(f, 1)).toContain(NO_DRAFT);
+  expect(r.actions).toEqual([expect.objectContaining({ status: "pending" })]);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 200, tokensOut: 100 });
+  expect(r.logs).toContain("no draft in the reply, drafting one");
+});
+
+test("a task that isn't outbound can end in prose: one call, no draft", async () => {
+  const f = stubModel("Intern drafts, you approve, the brain learns from your edits.");
+  const r = await runLive("What can Intern do?");
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect(r.actions).toHaveLength(0);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none", tokensIn: 100, tokensOut: 50 });
 });
 
 test("a draft always wins over a question in the same reply, with no rewrite call", async () => {

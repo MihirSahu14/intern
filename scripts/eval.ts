@@ -3,7 +3,8 @@
  * default; `EVAL_LIVE=1` runs every brief as a connected member (see LIVE).
  * Checks the one thing that has silently broken before: does a brief that
  * should draft produce a *usable* action block? Like run.go, a reply that
- * asks instead gets one rewrite call, and the second reply is graded.
+ * asks instead, or answers an outbound task in prose, gets one rewrite call,
+ * and the second reply is graded.
  *
  *   npm run eval
  *
@@ -14,7 +15,7 @@
  * rate — a model outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
-import { PROMPT_VERSION, type Self, brief, rewrite } from "../lib/brief.ts";
+import { NO_DRAFT, PROMPT_VERSION, REWRITE, type Self, brief, rewrite, wantsDraft } from "../lib/brief.ts";
 import { stream } from "../lib/model.ts";
 import { parseQuestionBlock } from "../lib/parse.ts";
 
@@ -105,16 +106,17 @@ for (const [task, expect, mode] of CASES) {
   const { self, sendsFrom = [], slackChannel } = LIVE ?? mode ?? {};
   const prompt = brief(task, [], sendsFrom, self, slackChannel);
   let report = "";
-  let askedFirst = false;
+  let missedFirst: "asked" | "no draft" | null = null;
   try {
     report = await complete(prompt);
-    // Mirrors run.go: a reply that asks without a draft gets one rewrite call,
-    // and the second reply is what's graded.
-    if (parseQuestionBlock(report) && !drafted(report)) {
-      askedFirst = true;
+    // Mirrors run.go: a reply that asks without a draft, or answers an
+    // outbound task with no draft, gets one rewrite call, and the second
+    // reply is what's graded.
+    if (!drafted(report) && (parseQuestionBlock(report) || wantsDraft(task))) {
+      missedFirst = parseQuestionBlock(report) ? "asked" : "no draft";
       rewritten++;
       await sleep(6000);
-      report = await complete(rewrite(prompt, report));
+      report = await complete(rewrite(prompt, report, missedFirst === "asked" ? REWRITE : NO_DRAFT));
     }
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
@@ -131,14 +133,14 @@ for (const [task, expect, mode] of CASES) {
   if (ok) matched++;
   // A miss says why: the question it asked instead, or what was malformed.
   const why = [
-    askedFirst ? (got === "action" ? "asked, then drafted" : "asked, and the rewrite didn't draft") : null,
+    missedFirst ? `${missedFirst}, then ${got === "action" ? "drafted" : "still no draft"}` : null,
     action && "error" in action ? `action: ${action.error}` : null,
     !ok && question ? ("error" in question ? `question: ${question.error}` : `asked: ${question.question}`) : null,
   ].filter(Boolean);
   console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${why.map((w) => `\n     ${w}`).join("")}`);
   await sleep(6000);
 }
-if (rewritten) console.log(`\n${rewritten} brief${rewritten === 1 ? "" : "s"} asked first and got the rewrite call`);
+if (rewritten) console.log(`\n${rewritten} brief${rewritten === 1 ? "" : "s"} missed first and got the rewrite call`);
 
 // `attempted` (action blocks seen, malformed or not) is 0 whenever nothing
 // could be rated — either every call errored, or none of the "action"

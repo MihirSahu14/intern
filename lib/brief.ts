@@ -78,8 +78,21 @@ in before it can send.`;
 /** What `run.go` (and scripts/eval.ts) sends when a reply asked instead of drafting. */
 export const REWRITE = "Asking isn't available. Rewrite your answer now: draft it, using [placeholders] for anything you would have asked.";
 
-/** The one follow-up call: the original prompt, the reply that asked, and REWRITE. */
-export const rewrite = (prompt: string, reply: string) => `${prompt}\n\nYOUR FIRST ANSWER:\n${reply}\n\n${REWRITE}`;
+/** What they send when an outbound task's reply has no usable draft. */
+export const NO_DRAFT =
+  'The task asks for something to go out, but your reply has no ```action block. Rewrite it as one draft now, using [placeholders] (including "to":["[recipient]"]) for anything unknown.';
+
+/**
+ * Whether a task asks for something to go out, so a reply with no draft
+ * missed the point. Whole words only.
+ * ponytail: a keyword list, not intent classification; a miss costs nothing
+ * worse than the prose reply it already was.
+ */
+export const wantsDraft = (task: string) => /\b(e-?mail|mail|slack|post|send|message|dm|draft|write to|reply)\b/i.test(task);
+
+/** The one follow-up call: the original prompt, the reply that missed, and what to do instead. */
+export const rewrite = (prompt: string, reply: string, instruction = REWRITE) =>
+  `${prompt}\n\nYOUR FIRST ANSWER:\n${reply}\n\n${instruction}`;
 
 export function brief(
   task: string,

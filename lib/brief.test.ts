@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
-import { PROMPT_VERSION, REWRITE, type Self, brief, resumeTask, rewrite } from "./brief.ts";
+import { NO_DRAFT, PROMPT_VERSION, REWRITE, type Self, brief, resumeTask, rewrite, wantsDraft } from "./brief.ts";
 
 const ME: Self = {
   handle: "ann",
@@ -66,8 +66,35 @@ test("live, an unnamed recipient is the default channel or [recipient], never a 
   assert.ok(!brief("x", []).includes("[recipient]"));
 });
 
-test("the rewrite a run sends after a reply that asked carries the prompt, the reply and the instruction", () => {
+test("an outbound task wants a draft; a question about Intern doesn't", () => {
+  for (const task of [
+    "Email a prospect a two-line intro to Intern",
+    "Write an email declining a meeting politely",
+    "Write a follow-up email to someone who asked what Intern does",
+    "Email me a summary of what Intern can do",
+    "Post in #general: hi",
+    "DM Ann the link",
+  ]) {
+    assert.equal(wantsDraft(task), true, task);
+  }
+  for (const task of [
+    "What can Intern do?",
+    "Summarise what Intern is in three sentences",
+    "List two risks the brain has not solved yet",
+    "What makes a prospect viable for Intern?",
+    "Who is the poster child for Intern?",
+  ]) {
+    assert.equal(wantsDraft(task), false, task);
+  }
+});
+
+test("the rewrite a run sends after a reply that missed carries the prompt, the reply and the instruction", () => {
   assert.equal(rewrite("P", "R"), `P\n\nYOUR FIRST ANSWER:\nR\n\n${REWRITE}`);
+  assert.equal(rewrite("P", "R", NO_DRAFT), `P\n\nYOUR FIRST ANSWER:\nR\n\n${NO_DRAFT}`);
+  assert.equal(
+    NO_DRAFT,
+    'The task asks for something to go out, but your reply has no ```action block. Rewrite it as one draft now, using [placeholders] (including "to":["[recipient]"]) for anything unknown.',
+  );
   assert.match(REWRITE, /^Asking isn't available\. Rewrite your answer now: draft it, using \[placeholders\] for anything you would have asked\.$/);
 });
 

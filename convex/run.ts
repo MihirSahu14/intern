@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { parseActionBlock } from "../lib/action-block.ts";
-import { brief, rewrite } from "../lib/brief.ts";
+import { NO_DRAFT, REWRITE, brief, rewrite, wantsDraft } from "../lib/brief.ts";
 import { NOT_CONFIGURED, describe, stream } from "../lib/model.ts";
 import { parseFactBlocks, parseQuestionBlock } from "../lib/parse.ts";
 import { internal } from "./_generated/api";
@@ -84,13 +84,17 @@ export const go = internalAction({
         const p = parseActionBlock(r);
         return !!p && !("error" in p);
       };
-      // Interns don't ask: the prompt offers no question block, and a reply
-      // that asks anyway (with no draft to fall back on) gets exactly one
-      // rewrite call. Whatever question survives that is ignored, so nothing
-      // ever parks `waiting` from here — no prompt rule made that deterministic.
-      if (parseQuestionBlock(report) && !usable(report)) {
-        await say("sys", "drafting instead of asking");
-        report = await pass(rewrite(prompt, report));
+      // Interns don't ask, and an outbound task gets a draft: a reply that
+      // asks anyway, or answers an outbound task in prose, gets exactly one
+      // rewrite call — at most one extra per run, whichever missed first.
+      // Whatever question survives that is ignored, so nothing ever parks
+      // `waiting` from here — no prompt rule made either deterministic.
+      if (!usable(report)) {
+        const asked = !!parseQuestionBlock(report);
+        if (asked || wantsDraft(started.task)) {
+          await say("sys", asked ? "drafting instead of asking" : "no draft in the reply, drafting one");
+          report = await pass(rewrite(prompt, report, asked ? REWRITE : NO_DRAFT));
+        }
       }
       if (parseQuestionBlock(report)) await say("sys", "ignored a question — interns draft instead");
 
