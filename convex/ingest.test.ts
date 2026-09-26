@@ -590,3 +590,18 @@ test("backfill resumes a channel from its source's cursor", async () => {
   expect((await t.run((ctx) => ctx.db.get("sources", sourceId)))?.cursor).toBeUndefined();
   expect(await allPassages(t)).toHaveLength(1);
 });
+
+test("backfill never resurrects a message deleted in Slack while its page was in flight", async () => {
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t, seedSource } = setup();
+  const sourceId = await seedSource({ kind: "slack_channel", label: "#general", externalId: "C1", cursor: "c2" });
+  // Deleted (and tombstoned by the webhook) after this history page was fetched, before backfill wrote it.
+  await t.run((ctx) => ctx.db.insert("slackTombstones", { sourceId, externalId: "C1:1758700000.000100" }));
+  stubSlackApi({
+    "conversations.history": [
+      { ok: true, messages: [person("deleted meanwhile", "1758700000.000100"), person("still there", "1758700001.000100")], has_more: false },
+    ],
+  });
+  await t.action(internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest: 0 });
+  expect((await allPassages(t)).map((p) => p.text)).toEqual(["still there"]);
+});

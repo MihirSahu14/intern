@@ -28,6 +28,9 @@ export const backfillSlack = internalAction({
     const oldest = Math.floor(Date.now() / 1000) - BACKFILL_DAYS * 86_400;
     const sourceIds: Id<"sources">[] = [];
     let cursor: string | undefined;
+    // ponytail: conversations.list (Tier 2, 20+/min) is paged here unpaced, in
+    // one action call — fine for a small community workspace's channel count.
+    // Page it like backfillChannel (scheduler + delay) if that count grows.
     do {
       const page = readChannels(
         await slackApi(token, "conversations.list", { types: "public_channel", exclude_archived: true, limit: 200, cursor }),

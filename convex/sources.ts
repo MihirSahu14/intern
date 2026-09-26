@@ -161,10 +161,13 @@ export const passageInput = v.object({
  * source's visibility and owner. `label`/`cursor` update the source;
  * `synced` marks a read finished.
  *
+ * A tombstoned key (see `slack.forget`) is never written, insert or rewrite,
+ * whatever `insertOnly` is: a backfill page fetched before a delete lands can
+ * still be written after it, and a retried delivery can't resurrect one.
+ *
  * `insertOnly` (the Slack event path): an existing `(sourceId, externalId)`
- * is left exactly as it is — Slack's own edit/delete events are the only way
- * that changes — and a tombstoned key (see `slack.forget`) is skipped rather
- * than recreated, so a retried delivery can neither revert nor resurrect one.
+ * is otherwise left exactly as it is — Slack's own edit/delete events are the
+ * only way that changes.
  */
 export const write = internalMutation({
   args: {
@@ -180,6 +183,11 @@ export const write = internalMutation({
     if (!s || s.status === "removed") return null;
     const handles = new Map<string, string | undefined>();
     for (const { slackUser, ...row } of a.passages) {
+      const gone = await ctx.db
+        .query("slackTombstones")
+        .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", s._id).eq("externalId", row.externalId))
+        .unique();
+      if (gone) continue;
       if (slackUser && !handles.has(slackUser)) handles.set(slackUser, (await slackMember(ctx, slackUser))?.handle);
       const authorHandle = slackUser ? handles.get(slackUser) : undefined;
       const existing = await ctx.db
@@ -198,13 +206,6 @@ export const write = internalMutation({
           });
         }
         continue;
-      }
-      if (a.insertOnly) {
-        const gone = await ctx.db
-          .query("slackTombstones")
-          .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", s._id).eq("externalId", row.externalId))
-          .unique();
-        if (gone) continue;
       }
       await ctx.db.insert("passages", { ...row, authorHandle, sourceId: s._id, visibility: s.visibility, ownerId: s.ownerId });
     }
