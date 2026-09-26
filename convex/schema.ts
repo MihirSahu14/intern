@@ -37,6 +37,8 @@ export const connectorKey = v.union(v.literal("gmail"), v.literal("slack"));
 /** Absent means public: every fact written before connectors existed. */
 export const visibility = v.union(v.literal("public"), v.literal("owner"));
 
+export const sourceKind = v.union(v.literal("slack_channel"), v.literal("document"), v.literal("github_repo"));
+
 export const draft = v.object({
   to: v.array(v.string()),
   cc: v.optional(v.array(v.string())),
@@ -94,12 +96,60 @@ export default defineSchema({
     visibility: v.optional(visibility),
     /** Set on facts captured from a member's own tools: the dedupe key for a redelivered event. */
     source: v.optional(v.string()),
+    /** Set on a fact promoted from an archive passage: the graph hangs it off that passage's source. */
+    fromPassageId: v.optional(v.id("passages")),
     text: v.string(),
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_ownerId_and_source", ["ownerId", "source"])
     .index("by_kind", ["kind"])
     .searchIndex("search_text", { searchField: "text" }),
+
+  /**
+   * Where passages come from: a public channel of the community Slack, a
+   * member's document, or a public GitHub repo. A removed source keeps its
+   * row, so it still counts toward its owner's day.
+   */
+  sources: defineTable({
+    kind: sourceKind,
+    label: v.string(),
+    url: v.optional(v.string()),
+    /** Slack channel id, a document's URL or `upload:<storageId>`, or `owner/repo` in lower case. */
+    externalId: v.string(),
+    /** Who added a document or repo. Slack channels belong to the community and have none. */
+    ownerId: v.optional(v.id("users")),
+    visibility,
+    status: v.union(v.literal("active"), v.literal("failed"), v.literal("removed")),
+    lastSyncedAt: v.optional(v.number()),
+    /** Slack's `next_cursor` while a backfill is part-way. */
+    cursor: v.optional(v.string()),
+    /** Why the last read failed, in words the member can act on. */
+    error: v.optional(v.string()),
+    /** An upload's file, deleted with the source. */
+    storageId: v.optional(v.id("_storage")),
+  })
+    .index("by_kind_and_externalId", ["kind", "externalId"])
+    .index("by_ownerId", ["ownerId"]),
+
+  /** One searchable piece of a source. Interns recall passages; only facts are drawn. */
+  passages: defineTable({
+    sourceId: v.id("sources"),
+    /** `<channel>:<ts>`, a document chunk's index, or `readme` / `issue:N` / `pr:N`. */
+    externalId: v.string(),
+    text: v.string(),
+    author: v.optional(v.string()),
+    /** The member's GitHub handle, when the Slack author is a member who connected that account. */
+    authorHandle: v.optional(v.string()),
+    url: v.optional(v.string()),
+    at: v.number(),
+    visibility,
+    ownerId: v.optional(v.id("users")),
+    /** Set once: the fact this passage became. */
+    promotedFactId: v.optional(v.id("facts")),
+  })
+    .index("by_sourceId_and_externalId", ["sourceId", "externalId"])
+    .index("by_sourceId_and_at", ["sourceId", "at"])
+    .searchIndex("search_text", { searchField: "text", filterFields: ["visibility", "ownerId"] }),
 
   interns: defineTable({
     ownerId: v.id("users"),

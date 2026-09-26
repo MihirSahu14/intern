@@ -6,9 +6,20 @@
 
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
+import { PASSAGE_EXCERPT } from "./ingest.ts";
 import type { ActionKind } from "./types.ts";
 
 export type Recalled = { id: string; title: string; body: string };
+
+/** An archive passage, as `facts.archive` returns it. */
+export type Archived = { id: string; label: string; author: string | null; at: number; text: string };
+
+/** One passage line: its citation id, where and when it was said, and at most PASSAGE_EXCERPT of it on one line. */
+const archived = (a: Archived) =>
+  `- [p:${a.id}] ${[a.label, a.author, new Date(a.at).toISOString().slice(0, 10)].filter(Boolean).join(" · ")}: ${a.text
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, PASSAGE_EXCERPT)}`;
 
 /**
  * What the product is, so a task about Intern itself never waits on recall
@@ -22,6 +33,7 @@ const ABOUT = `WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the tas
 - Intern is a public community brain: one shared set of facts that everyone who signs in with GitHub can read and add to, drawn as a live graph.
 - Members brief interns (you) in one sentence. An intern reads the brain first (recalled facts, past corrections included), then works.
 - Per brief you can draft ONE outbound message, ${channels}, and file up to three facts. Connections go through Composio.
+- The brain also holds a searchable archive of the community Slack's public channels, documents members share and public GitHub repos; the passages that match a task reach you as FROM THE ARCHIVE.
 - Nothing goes out until the member approves it in the outbox. They can edit first; their edit is saved as a fact the next intern reads first, which is how the brain learns.
 - You never ask questions: anything missing becomes a [placeholder] the member fills in before approving.
 - Limits: no browsing, no tools, no calendar or files, one draft per brief, ${BRIEFS_PER_DAY} briefs a day per member.
@@ -101,17 +113,24 @@ export function brief(
   self?: Self,
   /** Where a live Slack post with no channel goes; see interns.start. */
   slackChannel?: string,
+  /** Passages `facts.archive` found for this task. Evidence, cited like facts: in "sources" only. */
+  archive: Archived[] = [],
 ): string {
   const learned = recalled.length
     ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${recalled
         .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
         .join("\n")}\n`
     : "";
+  const fromArchive = archive.length
+    ? `\nFROM THE ARCHIVE, what the community said in Slack, documents and GitHub (evidence, not settled facts; cite the [p:id]s you use in "sources" only, never in your report prose):\n${archive
+        .map(archived)
+        .join("\n")}\n`
+    : "";
 
   return `You are an intern working a task for the team.
 
 TASK: ${task}
-${youWorkFor(self)}${learned}
+${youWorkFor(self)}${learned}${fromArchive}
 ${sendsFrom.length ? live(sendsFrom) : SANDBOX}
 
 ${ABOUT}
@@ -137,7 +156,7 @@ message), draft it as exactly one fenced block and a human approves it:
 
 \`\`\`action
 {"kind":"email","to":["name@example.com"],"subject":"…","body":"…",
- "rationale":"why this should go out","sources":["[id]s you relied on"]}
+ "rationale":"why this should go out","sources":["[id]s and [p:id]s you relied on"]}
 \`\`\`
 
 For Slack the channel goes in "to" and there is no subject. Always "to", never
@@ -164,8 +183,10 @@ function fnv(text: string): string {
 }
 
 const SAMPLE_SELF: Self = { handle: "{handle}", accounts: [{ kind: "email", label: "Gmail", account: "{account}" }] };
+const SAMPLE_ARCHIVE: Archived[] = [{ id: "{id}", label: "{label}", author: "{author}", at: 0, text: "{text}" }];
 export const PROMPT_VERSION = fnv(
   brief("{task}", []) +
     brief("{task}", [], ["{label}"]) +
-    brief("{task}", [], ["{label}"], SAMPLE_SELF, "{channel}"),
+    brief("{task}", [], ["{label}"], SAMPLE_SELF, "{channel}") +
+    brief("{task}", [], ["{label}"], SAMPLE_SELF, "{channel}", SAMPLE_ARCHIVE),
 );

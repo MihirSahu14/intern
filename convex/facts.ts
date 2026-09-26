@@ -1,6 +1,8 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
+import type { Archived } from "../lib/brief.ts";
 import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from "../lib/caps.ts";
+import { PASSAGES_RECALLED } from "../lib/ingest.ts";
 import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, type QueryCtx, internalQuery, mutation, query } from "./_generated/server";
@@ -65,6 +67,9 @@ export const teach = mutation({
   },
 });
 
+/** Convex search takes at most 16 terms. */
+const searchTerms = (task: string) => task.split(/\s+/).filter(Boolean).slice(0, 16).join(" ");
+
 /**
  * What an intern reads before it starts: the newest house-style lessons
  * (preferences and corrections, the learning loop), then the best full-text
@@ -81,8 +86,7 @@ export const recall = internalQuery({
       ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "preference")).order("desc").take(12), 3),
       ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "correction")).order("desc").take(12), 3),
     ];
-    // Convex search takes at most 16 terms.
-    const terms = task.split(/\s+/).filter(Boolean).slice(0, 16).join(" ");
+    const terms = searchTerms(task);
     const hits = terms
       ? usable(await ctx.db.query("facts").withSearchIndex("search_text", (q) => q.search("text", terms)).take(15), 5)
       : [];
@@ -95,6 +99,55 @@ export const recall = internalQuery({
       if (seen.has(f._id)) continue;
       seen.add(f._id);
       out.push({ id: f._id, title: f.title, body: f.body.slice(0, 400), kind: f.kind, visibility: f.visibility });
+    }
+    return out;
+  },
+});
+
+/**
+ * Up to PASSAGES_RECALLED archive passages for a task: the best public
+ * matches and the owner's own private ones, interleaved so neither crowds the
+ * other out. Never another member's private passage. Full-text now; this is
+ * the one function to swap for embeddings later.
+ *
+ * ponytail: over-reads twelve per search, so a stray passage of a removed
+ * source can't thin the six.
+ */
+export const archive = internalQuery({
+  args: { task: v.string(), ownerId: v.id("users") },
+  handler: async (ctx, { task, ownerId }) => {
+    const terms = searchTerms(task);
+    if (!terms) return [];
+    const window = PASSAGES_RECALLED * 2;
+    const [pub, own] = await Promise.all([
+      ctx.db
+        .query("passages")
+        .withSearchIndex("search_text", (q) => q.search("text", terms).eq("visibility", "public"))
+        .take(window),
+      ctx.db
+        .query("passages")
+        .withSearchIndex("search_text", (q) => q.search("text", terms).eq("visibility", "owner").eq("ownerId", ownerId))
+        .take(window),
+    ]);
+    const merged: Doc<"passages">[] = [];
+    for (let i = 0; i < window; i++) for (const p of [own[i], pub[i]]) if (p) merged.push(p);
+
+    const out: (Archived & { visibility: Doc<"passages">["visibility"] })[] = [];
+    const seen = new Set<string>();
+    for (const p of merged) {
+      if (out.length >= PASSAGES_RECALLED) break;
+      if (seen.has(p._id) || !visibleTo(p, ownerId)) continue;
+      seen.add(p._id);
+      const s = await ctx.db.get("sources", p.sourceId);
+      if (!s || s.status === "removed") continue;
+      out.push({
+        id: p._id,
+        label: s.label,
+        author: p.authorHandle ? `@${p.authorHandle}` : (p.author ?? null),
+        at: p.at,
+        text: p.text,
+        visibility: p.visibility,
+      });
     }
     return out;
   },

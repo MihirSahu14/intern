@@ -46,6 +46,6 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
   return { handle: u?.handle ?? u?.name ?? "someone", image: u?.image ?? null };
 }
 
-/** Owner-only facts reach their owner alone. Absent means public. */
-export const visibleTo = (f: Doc<"facts">, viewer: Id<"users"> | null) =>
-  f.visibility !== "owner" || (viewer !== null && f.ownerId === viewer);
+/** Owner-only rows (facts, passages, sources) reach their owner alone. Absent means public. */
+export const visibleTo = (row: { visibility?: "public" | "owner"; ownerId?: Id<"users"> }, viewer: Id<"users"> | null) =>
+  row.visibility !== "owner" || (viewer !== null && row.ownerId === viewer);
