@@ -5,7 +5,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type ActionCtx, type QueryCtx, httpAction, internalMutation, internalQuery } from "./_generated/server";
 import { memberProblem, slackLinkedUser } from "./access";
-import { factMatches, promotePassage, rewritePassage } from "./sources";
+import { promotePassage, rewritePassage, unchangedFacts } from "./sources";
 
 /**
  * POST /slack/events: the community workspace, read into the brain through
@@ -105,8 +105,8 @@ export const edit = internalMutation({
 });
 
 /**
- * Deleted in Slack means deleted in the brain: the passage, and its promoted
- * fact if nobody has changed it. A tombstone stays behind (keyed the same as
+ * Deleted in Slack means deleted in the brain: the passage, and every fact
+ * promoted from it that nobody has changed, owner-only ones included. A tombstone stays behind (keyed the same as
  * the passage was) so a retried "message" delivery — the original post,
  * redelivered after this delete already landed — can't bring it back; only
  * `write`'s insert path ever checks it, so it costs nothing elsewhere.
@@ -122,8 +122,7 @@ export const forget = internalMutation({
       .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", src._id).eq("externalId", externalId))
       .unique();
     if (p) {
-      const f = p.promotedFactId ? await ctx.db.get("facts", p.promotedFactId) : null;
-      if (f && factMatches(f, p.text)) await ctx.db.delete("facts", f._id);
+      for (const f of await unchangedFacts(ctx, p)) await ctx.db.delete("facts", f._id);
       await ctx.db.delete("passages", p._id);
     }
     const tomb = await ctx.db

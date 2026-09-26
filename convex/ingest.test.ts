@@ -547,6 +547,31 @@ test("slack: a member's owner-only capture doesn't swallow a public 🧠: a publ
   expect(facts.find((f) => f._id === captured)?.visibility).toBe("owner");
 });
 
+/** A Slack message, then a connected member's approval of a draft citing it: an owner-only fact from a public passage. */
+async function ownerOnlyFromSlack() {
+  slackEnv();
+  const { t, seedUser, asUser, seedDraft } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await post(t, message());
+  const [p] = await allPassages(t);
+  await asUser(a).mutation(api.outbox.decide, { actionId: await seedDraft(a, [`[p:${p._id}]`], { recalledPrivate: true }), decision: "approve" });
+  expect(await allFacts(t)).toEqual([expect.objectContaining({ visibility: "owner", ownerId: a, fromPassageId: p._id })]);
+  return t;
+}
+
+test("slack: a delete removes an owner-only fact promoted from the message too", async () => {
+  const t = await ownerOnlyFromSlack();
+  await post(t, deleted());
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("slack: an edit rewrites an owner-only fact promoted from the message too", async () => {
+  const t = await ownerOnlyFromSlack();
+  await post(t, edited("We ship on Thursdays"));
+  expect((await allFacts(t))[0]).toMatchObject({ title: "We ship on Thursdays", body: "We ship on Thursdays", visibility: "owner" });
+});
+
 test("slack: a retried delivery can't undo a delete or an edit", async () => {
   slackEnv();
   const { t } = setup();
@@ -833,6 +858,21 @@ test("unclaimed uploads past the hour are swept daily; a source's file and a fre
   expect(left.sort()).toEqual([claimed, fresh].sort());
 });
 
+test("a sweep longer than one page keeps its first run's cutoff, so every page's cursor still fits", async () => {
+  const { t } = setup();
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 101; i++) await ctx.storage.store(new Blob([`never added ${i}`]));
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
+  await t.mutation(internal.sources.sweepUploads, {});
+  const [next] = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  expect(next.name).toBe("sources:sweepUploads");
+  expect(next.args[0]).toMatchObject({ cutoff: Date.now() - 60 * 60_000, cursor: expect.any(String) });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(await t.run((ctx) => ctx.db.system.query("_storage").collect())).toHaveLength(0);
+});
+
 test("adding the same link twice is refused however many others added it first", async () => {
   const { seedUser, asUser, seedSource } = setup();
   const a = await seedUser("a");
@@ -959,6 +999,24 @@ test("a repo's read keeps only what it has now: a README that shrank drops its o
   stubGithub({ readme: "# Site\n\nShorter now." });
   await t.action(internal.ingest.syncRepo, { sourceId });
   expect((await allPassages(t)).map((p) => p.externalId).sort()).toEqual(["issue:1", "pr:2", "readme"]);
+});
+
+test("a README GitHub doesn't answer for keeps its chunks; the issues are still pruned", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedSource, seedPassage } = setup();
+  const sourceId = await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site" });
+  await seedPassage(sourceId, "old readme", { externalId: "readme" });
+  await seedPassage(sourceId, "old readme part", { externalId: "readme:1" });
+  await seedPassage(sourceId, "an old issue", { externalId: "issue:99" });
+  const github = stubGithub();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url, init) =>
+      url.endsWith("/readme") ? new Response("busy", { status: 503 }) : github(url, init),
+    ),
+  );
+  await t.action(internal.ingest.syncRepo, { sourceId });
+  expect((await allPassages(t)).map((p) => p.externalId).sort()).toEqual(["issue:1", "pr:2", "readme", "readme:1"]);
 });
 
 test("a 403 rate limit or a 503 from GitHub is transient, not a repo gone private: passages and status stay untouched", async () => {

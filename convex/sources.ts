@@ -100,9 +100,22 @@ export const factMatches = (f: Doc<"facts">, passageText: string) => {
 };
 
 /**
- * A passage's new text. An unchanged promoted fact follows it, so deleting
- * the message later still finds it unchanged; a fact that isn't (a member's
- * own capture) is left alone.
+ * Every fact promoted from this passage that still says only what it says —
+ * public or owner-only, linked by `promotedFactId` or not. A member's own
+ * capture (shaped differently) never matches. ponytail: first 50.
+ */
+export async function unchangedFacts(ctx: QueryCtx, p: Doc<"passages">): Promise<Doc<"facts">[]> {
+  const rows = await ctx.db
+    .query("facts")
+    .withIndex("by_fromPassageId", (q) => q.eq("fromPassageId", p._id))
+    .take(50);
+  return rows.filter((f) => factMatches(f, p.text));
+}
+
+/**
+ * A passage's new text. Every unchanged fact promoted from it follows it, so
+ * deleting the message later still finds them unchanged; a fact that isn't
+ * (a member's own capture) is left alone.
  */
 export async function rewritePassage(
   ctx: MutationCtx,
@@ -112,12 +125,9 @@ export async function rewritePassage(
 ): Promise<void> {
   // A daily re-read mostly finds nothing new: skip the write, and the graph re-run it would cause.
   if (p.text === text && Object.entries(patch).every(([k, val]) => p[k as keyof typeof patch] === val)) return;
-  if (p.text !== text && p.promotedFactId) {
-    const f = await ctx.db.get("facts", p.promotedFactId);
-    if (f && factMatches(f, p.text)) {
-      const made = passageFact(text);
-      await ctx.db.patch("facts", f._id, { ...made, text: `${made.title}\n${made.body}` });
-    }
+  if (p.text !== text) {
+    const made = passageFact(text);
+    for (const f of await unchangedFacts(ctx, p)) await ctx.db.patch("facts", f._id, { ...made, text: `${made.title}\n${made.body}` });
   }
   await ctx.db.patch("passages", p._id, { ...patch, text });
 }
@@ -206,7 +216,8 @@ export const passageInput = v.object({
  * only way that changes.
  *
  * `prune` (a repo's daily read): these passages are the whole source now, so
- * any other goes — a README that shrank, an issue past the latest 200.
+ * any other goes — a README that shrank, an issue past the latest 200 —
+ * except keys starting with `spare` (a README this read couldn't fetch).
  */
 export const write = internalMutation({
   args: {
@@ -217,6 +228,7 @@ export const write = internalMutation({
     synced: v.optional(v.boolean()),
     insertOnly: v.optional(v.boolean()),
     prune: v.optional(v.boolean()),
+    spare: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const s = await ctx.db.get("sources", a.sourceId);
@@ -254,7 +266,7 @@ export const write = internalMutation({
       const keep = new Set(a.passages.map((p) => p.externalId));
       const stale: Id<"passages">[] = [];
       for await (const p of ctx.db.query("passages").withIndex("by_sourceId_and_at", (q) => q.eq("sourceId", s._id))) {
-        if (!keep.has(p.externalId)) stale.push(p._id);
+        if (!keep.has(p.externalId) && !(a.spare && p.externalId.startsWith(a.spare))) stale.push(p._id);
       }
       for (const id of stale) await ctx.db.delete("passages", id);
     }
@@ -467,9 +479,11 @@ const SWEEP_BATCH = 100;
  * a time. Uploads are the only thing this app stores.
  */
 export const sweepUploads = internalMutation({
-  args: { cursor: v.optional(v.string()) },
-  handler: async (ctx, { cursor }) => {
-    const cutoff = Date.now() - UPLOAD_WINDOW_MS;
+  // `cutoff` is fixed by the first run: a cursor is only good for the same index range.
+  args: { cursor: v.optional(v.string()), cutoff: v.optional(v.number()) },
+  handler: async (ctx, a) => {
+    const cutoff = a.cutoff ?? Date.now() - UPLOAD_WINDOW_MS;
+    const cursor = a.cursor;
     const page = await ctx.db.system
       .query("_storage")
       .withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff))
@@ -481,7 +495,7 @@ export const sweepUploads = internalMutation({
         .first();
       if (s?.storageId !== f._id) await ctx.storage.delete(f._id);
     }
-    if (!page.isDone) await ctx.scheduler.runAfter(0, internal.sources.sweepUploads, { cursor: page.continueCursor });
+    if (!page.isDone) await ctx.scheduler.runAfter(0, internal.sources.sweepUploads, { cursor: page.continueCursor, cutoff });
     return null;
   },
 });

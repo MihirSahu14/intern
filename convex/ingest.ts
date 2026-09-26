@@ -143,7 +143,9 @@ export const syncRepo = internalAction({
         passages.push(...readIssues(rows));
         if (!Array.isArray(rows) || rows.length < ISSUE_PAGE_SIZE) break;
       }
-      await ctx.runMutation(internal.sources.write, { sourceId, label: repo.fullName, passages, synced: true, prune: true });
+      // A README GitHub didn't answer for this time (not a 404: it has none) keeps its chunks.
+      const spare = readmeRes.ok || readmeRes.status === 404 ? undefined : "readme";
+      await ctx.runMutation(internal.sources.write, { sourceId, label: repo.fullName, passages, synced: true, prune: true, spare });
     } catch (err) {
       console.log(`github: ${src.externalId} failed: ${errText(err)}`);
       await ctx.runMutation(internal.sources.fail, { sourceId, error: "Couldn't read this repo from GitHub." });

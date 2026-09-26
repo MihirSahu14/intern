@@ -102,6 +102,7 @@ export default defineSchema({
   })
     .index("by_ownerId", ["ownerId"])
     .index("by_ownerId_and_source", ["ownerId", "source"])
+    .index("by_fromPassageId", ["fromPassageId"])
     .index("by_kind", ["kind"])
     .searchIndex("search_text", { searchField: "text" }),
 

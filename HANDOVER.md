@@ -700,7 +700,7 @@ repo from GitHub." until it's replaced.
 ### 3. Deploy and set env (Mihir + Claude, ~15 min, needs your go-ahead)
 
 1. `npx convex deploy` (prod). The schema is additive (`sources`,
-   `passages`, `slackUsers`, `slackTombstones`, `facts.fromPassageId`,
+   `passages`, `slackUsers`, `slackTombstones`, `facts.fromPassageId` + `facts.by_fromPassageId`,
    `connections.by_externalUserId`), so it's safe before the frontend. It
    adds a second daily cron, `sweep unclaimed uploads` (stored files past the
    upload hour that no source kept). It's also the first bundle of
