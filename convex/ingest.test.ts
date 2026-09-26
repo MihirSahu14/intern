@@ -787,6 +787,35 @@ test("a private repo is refused", async () => {
   expect(await allPassages(t)).toHaveLength(0);
 });
 
+test("a repo GitHub 404s reads as gone private, same as a private repo: cleared", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedSource, seedPassage } = setup();
+  const sourceId = await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site" });
+  await seedPassage(sourceId, "old readme text");
+  vi.stubGlobal("fetch", vi.fn<(url: string) => Promise<Response>>(async () => new Response("{}", { status: 404 })));
+  await t.action(internal.ingest.syncRepo, { sourceId });
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Only public repos can be added." });
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("a 403 rate limit or a 503 from GitHub is transient, not a repo gone private: passages and status stay untouched", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  for (const status of [403, 503]) {
+    const { t, seedSource, seedPassage } = setup();
+    const sourceId = await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site" });
+    await seedPassage(sourceId, "old readme text");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<(url: string) => Promise<Response>>(async () => new Response("{}", { status, headers: { "x-ratelimit-remaining": "0" } })),
+    );
+    await t.action(internal.ingest.syncRepo, { sourceId });
+    const s = await t.run((ctx) => ctx.db.get("sources", sourceId));
+    expect(s?.status).toBe("failed");
+    expect(s?.error).not.toBe("Only public repos can be added.");
+    expect(await allPassages(t)).toHaveLength(1);
+  }
+});
+
 test("without a token GitHub isn't set up yet; with one, a repo is added once", async () => {
   const { t, seedUser, asUser } = setup();
   const a = await seedUser("a");

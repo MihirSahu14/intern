@@ -114,8 +114,21 @@ export const syncRepo = internalAction({
     try {
       const get = (url: string, accept?: string) => fetch(url, { headers: githubHeaders(token, accept) });
       const repoRes = await get(repoUrl(path));
-      // A private repo the token can't see is a 404, which reads the same way.
-      const repo = repoRes.ok ? readRepo(await repoRes.json()) : null;
+      // A private repo the token can't see reads back 404: gone private, so
+      // its passages clear, same as a 200 that now reads back non-public. Any
+      // other non-ok status (403 secondary rate limit, 429, 5xx) is GitHub
+      // not answering, not the repo going private — that's the same
+      // non-destructive failure the issues loop below throws into: the
+      // source keeps its passages and the cron tries again tomorrow.
+      // ponytail: doesn't abort the rest of refreshRepos's run on a 429/403
+      // rate limit — each repo is scheduled independently, so add a shared
+      // "stop the run" flag if the refresh starts tripping the daily limit.
+      if (repoRes.status === 404) {
+        await ctx.runMutation(internal.sources.fail, { sourceId, error: "Only public repos can be added.", clear: true });
+        return null;
+      }
+      if (!repoRes.ok) throw new Error(`repo: ${repoRes.status}`);
+      const repo = readRepo(await repoRes.json());
       if (!repo?.isPublic) {
         await ctx.runMutation(internal.sources.fail, { sourceId, error: "Only public repos can be added.", clear: true });
         return null;
