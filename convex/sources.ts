@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { passageFact, parseCitations } from "../lib/ingest.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, internalMutation, mutation } from "./_generated/server";
+import { type MutationCtx, internalMutation, internalQuery, mutation } from "./_generated/server";
 import { requireMember, slackMember, visibleTo } from "./access";
 import { factCapBlocked, insertFact } from "./facts";
 
@@ -219,6 +219,21 @@ export const write = internalMutation({
     // Skipped when there's nothing to patch: a busy channel's every message
     // would otherwise still write the source row, and contend over it.
     if (Object.keys(patch).length) await ctx.db.patch("sources", s._id, patch);
+    return null;
+  },
+});
+
+export const get = internalQuery({
+  args: { sourceId: v.id("sources") },
+  handler: async (ctx, { sourceId }) => await ctx.db.get("sources", sourceId),
+});
+
+/** A read that failed, with a reason the member can act on. Passages already read stay. */
+export const fail = internalMutation({
+  args: { sourceId: v.id("sources"), error: v.string() },
+  handler: async (ctx, a) => {
+    const s = await ctx.db.get("sources", a.sourceId);
+    if (s && s.status !== "removed") await ctx.db.patch("sources", s._id, { status: "failed", error: a.error.slice(0, 200) });
     return null;
   },
 });

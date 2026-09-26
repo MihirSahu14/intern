@@ -5,6 +5,8 @@ import {
   SLACK_TOLERANCE_S,
   SlackError,
   readChannelName,
+  readChannels,
+  readHistory,
   readSlackEvent,
   readUserName,
   slackApi,
@@ -161,4 +163,40 @@ test("the Web API helper posts a form with the bot token and names Slack's error
 test("a rate-limited call carries Slack's Retry-After", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response("", { status: 429, headers: { "retry-after": "7" } }));
   await assert.rejects(slackApi("xoxb-1", "users.info", { user: "U1" }), (err) => err instanceof SlackError && err.retryAfterS === 7);
+});
+
+// --- backfill ----------------------------------------------------------------
+
+test("conversations.list keeps public, unarchived channels", () => {
+  assert.deepEqual(
+    readChannels({
+      ok: true,
+      channels: [
+        { id: "C1", name: "general", is_private: false, is_archived: false, is_member: true },
+        { id: "C2", name: "old", is_private: false, is_archived: true, is_member: false },
+        { id: "C3", name: "secret", is_private: true, is_archived: false, is_member: true },
+      ],
+      response_metadata: { next_cursor: "dGVhbTpDMDYx" },
+    }),
+    { channels: [{ id: "C1", name: "general" }], next: "dGVhbTpDMDYx" },
+  );
+  assert.equal(readChannels({ ok: true, channels: [], response_metadata: { next_cursor: "" } }).next, null);
+});
+
+test("conversations.history keeps people's messages, and a cursor only while there's more", () => {
+  const page = {
+    ok: true,
+    messages: [
+      { type: "message", user: "U1", text: "We ship on Fridays", ts: "1758800000.000100" },
+      { type: "message", subtype: "channel_join", user: "U2", text: "<@U2> has joined the channel", ts: "1758800001.000100" },
+      { type: "message", subtype: "bot_message", bot_id: "B1", text: "deploy done", ts: "1758800002.000100" },
+    ],
+    has_more: true,
+    response_metadata: { next_cursor: "bmV4dA==" },
+  };
+  assert.deepEqual(readHistory(page, "C1"), {
+    messages: [{ channel: "C1", ts: "1758800000.000100", user: "U1", text: "We ship on Fridays" }],
+    next: "bmV4dA==",
+  });
+  assert.equal(readHistory({ ...page, has_more: false }, "C1").next, null);
 });

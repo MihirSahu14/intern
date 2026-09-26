@@ -2,10 +2,10 @@
 
 import { useAuthActions } from "@convex-dev/auth/react";
 import { AuthLoading, Authenticated, Unauthenticated, useQuery } from "convex/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import Cockpit, { stashSessionUri } from "./Cockpit";
-import Consent from "./Consent";
+import Consent, { JoinSlack } from "./Consent";
 import SignIn from "./SignIn";
 
 const Wait = ({ text }: { text: string }) => (
@@ -36,12 +36,37 @@ export default function Gate() {
   );
 }
 
+const JOIN_SEEN = "intern.slack_join_seen";
+
+/** Blocked storage reads as seen: better never to show the step than to show it every load. */
+const joinSeen = () => {
+  try {
+    return localStorage.getItem(JOIN_SEEN) === "1";
+  } catch {
+    return true;
+  }
+};
+
 function Member() {
   const me = useQuery(api.users.viewer, {});
+  // The invite is connections.mine's (https-only, env-driven); no second copy of that check.
+  const slack = useQuery(api.connections.mine, {})?.find((c) => c.key === "slack");
+  const [seen, setSeen] = useState(joinSeen);
   if (me === undefined) return <Wait text="loading" />;
   if (me === null) return <SignIn />;
   if (me.banned) return <Banned />;
   if (!me.accepted) return <Consent />;
+  if (slack?.invite && !slack.connected && !seen) {
+    const done = () => {
+      try {
+        localStorage.setItem(JOIN_SEEN, "1");
+      } catch {
+        // Storage blocked: the step shows again next time.
+      }
+      setSeen(true);
+    };
+    return <JoinSlack url={slack.invite} onDone={done} />;
+  }
   return <Cockpit me={{ userId: me.userId, handle: me.handle, image: me.image }} />;
 }
 

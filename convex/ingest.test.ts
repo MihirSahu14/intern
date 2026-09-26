@@ -541,3 +541,52 @@ test("slack: a validly-signed request with bad JSON is a 400", async () => {
   });
   expect(res.status).toBe(400);
 });
+
+// --- backfill and joining ------------------------------------------------------
+
+const person = (text: string, ts: string) => ({ type: "message", user: "U1", text, ts });
+
+test("backfill joins each public channel and pages its history back 90 days", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  const f = stubSlackApi({
+    "conversations.list": [
+      { ok: true, channels: [{ id: "C1", name: "general", is_private: false, is_archived: false, is_member: false }], response_metadata: { next_cursor: "" } },
+    ],
+    "conversations.join": [{ ok: true, channel: { id: "C1" } }],
+    "conversations.history": [
+      { ok: true, messages: [person("newest", "1758800002.000100"), person("newer", "1758800001.000100")], has_more: true, response_metadata: { next_cursor: "c2" } },
+      { ok: true, messages: [person("oldest", "1758800000.000100")], has_more: false, response_metadata: { next_cursor: "" } },
+    ],
+    "users.info": [{ ok: true, user: { id: "U1", name: "ann", profile: { display_name: "Ann" } } }],
+  });
+  const before = Math.floor(Date.now() / 1000);
+  expect(await t.action(internal.ingest.backfillSlack, {})).toEqual({ channels: 1 });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  expect(slackCalls(f, "conversations.join")).toEqual([{ channel: "C1" }]);
+  const history = slackCalls(f, "conversations.history");
+  expect(history.map((h) => h.cursor)).toEqual([undefined, "c2"]);
+  expect(Number(history[0].oldest)).toBeGreaterThanOrEqual(before - 90 * 86_400);
+  expect(Number(history[0].oldest)).toBeLessThanOrEqual(before - 90 * 86_400 + 5);
+  expect((await allPassages(t)).map((p) => `${p.text}:${p.author}`).sort()).toEqual(["newer:Ann", "newest:Ann", "oldest:Ann"]);
+  expect(slackCalls(f, "users.info")).toHaveLength(1);
+  const [src] = await t.run((ctx) => ctx.db.query("sources").collect());
+  expect(src).toMatchObject({ kind: "slack_channel", label: "#general", externalId: "C1", status: "active", visibility: "public" });
+  expect(src.cursor).toBeUndefined();
+  expect(src.lastSyncedAt).toBeTypeOf("number");
+});
+
+test("backfill resumes a channel from its source's cursor", async () => {
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t, seedSource } = setup();
+  const sourceId = await seedSource({ kind: "slack_channel", label: "#general", externalId: "C1", cursor: "c2" });
+  const f = stubSlackApi({ "conversations.history": [{ ok: true, messages: [person("older", "1758700000.000100")], has_more: false }] });
+  await t.action(internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest: 0 });
+  expect(slackCalls(f, "conversations.join")).toEqual([]);
+  expect(slackCalls(f, "conversations.history")).toEqual([{ channel: "C1", oldest: "0", limit: "200", cursor: "c2" }]);
+  expect((await t.run((ctx) => ctx.db.get("sources", sourceId)))?.cursor).toBeUndefined();
+  expect(await allPassages(t)).toHaveLength(1);
+});

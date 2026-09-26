@@ -16,6 +16,7 @@ import type * as connections from "../connections.js";
 import type * as facts from "../facts.js";
 import type * as http from "../http.js";
 import type * as inbound from "../inbound.js";
+import type * as ingest from "../ingest.js";
 import type * as interns from "../interns.js";
 import type * as outbox from "../outbox.js";
 import type * as questions from "../questions.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   facts: typeof facts;
   http: typeof http;
   inbound: typeof inbound;
+  ingest: typeof ingest;
   interns: typeof interns;
   outbox: typeof outbox;
   questions: typeof questions;

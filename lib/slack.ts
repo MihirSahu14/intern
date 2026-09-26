@@ -154,3 +154,39 @@ export const readUserName = (json: Json): string | null => {
 };
 
 export const readChannelName = (json: Json): string | null => str(obj(json.channel).name) ?? null;
+
+/**
+ * Backfill pacing, confirmed on docs.slack.dev on 2026-09-25 (Task 5 Step 1):
+ * conversations.history is Tier 3 (50+ a minute) for an internal app
+ * installed in its own workspace. One call per HISTORY_DELAY_MS stays under it.
+ */
+export const HISTORY_PAGE = 200;
+export const HISTORY_DELAY_MS = 1_500;
+
+const rows = (v: unknown) => (Array.isArray(v) ? v.map(obj) : []);
+const nextCursor = (json: Json) => str(obj(json.response_metadata).next_cursor) ?? null;
+
+/** conversations.list, public and unarchived only, however it was asked. */
+export function readChannels(json: Json): { channels: { id: string; name: string }[]; next: string | null } {
+  return {
+    channels: rows(json.channels).flatMap((c) => {
+      const id = str(c.id);
+      const name = str(c.name);
+      return id && name && c.is_private === false && c.is_archived !== true ? [{ id, name }] : [];
+    }),
+    next: nextCursor(json),
+  };
+}
+
+/** conversations.history: a person's own messages only, and a cursor only while there's more. */
+export function readHistory(json: Json, channel: string): { messages: SlackMessage[]; next: string | null } {
+  return {
+    messages: rows(json.messages).flatMap((m) => {
+      const ts = str(m.ts);
+      const user = str(m.user);
+      const text = str(m.text);
+      return ts && user && text && !m.bot_id && PERSON_SUBTYPES.has(str(m.subtype)) ? [{ channel, ts, user, text }] : [];
+    }),
+    next: json.has_more === true ? nextCursor(json) : null,
+  };
+}
