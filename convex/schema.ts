@@ -125,6 +125,11 @@ export default defineSchema({
     cursor: v.optional(v.string()),
     /** Why the last read failed, in words the member can act on. */
     error: v.optional(v.string()),
+    /**
+     * A failed read dropped its passages (a repo gone private): until a read
+     * succeeds again, none left over is recalled, listed or promoted.
+     */
+    cleared: v.optional(v.boolean()),
     /** An upload's file, deleted with the source. */
     storageId: v.optional(v.id("_storage")),
   })
@@ -144,7 +149,7 @@ export default defineSchema({
     at: v.number(),
     visibility,
     ownerId: v.optional(v.id("users")),
-    /** Set once: the fact this passage became. */
+    /** Set once: the fact this passage became, at least as visible as the passage. */
     promotedFactId: v.optional(v.id("facts")),
   })
     .index("by_sourceId_and_externalId", ["sourceId", "externalId"])

@@ -50,6 +50,9 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
 export const visibleTo = (row: { visibility?: "public" | "owner"; ownerId?: Id<"users"> }, viewer: Id<"users"> | null) =>
   row.visibility !== "owner" || (viewer !== null && row.ownerId === viewer);
 
+/** A source whose passages still count: there, not removed, not cleared by a failed read. */
+export const live = (s: Doc<"sources"> | null): s is Doc<"sources"> => !!s && s.status !== "removed" && !s.cleared;
+
 async function firstActiveSlackConnection(ctx: QueryCtx, slackUserId: string) {
   const rows = await ctx.db
     .query("connections")

@@ -6,6 +6,7 @@ import { slackSignature } from "../lib/slack.ts";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { PASSAGE_BATCH, rewritePassage } from "./sources";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -169,6 +170,43 @@ test("nobody promotes a passage they can't see", async () => {
   expect(await allFacts(t)).toEqual([expect.objectContaining({ title: "B's secret", visibility: "owner", ownerId: b })]);
 });
 
+test("an owner-only approval of a public passage files the owner's fact once and leaves it promotable", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const doc = await seedSource();
+  const p = await seedPassage(doc, "Pricing is per seat");
+  // Two drafts that could quote something private (as a connected member's always could), both citing it.
+  for (let i = 0; i < 2; i++) {
+    const actionId = await seedDraft(a, [`[p:${p}]`], { recalledPrivate: true });
+    await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  }
+  const facts = await allFacts(t);
+  expect(facts).toHaveLength(1);
+  expect(facts[0]).toMatchObject({ title: "Pricing is per seat", visibility: "owner", ownerId: a, source: `passage:${p}`, fromPassageId: p });
+  expect((await t.run((ctx) => ctx.db.get("passages", p)))?.promotedFactId).toBeUndefined();
+  expect((await asUser(a).query(api.sources.passages, { sourceId: doc }))?.passages[0].promoted).toBe(false);
+
+  // A later public promotion makes that same fact public: it says only what the passage says.
+  expect(await asUser(a).mutation(api.sources.promote, { passageId: p })).toBe(facts[0]._id);
+  const after = await allFacts(t);
+  expect(after).toHaveLength(1);
+  expect(after[0].visibility).toBeUndefined();
+  expect((await t.run((ctx) => ctx.db.get("passages", p)))?.promotedFactId).toBe(facts[0]._id);
+});
+
+test("after an owner-only approval, someone else's promote still makes a public fact", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const p = await seedPassage(await seedSource(), "Pricing is per seat");
+  await asUser(a).mutation(api.outbox.decide, { actionId: await seedDraft(a, [`[p:${p}]`], { recalledPrivate: true }), decision: "approve" });
+  const pub = await asUser(b).mutation(api.sources.promote, { passageId: p });
+  expect(await t.run((ctx) => ctx.db.get("facts", pub))).toMatchObject({ ownerId: b, fromPassageId: p });
+  expect((await t.run((ctx) => ctx.db.get("facts", pub)))?.visibility).toBeUndefined();
+  expect((await t.run((ctx) => ctx.db.get("passages", p)))?.promotedFactId).toBe(pub);
+  expect(await allFacts(t)).toHaveLength(2);
+});
+
 test("the promote button counts toward the 20 facts a day", async () => {
   const { t, seedUser, asUser, seedSource, seedPassage } = setup();
   const a = await seedUser("a");
@@ -193,6 +231,21 @@ test("removing a source deletes its passages and keeps what was promoted from it
   expect(await allPassages(t)).toHaveLength(0);
   expect(await allFacts(t)).toHaveLength(1);
   expect((await t.run((ctx) => ctx.db.get("sources", doc)))?.status).toBe("removed");
+});
+
+test("removing a source with more passages than one batch clears every one of them", async () => {
+  const { t, seedUser, asUser, seedSource } = setup();
+  const a = await seedUser("a");
+  const doc = await seedSource({ ownerId: a });
+  await t.run(async (ctx) => {
+    for (let i = 0; i < PASSAGE_BATCH + 10; i++) {
+      await ctx.db.insert("passages", { sourceId: doc, externalId: String(i), text: `pricing ${i}`, at: i, visibility: "public", ownerId: a });
+    }
+  });
+  await asUser(a).mutation(api.sources.remove, { sourceId: doc });
+  expect(await allPassages(t)).toHaveLength(10);
+  await settle(t);
+  expect(await allPassages(t)).toHaveLength(0);
 });
 
 test("purge removes a member's sources, passages and files, and nobody else's", async () => {
@@ -461,8 +514,37 @@ test("slack: a member's own Composio capture of the message is adopted, not dupl
   await post(t, reaction("brain", "U2"));
   expect(await allFacts(t)).toHaveLength(1);
   expect((await allPassages(t))[0].promotedFactId).toBe(captured);
+  expect((await t.run((ctx) => ctx.db.get("facts", captured)))?.fromPassageId).toBe((await allPassages(t))[0]._id);
   await post(t, deleted());
   expect(await allFacts(t)).toHaveLength(1);
+});
+
+test("slack: a member's owner-only capture doesn't swallow a public 🧠: a public fact is filed beside it", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await linkSlack(t, a, "U2");
+  await post(t, message());
+  // Captured through Composio from someone else's message: owner-only, and shaped by slackFact, not passageFact.
+  const captured = await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "We ship on Fridays",
+      body: "because QA is Thursday",
+      kind: "note",
+      ownerId: a,
+      visibility: "owner",
+      source: `slack:C1:${TS}`,
+      text: "We ship on Fridays\nbecause QA is Thursday",
+    }),
+  );
+  await post(t, reaction("brain", "U2"));
+  const facts = await allFacts(t);
+  expect(facts).toHaveLength(2);
+  const pub = facts.find((f) => f._id !== captured)!;
+  expect(pub.visibility).toBeUndefined();
+  expect((await allPassages(t))[0].promotedFactId).toBe(pub._id);
+  expect(facts.find((f) => f._id === captured)?.visibility).toBe("owner");
 });
 
 test("slack: a retried delivery can't undo a delete or an edit", async () => {
@@ -717,12 +799,55 @@ test("an upload over 5 MB, or one that isn't text, is refused", async () => {
   expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Upload a markdown, text or PDF file." });
 });
 
+test("the watchdog fails a source never read, and leaves a read one alone", async () => {
+  const { t, seedUser, asUser, seedSource } = setup();
+  const a = await seedUser("a");
+  const stuck = await seedSource({ ownerId: a });
+  const read = await seedSource({ ownerId: a, lastSyncedAt: Date.now() });
+  await t.mutation(internal.sources.stale, { sourceId: stuck });
+  await t.mutation(internal.sources.stale, { sourceId: read });
+  expect(await t.run((ctx) => ctx.db.get("sources", stuck))).toMatchObject({ status: "failed", error: "Couldn't read that source." });
+  expect(await t.run((ctx) => ctx.db.get("sources", read))).toMatchObject({ status: "active" });
+
+  // Every add path sets it.
+  stubPage("hi", "text/plain");
+  await asUser(a).mutation(api.sources.addLink, { input: "https://example.com/new", private: false });
+  const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  expect(scheduled.map((s) => s.name).sort()).toEqual(["documents:readUrl", "sources:stale"]);
+  await settle(t);
+});
+
+test("unclaimed uploads past the hour are swept daily; a source's file and a fresh one stay", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const claimed = await t.run((ctx) => ctx.storage.store(new Blob(["# kept"], { type: "text/markdown" })));
+  await asUser(a).mutation(api.sources.addUpload, { storageId: claimed, name: "kept.md", private: false });
+  await t.run((ctx) => ctx.storage.store(new Blob(["never added"])));
+  await settle(t);
+  vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
+  const fresh = await t.run((ctx) => ctx.storage.store(new Blob(["uploading now"])));
+
+  await t.mutation(internal.sources.sweepUploads, {});
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  const left = await t.run(async (ctx) => (await ctx.db.system.query("_storage").collect()).map((f) => f._id));
+  expect(left.sort()).toEqual([claimed, fresh].sort());
+});
+
+test("adding the same link twice is refused however many others added it first", async () => {
+  const { seedUser, asUser, seedSource } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  for (let i = 0; i < 50; i++) await seedSource({ ownerId: b, externalId: "https://example.com/doc" });
+  await seedSource({ ownerId: a, externalId: "https://example.com/doc" });
+  await expect(asUser(a).mutation(api.sources.addLink, { input: "https://example.com/doc", private: false })).rejects.toThrow(/already added/);
+});
+
 // --- GitHub ------------------------------------------------------------------
 
 /** GitHub's REST API for acme/site, shaped as docs.github.com shows it (Task 7 Step 1). */
-function stubGithub(o: { private?: boolean } = {}) {
+function stubGithub(o: { private?: boolean; readme?: string } = {}) {
   const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
-    if (url.endsWith("/repos/acme/site/readme")) return new Response("# Site\n\nThe marketing site.");
+    if (url.endsWith("/repos/acme/site/readme")) return new Response(o.readme ?? "# Site\n\nThe marketing site.");
     if (url.includes("/repos/acme/site/issues")) {
       return Response.json([
         {
@@ -796,6 +921,44 @@ test("a repo GitHub 404s reads as gone private, same as a private repo: cleared"
   await t.action(internal.ingest.syncRepo, { sourceId });
   expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Only public repos can be added." });
   expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("a repo gone private leaves nothing recallable, listed or promotable, then nothing at all", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedUser, asUser, seedSource, seedDraft } = setup();
+  const a = await seedUser("a");
+  const sourceId = await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site", ownerId: a });
+  await t.run(async (ctx) => {
+    for (let i = 0; i < PASSAGE_BATCH + 10; i++) {
+      await ctx.db.insert("passages", { sourceId, externalId: `issue:${i}`, text: `pricing ${i}`, at: i, visibility: "public", ownerId: a });
+    }
+  });
+  vi.stubGlobal("fetch", vi.fn<(url: string) => Promise<Response>>(async () => new Response("{}", { status: 404 })));
+  await t.action(internal.ingest.syncRepo, { sourceId });
+
+  // One batch is gone; what's left is already out of reach.
+  expect(await allPassages(t)).toHaveLength(10);
+  expect(await t.query(internal.facts.archive, { task: "pricing", ownerId: a })).toEqual([]);
+  expect(await asUser(a).query(api.sources.passages, { sourceId })).toMatchObject({ status: "failed", passages: [] });
+  const left = (await allPassages(t))[0]._id;
+  await expect(asUser(a).mutation(api.sources.promote, { passageId: left })).rejects.toThrow(/isn't there/);
+  await asUser(a).mutation(api.outbox.decide, { actionId: await seedDraft(a, [`[p:${left}]`]), decision: "approve" });
+  expect(await allFacts(t)).toHaveLength(0);
+
+  await settle(t);
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("a repo's read keeps only what it has now: a README that shrank drops its old chunks", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "github_pat_test");
+  const { t, seedSource } = setup();
+  const sourceId = await seedSource({ kind: "github_repo", label: "acme/site", externalId: "acme/site" });
+  stubGithub({ readme: ["a", "b", "c"].map((c) => c.repeat(900)).join("\n\n") });
+  await t.action(internal.ingest.syncRepo, { sourceId });
+  expect((await allPassages(t)).map((p) => p.externalId).sort()).toEqual(["issue:1", "pr:2", "readme", "readme:1", "readme:2"]);
+  stubGithub({ readme: "# Site\n\nShorter now." });
+  await t.action(internal.ingest.syncRepo, { sourceId });
+  expect((await allPassages(t)).map((p) => p.externalId).sort()).toEqual(["issue:1", "pr:2", "readme"]);
 });
 
 test("a 403 rate limit or a 503 from GitHub is transient, not a repo gone private: passages and status stay untouched", async () => {
@@ -884,6 +1047,22 @@ test("a source's passages are listed for whoever can see them, redacted and cut 
   expect(view?.passages).toEqual([
     { _id: p, text: `mail [email] ${"x".repeat(387)}`, author: null, at: Date.UTC(2026, 8, 18), url: null, promoted: false },
   ]);
+  // An author is redacted like the text.
+  await seedPassage(doc, "later", { ownerId: a, visibility: "owner", author: "ann@acme.com", at: Date.UTC(2026, 8, 19) });
+  expect((await asUser(a).query(api.sources.passages, { sourceId: doc }))?.passages[0].author).toBe("[email]");
+});
+
+test("a re-read that changes nothing writes nothing", async () => {
+  const { t, seedSource, seedPassage } = setup();
+  const pid = await seedPassage(await seedSource(), "same", { author: "ann", url: "https://example.com/x" });
+  await t.run(async (ctx) => {
+    const p = (await ctx.db.get("passages", pid))!;
+    const patch = vi.spyOn(ctx.db, "patch");
+    await rewritePassage(ctx, p, "same", { author: "ann", authorHandle: undefined, url: "https://example.com/x", at: p.at });
+    expect(patch).not.toHaveBeenCalled();
+    await rewritePassage(ctx, p, "same", { author: "bo" });
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
 });
 
 test("member pages list public sources; the feed says who added one, once it's read", async () => {
@@ -897,8 +1076,12 @@ test("member pages list public sources; the feed says who added one, once it's r
   const m = await t.query(api.community.member, { handle: "ann" });
   expect(m?.sources.map((s) => s.label).sort()).toEqual(["Handbook", "Still reading"]);
   expect(JSON.stringify(m)).not.toMatch(/Deal notes/);
-  const feed = (await t.query(api.community.feed, {})).map((e) => e.text);
+  const events = await t.query(api.community.feed, {});
+  const feed = events.map((e) => e.text);
   expect(feed).toContain("added a source: Handbook");
+  // Dated when it was added, not when it was last read: a repo's daily read doesn't bring it back up.
+  const handbook = (await t.run((ctx) => ctx.db.query("sources").collect())).find((s) => s.label === "Handbook");
+  expect(events.find((e) => e.text === "added a source: Handbook")?.at).toBe(handbook?._creationTime);
   expect(feed.join("\n")).not.toMatch(/Deal notes|Gone|Still reading/);
 });
 

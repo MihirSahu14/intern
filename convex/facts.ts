@@ -6,7 +6,7 @@ import { PASSAGES_RECALLED } from "../lib/ingest.ts";
 import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, type QueryCtx, internalQuery, mutation, query } from "./_generated/server";
-import { capExempt, requireMember, visibleTo } from "./access";
+import { capExempt, live, requireMember, visibleTo } from "./access";
 import { broadcast } from "./broadcast";
 import { factKind } from "./schema";
 
@@ -112,8 +112,8 @@ export const recall = internalQuery({
  * other out. Never another member's private passage. Full-text now; this is
  * the one function to swap for embeddings later.
  *
- * ponytail: over-reads twelve per search, so a stray passage of a removed
- * source can't thin the six.
+ * ponytail: over-reads twelve per search, so a stray passage of a removed or
+ * cleared source can't thin the six.
  */
 export const archive = internalQuery({
   args: { task: v.string(), ownerId: v.id("users") },
@@ -141,7 +141,7 @@ export const archive = internalQuery({
       if (seen.has(p._id) || !visibleTo(p, ownerId)) continue;
       seen.add(p._id);
       const s = await ctx.db.get("sources", p.sourceId);
-      if (!s || s.status === "removed") continue;
+      if (!live(s)) continue;
       out.push({
         id: p._id,
         label: s.label,

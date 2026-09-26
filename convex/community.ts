@@ -45,7 +45,7 @@ export const feed = query({
       // A member's public source, once it has been read: the line the broadcast posts.
       ...sources.flatMap((s) =>
         s.ownerId && s.visibility === "public" && s.status !== "removed" && s.lastSyncedAt
-          ? [{ at: s.lastSyncedAt, ownerId: s.ownerId, text: `added a source: ${redactEmails(stripLinks(s.label))}` }]
+          ? [{ at: s._creationTime, ownerId: s.ownerId, text: `added a source: ${redactEmails(stripLinks(s.label))}` }]
           : [],
       ),
       ...[...approved, ...sent].map((a) => ({

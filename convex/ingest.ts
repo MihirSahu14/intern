@@ -96,7 +96,8 @@ export const backfillChannel = internalAction({
 });
 
 /**
- * A repo's README and its latest 200 issues and PRs, one passage each.
+ * A repo's README and its latest 200 issues and PRs, one passage each, and
+ * nothing else: whatever the last read had that this one doesn't goes.
  * Checked public on every read: one that has gone private since is failed
  * and its passages cleared.
  */
@@ -142,7 +143,7 @@ export const syncRepo = internalAction({
         passages.push(...readIssues(rows));
         if (!Array.isArray(rows) || rows.length < ISSUE_PAGE_SIZE) break;
       }
-      await ctx.runMutation(internal.sources.write, { sourceId, label: repo.fullName, passages, synced: true });
+      await ctx.runMutation(internal.sources.write, { sourceId, label: repo.fullName, passages, synced: true, prune: true });
     } catch (err) {
       console.log(`github: ${src.externalId} failed: ${errText(err)}`);
       await ctx.runMutation(internal.sources.fail, { sourceId, error: "Couldn't read this repo from GitHub." });
