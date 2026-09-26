@@ -44,6 +44,11 @@ export const SLACK_TOOLS = {
   info: "SLACK_RETRIEVE_CONVERSATION_INFORMATION",
 };
 
+export const GMAIL_TOOLS = {
+  /** Who connected: Gmail's users.getProfile, called with `{ user_id: "me" }`. */
+  profile: "GMAIL_GET_PROFILE",
+};
+
 type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
@@ -171,4 +176,17 @@ export function readWhoami(data: Json): { userId: string | null; teamId: string 
   const user = str(data.user);
   const team = str(data.team);
   return { userId: str(data.user_id) ?? null, teamId: str(data.team_id) ?? null, label: user && team ? `@${user} in ${team}` : null };
+}
+
+/**
+ * Gmail's users.getProfile: the connected address. `execute` hands over
+ * Composio's `data`, which some toolkits wrap once more in `response_data`
+ * (or `data`), so one level down is read too. Anything else is null.
+ */
+export function readGmailProfile(data: Json): string | null {
+  for (const d of [data, obj(data.response_data), obj(data.data)]) {
+    const email = str(d.emailAddress) ?? str(d.email);
+    if (email) return email;
+  }
+  return null;
 }

@@ -6,12 +6,13 @@ import type { FactKind } from "@/lib/types";
 /**
  * Put something into the brain by hand.
  *
- * The rest of the cockpit fills the graph by asking: an intern parks on a
- * question and waits for someone to answer it. That only ever covers what an
- * intern happened to get stuck on, so everything a person already knows and was
- * never asked about stays outside the brain. This is the other direction —
- * unprompted, and the same landing path as an answered question, so a fact
- * typed here is indistinguishable from one an answer produced.
+ * The rest of the cockpit fills the graph from work: facts interns file and
+ * edits people make to drafts. That only ever covers what some brief happened
+ * to touch, so everything a person already knows stays outside the brain. This
+ * is the other direction — unprompted, and the same landing path as an
+ * answered question (interns no longer ask, but older open questions can
+ * still be answered), so a fact typed here is indistinguishable from one an
+ * answer produced.
  *
  * Text and kind, and nothing else: that is exactly what `facts.teach` stores.
  * Tags, a subject and an "attach to the selected node" toggle used to be

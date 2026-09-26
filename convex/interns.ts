@@ -1,12 +1,12 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import { DAY_WINDOW, MAX_BRIEF_CHARS, costUsd, dayKey, dayStart, spawnBlocked, tooManyBriefs } from "../lib/caps.ts";
-import { PROMPT_VERSION } from "../lib/brief.ts";
+import { PROMPT_VERSION, type Self } from "../lib/brief.ts";
 import { CONNECTORS, type ConnectorKey, connectorFor, isConfigured } from "../lib/connectors.ts";
 import { redactEmails } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, internalMutation, mutation, query } from "./_generated/server";
+import { type MutationCtx, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { capExempt, ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
@@ -234,15 +234,33 @@ export const start = internalMutation({
     }
     // Which of the owner's accounts a draft from this run would really go out through.
     const live: ConnectorKey[] = [];
+    // Who "me" is: the owner's own handle and accounts, for their own run's
+    // prompt only. Never logged, filed or broadcast.
+    const accounts: Self["accounts"] = [];
     for (const c of CONNECTORS) {
-      if (isConfigured(c, process.env) && (await activeConnection(ctx, i.ownerId, c.key))) live.push(c.key);
+      const row = isConfigured(c, process.env) ? await activeConnection(ctx, i.ownerId, c.key) : null;
+      if (!row) continue;
+      live.push(c.key);
+      if (row.accountLabel) accounts.push({ kind: c.forKind, label: c.label, account: row.accountLabel });
     }
     // Kept on the run so `finish` can mark a draft briefed as sandbox — its
     // placeholder recipients must never go out unchanged (see outbox.decide).
     await ctx.db.patch("interns", internId, { status: "running", startedAt: Date.now(), promptVersion: PROMPT_VERSION, sendsFrom: live });
     const sendsFrom = CONNECTORS.filter((c) => live.includes(c.key)).map((c) => c.label);
-    return { task: i.task, ownerId: i.ownerId, sendsFrom };
+    const handle = (await ctx.db.get("users", i.ownerId))?.handle;
+    // Where a Slack post with no channel goes, so an unnamed channel is never a question.
+    // ponytail: "#all-intern-community" is the default channel Slack gave the prod
+    // workspace; set COMMUNITY_SLACK_CHANNEL if it's renamed or another community runs this.
+    const slackChannel = process.env.COMMUNITY_SLACK_CHANNEL || (process.env.COMMUNITY_SLACK_TEAM_ID ? "#all-intern-community" : undefined);
+    // `ask` is the member's own words: a question-resumed `task` also carries answers.
+    return { task: i.task, ask: i.displayTask ?? i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, slackChannel };
   },
+});
+
+/** Whether the member cancelled this run mid-flight: `run.go` checks it before spending a second call. */
+export const cancelled = internalQuery({
+  args: { internId: v.id("interns") },
+  handler: async (ctx, { internId }) => (await ctx.db.get("interns", internId))?.status === "cancelled",
 });
 
 export const noteRecall = internalMutation({
@@ -296,8 +314,6 @@ export const finish = internalMutation({
       v.object({ kind: actionKind, title: v.string(), draft, rationale: v.string(), sources: v.array(v.string()) }),
     ),
     actionError: v.optional(v.string()),
-    question: v.optional(v.object({ question: v.string(), context: v.string() })),
-    questionError: v.optional(v.string()),
   },
   handler: async (ctx, a) => {
     const intern = await ctx.db.get("interns", a.internId);
@@ -320,26 +336,22 @@ export const finish = internalMutation({
       return null;
     }
 
-    if (a.question) {
-      await ctx.db.insert("questions", {
-        ownerId: intern.ownerId,
-        internId: a.internId,
-        question: a.question.question,
-        context: a.question.context,
-        status: "open",
-      });
-      await ctx.db.patch("interns", a.internId, { ...base, status: "waiting", parseOutcome: "question" });
-      // The question text is owner-only (questions.list); the public log line
-      // never carries it.
-      await log("warn", "asks a question");
-      return null;
-    }
-
     // A fact this run filed is owner-only whenever it recalled anything
     // private: an intern that read a private fact can restate it in its own
     // words, so the *filed* fact needs the same guard the recalled one had.
     const factVisibility: Doc<"facts">["visibility"] = intern.recalledPrivate ? "owner" : undefined;
-    for (const f of a.facts) {
+    // The run knows its owner's accounts (YOU WORK FOR) and any address it
+    // was briefed with; a public fact carries neither, whatever the prompt said.
+    const accountLabels: string[] = [];
+    if (!factVisibility && a.facts.length) {
+      for (const c of CONNECTORS) {
+        const label = (await activeConnection(ctx, intern.ownerId, c.key))?.accountLabel;
+        if (label) accountLabels.push(label);
+      }
+    }
+    const scrub = (text: string) => redactEmails(accountLabels.reduce((t, l) => t.split(l).join("[account]"), text));
+    for (const raw of a.facts) {
+      const f = factVisibility ? raw : { ...raw, title: scrub(raw.title), body: scrub(raw.body) };
       await insertFact(ctx, { ...f, ownerId: intern.ownerId, internId: a.internId, visibility: factVisibility });
       await log("ok", factVisibility ? "filed a private fact" : `filed · ${f.title}`);
     }
@@ -364,11 +376,6 @@ export const finish = internalMutation({
     } else if (a.actionError) {
       await log("err", `${a.actionError}. Nothing was queued.`);
       parseOutcome = `action_malformed:${a.actionError}`;
-    } else if (a.questionError) {
-      // A dropped intent is indistinguishable from no intent unless it's
-      // surfaced — same argument as actionError above.
-      await log("err", `${a.questionError}. No question was asked.`);
-      parseOutcome = `question_malformed:${a.questionError}`;
     }
 
     await ctx.db.patch("interns", a.internId, { ...base, status: "done", parseOutcome });

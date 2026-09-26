@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { changedFields, correctionFromEdit, editRatio } from "./edits.ts";
+import { changedFields, correctionFromEdit, editRatio, hasPlaceholder } from "./edits.ts";
 
 const draft = { to: ["#general"], subject: "", body: "Hello team, meet Intern." };
 
@@ -29,4 +29,23 @@ test("the correction quotes both versions", () => {
   const c = correctionFromEdit("slack", draft, accepted, ["body"]);
   assert.match(c.title, /slack: body rewritten/);
   assert.ok(c.body.includes(draft.body) && c.body.includes(accepted.body));
+});
+
+test("a bracketed placeholder is caught in any field; a markdown link is not one", () => {
+  assert.equal(hasPlaceholder({ ...draft, body: "See you on [date]." }), true);
+  assert.equal(hasPlaceholder({ ...draft, to: ["[recipient email]"] }), true);
+  assert.equal(hasPlaceholder({ ...draft, cc: ["[manager]"] }), true);
+  assert.equal(hasPlaceholder({ ...draft, subject: "Intro to [company]" }), true);
+  assert.equal(hasPlaceholder({ ...draft, body: "Docs: [the guide](https://example.com/guide)" }), false);
+  assert.equal(hasPlaceholder(draft), false);
+  assert.equal(hasPlaceholder({ ...draft, body: "an empty [] pair, and a [line\nbreak]" }), false);
+});
+
+test("footnotes, indexes and checkboxes aren't placeholders; a word in brackets still is", () => {
+  for (const body of ["as shown [1]", "- [x] done", "- [X] done", "- [ ] todo", "arr[0] and m[12]", "[ 3 ]"]) {
+    assert.equal(hasPlaceholder({ ...draft, body }), false, body);
+  }
+  for (const body of ["Hi [name],", "on [Q3 date]", "[sic]", "[équipe]"]) {
+    assert.equal(hasPlaceholder({ ...draft, body }), true, body);
+  }
 });

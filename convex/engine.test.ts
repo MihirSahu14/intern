@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
+import { NO_DRAFT, REWRITE } from "../lib/brief.ts";
 import { DAILY_BUDGET_USD, DAY_WINDOW, costUsd, dayKey } from "../lib/caps.ts";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -117,6 +118,326 @@ test("a missing MODEL_API_KEY fails the run through run.go with setup copy, no b
   expect(row?.error).toBe("The model isn't set up yet.");
   expect(row?.countsTowardCap).toBe(false);
   expect(f).not.toHaveBeenCalled();
+});
+
+/**
+ * The model, stubbed: one SSE stream per call, carrying the next of `reports`
+ * (the last repeats), each billed 100 in / 50 out. Returns the fetch mock,
+ * whose bodies hold the prompts.
+ */
+function stubModel(...reports: string[]) {
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  let call = 0;
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async () => {
+    const report = reports[Math.min(call++, reports.length - 1)];
+    const frames = [{ choices: [{ delta: { content: report } }] }, { usage: { prompt_tokens: 100, completion_tokens: 50 } }];
+    return new Response(frames.map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n");
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+const promptOf = (f: ReturnType<typeof stubModel>, call = 0) => JSON.parse(String(f.mock.calls[call][1]?.body)).messages[0].content as string;
+
+const ASKING = [
+  "Drafted what I could.",
+  "```question",
+  '{"question":"Which features?","context":"writing the mail"}',
+  "```",
+  "```fact",
+  '{"title":"Intern drafts, people approve","body":"Nothing sends without approval","kind":"note"}',
+  "```",
+].join("\n");
+
+const DRAFTING = [
+  "Drafted it.",
+  "```action",
+  '{"kind":"email","to":["[recipient]"],"subject":"What Intern does","body":"It drafts; you approve.","rationale":"asked to","sources":[]}',
+  "```",
+].join("\n");
+
+/** Composio configured and an active grant for `connector`: the run is briefed live. */
+function seedLive(t: ReturnType<typeof setup>["t"], userId: Id<"users">, connector: "gmail" | "slack", accountLabel?: string) {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("COMPOSIO_VERIFIER_URL", "https://site.test/app");
+  return t.run((ctx) =>
+    ctx.db.insert("connections", { userId, connector, status: "active", state: `s-${connector}`, composioAccountId: `ca-${connector}`, accountLabel, createdAt: Date.now() }),
+  );
+}
+
+/** A queued live run for a fresh member, run through `run.go`. */
+async function runLive(task: string) {
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task, status: "queued", countsTowardCap: true }));
+  await t.action(internal.run.go, { internId });
+  return {
+    intern: await t.run((ctx) => ctx.db.get("interns", internId)),
+    questions: await t.run((ctx) => ctx.db.query("questions").collect()),
+    actions: await t.run((ctx) => ctx.db.query("actions").collect()),
+    logs: (await t.run((ctx) => ctx.db.query("logs").collect())).map((l) => l.text),
+    usage: await t.run((ctx) => ctx.db.query("usage").collect()),
+  };
+}
+
+test("the prompt never offers a question block", async () => {
+  const f = stubModel(DRAFTING);
+  await runLive("mail the customer");
+  expect(promptOf(f)).not.toContain("```question");
+  expect(promptOf(f)).toContain("You can't ask questions.");
+});
+
+test("a reply that asks gets one rewrite call, and the draft from it lands; both calls are billed", async () => {
+  const f = stubModel(ASKING, DRAFTING);
+  const r = await runLive("mail the customer what Intern does");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  const second = promptOf(f, 1);
+  expect(second.startsWith(promptOf(f, 0))).toBe(true);
+  expect(second).toContain(ASKING);
+  expect(second).toContain(REWRITE);
+  expect(r.questions).toHaveLength(0);
+  expect(r.actions).toEqual([expect.objectContaining({ status: "pending", draft: expect.objectContaining({ to: ["[recipient]"] }) })]);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 200, tokensOut: 100 });
+  expect(r.usage[0].costUsd).toBeCloseTo(costUsd(200, 100));
+  expect(r.logs).toContain("drafting instead of asking");
+});
+
+test("a reply that asks twice still never parks: the question is ignored and the run is done", async () => {
+  const f = stubModel(ASKING, ASKING);
+  const r = await runLive("mail the customer");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  expect(r.questions).toHaveLength(0);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none" });
+  expect(r.logs).toContain("ignored a question — interns draft instead");
+});
+
+test("a reply that drafts is the only model call", async () => {
+  const f = stubModel(DRAFTING);
+  const r = await runLive("mail the customer");
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 100, tokensOut: 50 });
+  expect(r.logs).not.toContain("drafting instead of asking");
+});
+
+test("an outbound task answered in prose gets one rewrite call, and the draft from it lands", async () => {
+  const f = stubModel("Here's a short intro you could send: Intern drafts, you approve.", DRAFTING);
+  const r = await runLive("Email a prospect a two-line intro to Intern");
+
+  expect(f).toHaveBeenCalledTimes(2);
+  expect(promptOf(f, 1)).toContain(NO_DRAFT);
+  expect(r.actions).toEqual([expect.objectContaining({ status: "pending" })]);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "action", tokensIn: 200, tokensOut: 100 });
+  expect(r.logs).toContain("no draft in the reply, drafting one");
+});
+
+test("a task that isn't outbound can end in prose: one call, no draft", async () => {
+  const f = stubModel("Intern drafts, you approve, the brain learns from your edits.");
+  const r = await runLive("What can Intern do?");
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect(r.actions).toHaveLength(0);
+  expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none", tokensIn: 100, tokensOut: 50 });
+});
+
+/** One model reply as an SSE body, with its own usage frame (omitted when `usage` is null). */
+const sse = (text: string, usage: { prompt_tokens: number; completion_tokens: number } | null = { prompt_tokens: 100, completion_tokens: 50 }) =>
+  [{ choices: [{ delta: { content: text } }] }, ...(usage ? [{ usage }] : [])].map((j) => `data: ${JSON.stringify(j)}\n\n`).join("") + "data: [DONE]\n\n";
+
+test("a rewrite call that fails keeps the first reply: the brief finishes on it, billed for both", async () => {
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  const first = "Here's an intro you could send: Intern drafts, you approve.\n```fact\n" +
+    '{"title":"Intros stay two lines","body":"short","kind":"note"}\n```';
+  const replies = [
+    () => new Response(sse(first)),
+    // Busy: a 429 before anything streams.
+    () => new Response(JSON.stringify({ error: { message: "rate limited" } }), { status: 429 }),
+    // Billed, then nothing: dies as an empty report after its usage frame.
+    () => new Response(sse("", { prompt_tokens: 300, completion_tokens: 7 })),
+  ];
+  for (const second of [replies[1], replies[2]]) {
+    const calls = [replies[0], second];
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => calls[call++]()));
+    const r = await runLive("Email a prospect a two-line intro to Intern");
+
+    expect(call).toBe(2);
+    expect(r.intern).toMatchObject({ status: "done", parseOutcome: "none", countsTowardCap: true });
+    expect(r.intern?.summary).toContain("Here's an intro you could send");
+    expect(r.intern?.error).toBeUndefined();
+    expect(r.logs).toContain("rewrite failed — kept the first reply");
+    // The 429 billed nothing; the empty reply billed its usage frame too.
+    expect([r.intern?.tokensIn, r.intern?.tokensOut]).toEqual(second === replies[1] ? [100, 50] : [400, 57]);
+    expect(r.usage[0].costUsd).toBeCloseTo(second === replies[1] ? costUsd(100, 50) : costUsd(400, 57));
+  }
+});
+
+test("a run cancelled during its first call makes no rewrite call", async () => {
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "Email a prospect an intro", status: "queued", countsTowardCap: true }),
+  );
+  vi.stubEnv("MODEL_API_KEY", "test-key");
+  const f = vi.fn(async () => {
+    // The member hits cancel while the model is still answering.
+    await t.run((ctx) => ctx.db.patch("interns", internId, { status: "cancelled" }));
+    return new Response(sse("Here's an intro, in prose."));
+  });
+  vi.stubGlobal("fetch", f);
+
+  await t.action(internal.run.go, { internId });
+
+  expect(f).toHaveBeenCalledTimes(1);
+  const row = await t.run((ctx) => ctx.db.get("interns", internId));
+  expect(row).toMatchObject({ status: "cancelled", tokensIn: 100, tokensOut: 50 });
+  expect(row?.endedAt).toBeTypeOf("number");
+});
+
+test("outbound is judged on the member's own ask, not on answers a resumed task carries", async () => {
+  const f = stubModel("Intern drafts, you approve, the brain learns from your edits.");
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  const internId = await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: userId,
+      task: "What can Intern do?\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- For whom? → the people I email",
+      displayTask: "What can Intern do?",
+      status: "queued",
+      countsTowardCap: true,
+    }),
+  );
+
+  await t.action(internal.run.go, { internId });
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("done");
+});
+
+test("a draft always wins over a question in the same reply, with no rewrite call", async () => {
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
+  vi.stubEnv("COMMUNITY_SLACK_CHANNEL", "#welcome");
+  const f = stubModel(
+    [
+      "Drafted it.",
+      "```action",
+      '{"kind":"slack","to":["#welcome"],"body":"Welcome, new members!","rationale":"asked to","sources":[]}',
+      "```",
+      "```question",
+      '{"question":"Which channel?","context":"posting"}',
+      "```",
+    ].join("\n"),
+  );
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "slack");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "welcome the new members", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  expect(f).toHaveBeenCalledTimes(1);
+  expect(promptOf(f)).toContain("A Slack post with no channel goes to #welcome.");
+  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("actions").collect())).toEqual([expect.objectContaining({ kind: "slack", status: "pending" })]);
+  expect(await t.run((ctx) => ctx.db.get("interns", internId))).toMatchObject({ status: "done", parseOutcome: "action" });
+  const logs = await t.run((ctx) => ctx.db.query("logs").collect());
+  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "ignored a question — interns draft instead" }));
+});
+
+test("an email with no recipient is drafted to [recipient] and can't send until 'to' is filled in", async () => {
+  stubModel(
+    'Drafted.\n```action\n{"kind":"email","to":["[recipient]"],"subject":"Welcome","body":"Glad to have you.","rationale":"asked to","sources":[]}\n```',
+  );
+  const { t, seedUser, asUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "email the new customer a welcome note", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  const [action] = await t.run((ctx) => ctx.db.query("actions").collect());
+  expect(action).toMatchObject({ status: "pending", draftedLive: true, draft: { to: ["[recipient]"], subject: "Welcome" } });
+  const as = asUser(userId);
+  await expect(as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve" })).rejects.toThrow(
+    "Fill in the [bracketed] parts before sending.",
+  );
+  await expect(
+    as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve", edits: { body: "Glad to have you, truly." } }),
+  ).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+
+  // Composio: open the send session, then run the send.
+  let call = 0;
+  const bodies = [{ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" }];
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bodies[Math.min(call++, 1)]))));
+  await as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve", edits: { to: ["new@customer.com"] } });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  vi.useRealTimers();
+  expect(await t.run((ctx) => ctx.db.get("actions", action._id))).toMatchObject({ status: "sent", accepted: { to: ["new@customer.com"] } });
+});
+
+test("the owner's intern is told who \"me\" is, and the address goes nowhere else", async () => {
+  vi.stubEnv("COMPOSIO_API_KEY", "key");
+  vi.stubEnv("COMPOSIO_VERIFIER_URL", "https://site.test/app");
+  const f = stubModel("Drafted it.");
+  const { t, seedUser } = setup();
+  const userId = await seedUser("ann");
+  await t.run((ctx) =>
+    ctx.db.insert("connections", {
+      userId,
+      connector: "gmail",
+      status: "active",
+      state: "s1",
+      composioAccountId: "ca_1",
+      accountLabel: "ann@acme.com",
+      createdAt: Date.now(),
+    }),
+  );
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail myself", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  expect(promptOf(f)).toContain('YOU WORK FOR: @ann. "Me", "myself" and "my" in the task mean them — their email is ann@acme.com.');
+  const written = await t.run(async (ctx) => [
+    await ctx.db.query("logs").collect(),
+    await ctx.db.query("facts").collect(),
+    await ctx.db.query("interns").collect(),
+  ]);
+  expect(JSON.stringify(written)).not.toContain("ann@acme.com");
+});
+
+test("a fact a run files carries no address or account label when public, and stays verbatim when private", async () => {
+  stubModel(
+    'Done.\n```fact\n{"title":"ann@acme.com wants weekly mail","body":"write to ann@acme.com, or ping @ann in Intern Community","kind":"preference"}\n```',
+  );
+  const { t, seedUser } = setup();
+  const userId = await seedUser("ann");
+  await seedLive(t, userId, "slack", "@ann in Intern Community");
+  const fresh = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "mail me", status: "queued", countsTowardCap: true }));
+  // A question-resumed run (displayTask set) is private by construction; see noteRecall.
+  const resumed = await t.run((ctx) =>
+    ctx.db.insert("interns", { ownerId: userId, task: "mail me\n- Who? → me", displayTask: "mail me", status: "queued", resumes: fresh, countsTowardCap: true }),
+  );
+
+  await t.action(internal.run.go, { internId: fresh });
+  await t.action(internal.run.go, { internId: resumed });
+
+  const facts = await t.run((ctx) => ctx.db.query("facts").collect());
+  const pub = facts.find((f) => f.internId === fresh);
+  expect(pub?.visibility).toBeUndefined();
+  expect(pub).toMatchObject({
+    title: "[email] wants weekly mail",
+    body: "write to [email], or ping [account]",
+    text: "[email] wants weekly mail\nwrite to [email], or ping [account]",
+  });
+  expect(facts.find((f) => f.internId === resumed)).toMatchObject({
+    visibility: "owner",
+    title: "ann@acme.com wants weekly mail",
+    body: "write to ann@acme.com, or ping @ann in Intern Community",
+  });
 });
 
 test("the global budget stops everyone", async () => {

@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { SLACK_TOOLS, TRIGGERS, sign } from "../lib/inbound.ts";
+import { GMAIL_TOOLS, SLACK_TOOLS, TRIGGERS, sign } from "../lib/inbound.ts";
 import { broadcast } from "./broadcast";
 import schema from "./schema";
 
@@ -189,31 +189,6 @@ test("other people's interns: addresses redacted, report and streamed output wit
   // get a fixed string, never the raw message — see interns.logs.
   expect((await asUser(b).query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
   expect((await t.query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
-});
-
-test("a stuck intern's warn log names no text, only that it asked", async () => {
-  const { t, seedUser, asUser } = setup();
-  const a = await seedUser("a");
-  const b = await seedUser("b");
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "running", countsTowardCap: true }),
-  );
-  await t.mutation(internal.interns.finish, {
-    internId,
-    report: "stuck",
-    tokensIn: 1,
-    tokensOut: 1,
-    latencyMs: 1,
-    facts: [],
-    question: { question: "What is Ann's phone number?", context: "drafting the email" },
-  });
-
-  const forB = (await asUser(b).query(api.interns.logs, {})).map((l) => l.text);
-  expect(forB.some((line) => line.includes("phone number"))).toBe(false);
-  expect(forB).toContain("asks a question");
-
-  const forA = (await asUser(a).query(api.interns.logs, {})).map((l) => l.text);
-  expect(forA).toContain("asks a question");
 });
 
 test("answering a question files the answer owner-only and a resumed intern's task shows only the original ask", async () => {
@@ -497,6 +472,29 @@ test("finish: the member who consented on their own link is connected", async ()
   expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
     expect.objectContaining({ key: "gmail", configured: true, connected: true }),
   );
+  // The profile lookup got no usable answer here: best-effort, so still connected, just unlabelled.
+  expect((await t.run((ctx) => ctx.db.query("connections").first()))?.accountLabel).toBeUndefined();
+});
+
+test("finish: connecting Gmail records which address it is, for its owner's rail only", async () => {
+  composioEnv();
+  const { seedUser, asUser, seedPending } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  await seedPending(a);
+  const f = route([
+    ["/connected_accounts/complete_auth", completed],
+    ["/execute", { data: { emailAddress: "ann@acme.com", messagesTotal: 3 }, error: null, log_id: "log_1" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+  ]);
+
+  expect(await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).toEqual({ ok: true, connector: "gmail" });
+  const profile = f.mock.calls.find(([url]) => url.includes("/execute"));
+  expect(JSON.parse(String(profile?.[1]?.body))).toEqual({ tool_slug: GMAIL_TOOLS.profile, arguments: { user_id: "me" } });
+  expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
+    expect.objectContaining({ key: "gmail", connected: true, accountLabel: "ann@acme.com" }),
+  );
+  expect(JSON.stringify(await asUser(b).query(api.connections.mine, {}))).not.toContain("ann@acme.com");
 });
 
 test("finish: never takes a user id from its arguments", async () => {
@@ -721,6 +719,61 @@ test("approving with a connected account sends it and files an owner-only fact",
   expect(await t.run((ctx) => ctx.db.query("facts").collect())).toEqual([
     expect.objectContaining({ title: "emailed ann@acme.com about Pricing", kind: "note", visibility: "owner", ownerId: a }),
   ]);
+});
+
+test("a live draft still holding a [placeholder] can't be sent until it's filled in", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await t.run((ctx) =>
+    ctx.db.patch("actions", actionId, { draft: { to: ["ann@acme.com"], subject: "Pricing", body: "See you on [date]. [Docs](https://x.co)" } }),
+  );
+  await seedActive(a);
+  stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(
+    "Fill in the [bracketed] parts before sending.",
+  );
+  // An edit that leaves the placeholder in is checked as edited, and refused too.
+  await expect(
+    asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve", edits: { body: "Still [date], sorry." } }),
+  ).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("pending");
+
+  // The markdown link isn't a placeholder; the filled-in date clears it.
+  await asUser(a).mutation(api.outbox.decide, {
+    actionId,
+    decision: "approve",
+    edits: { body: "See you on Friday. [Docs](https://x.co)" },
+  });
+  // Drained here, or the scheduled send would fire inside a later test.
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.run((ctx) => ctx.db.get("actions", actionId)))?.status).toBe("sent");
+});
+
+test("a [placeholder] in cc blocks a live send until cc itself is edited", async () => {
+  composioEnv();
+  const { t, seedUser, asUser, seedDraft, seedActive } = setup();
+  const a = await seedUser("a");
+  const { actionId } = await seedDraft(a);
+  await t.run((ctx) =>
+    ctx.db.patch("actions", actionId, { draft: { to: ["ann@acme.com"], cc: ["[manager]"], subject: "Pricing", body: "Numbers attached." } }),
+  );
+  await seedActive(a);
+  stubFetch({ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" });
+
+  await expect(asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+  // What the outbox card sends: every field, cc included.
+  await asUser(a).mutation(api.outbox.decide, {
+    actionId,
+    decision: "approve",
+    edits: { to: ["ann@acme.com"], cc: ["boss@acme.com"], subject: "Pricing", body: "Numbers attached." },
+  });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(await t.run((ctx) => ctx.db.get("actions", actionId))).toMatchObject({ status: "sent", accepted: { cc: ["boss@acme.com"] } });
 });
 
 test("a dead-grant-shaped failure never shows Composio's raw reason — only the fixed reconnect copy — and can be retried", async () => {
@@ -1079,19 +1132,36 @@ test("the twenty-first send of the day is refused", async () => {
 
 test("an intern whose owner connected Gmail is briefed to send for real", async () => {
   composioEnv();
+  // The community workspace with no channel named: Slack's default for it.
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
-  await seedActive(a);
+  await seedActive(a, "gmail", { accountLabel: "ann@acme.com" });
+  await seedActive(a, "slack");
   const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
-  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: ["Gmail"] });
+  // Slack has no label here, so it sends but says nothing about who "me" is there.
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({
+    task: "t",
+    ask: "t",
+    ownerId: a,
+    sendsFrom: ["Gmail", "Slack"],
+    self: { handle: "a", accounts: [{ kind: "email", label: "Gmail", account: "ann@acme.com" }] },
+    slackChannel: "#all-intern-community",
+  });
 });
 
 test("without Composio's env the intern stays in the sandbox", async () => {
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
-  await seedActive(a);
+  await seedActive(a, "gmail", { accountLabel: "ann@acme.com" });
   const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "queued", countsTowardCap: true }));
-  expect(await t.mutation(internal.interns.start, { internId })).toEqual({ task: "t", ownerId: a, sendsFrom: [] });
+  expect(await t.mutation(internal.interns.start, { internId })).toEqual({
+    task: "t",
+    ask: "t",
+    ownerId: a,
+    sendsFrom: [],
+    self: { handle: "a", accounts: [] },
+  });
 });
 
 test("a lesson from a draft that could reach a real person stays private", async () => {
@@ -1435,9 +1505,15 @@ test("connecting Gmail to send never starts reading mail", async () => {
   const { seedUser, asUser, seedPending } = setup();
   const a = await seedUser("a");
   await seedPending(a, "gmail");
-  const f = route([["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "gmail" }]]);
+  const f = route([
+    ["/connected_accounts/complete_auth", { connected_account_id: "ca_1", toolkit_slug: "gmail" }],
+    ["/execute", { data: { emailAddress: "ann@acme.com" }, error: null, log_id: "log_1" }],
+    ["/tool_router/session", { session_id: "trs_1" }],
+  ]);
   expect((await asUser(a).action(api.connections.finish, { sessionUri: "su_1" })).ok).toBe(true);
-  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/complete_auth"]);
+  // No trigger, and the one tool it may run is the profile lookup, in a session scoped to it alone.
+  expect(f.mock.calls.map(([url]) => path(url))).toEqual(["/connected_accounts/complete_auth", "/tool_router/session", "/tool_router/session/trs_1/execute"]);
+  expect(JSON.parse(String(f.mock.calls[1][1]?.body)).tools).toEqual({ gmail: { enable: [GMAIL_TOOLS.profile] } });
   expect(await asUser(a).query(api.connections.mine, {})).toContainEqual(
     expect.objectContaining({ key: "gmail", connected: true, capture: false }),
   );

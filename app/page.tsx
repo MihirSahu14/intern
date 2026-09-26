@@ -114,9 +114,9 @@ export default function Landing() {
               body="The outbox keeps both halves: what the intern proposed and what you were actually willing to send. That difference becomes a fact the next intern reads first."
             />
             <Panel
-              title="It asks"
+              title="It never stalls"
               accent="text-k-question"
-              body="When the brief leaves something out that the brain can't resolve, the intern parks and asks. There is no timeout that eventually guesses anyway."
+              body="Missing details become [placeholders] you fill in before approving. There's no question to answer and no guess sent without you."
             />
           </div>
         </section>

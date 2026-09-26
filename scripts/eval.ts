@@ -1,8 +1,10 @@
 /**
- * Offline eval: 20 fixed briefs through the current prompt.
+ * Offline eval: 28 fixed briefs through the current prompt, sandbox by
+ * default; `EVAL_LIVE=1` runs every brief as a connected member (see LIVE).
  * Checks the one thing that has silently broken before: does a brief that
- * should draft produce a *usable* action block, and does one that should ask
- * produce a question?
+ * should draft produce a *usable* action block? Like run.go, a reply that
+ * asks instead, or answers an outbound task in prose, gets one rewrite call,
+ * and the second reply is graded.
  *
  *   npm run eval
  *
@@ -13,13 +15,42 @@
  * rate — a model outage, whole or partial, can't look like a pass.
  */
 import { parseActionBlock } from "../lib/action-block.ts";
-import { PROMPT_VERSION, brief } from "../lib/brief.ts";
+import { NO_DRAFT, PROMPT_VERSION, REWRITE, type Self, brief, rewrite, wantsDraft } from "../lib/brief.ts";
 import { stream } from "../lib/model.ts";
 import { parseQuestionBlock } from "../lib/parse.ts";
 
-type Expect = "action" | "question" | "any";
+type Expect = "action" | "any";
 
-const CASES: [string, Expect][] = [
+/** How a brief is run: who it works for and what it could send from. Unset means sandbox, nobody. */
+type Mode = { self?: Self; sendsFrom?: string[]; slackChannel?: string };
+
+/**
+ * Who a "me/myself" brief resolves to, the way prod's `interns.start` hands it
+ * over from a connected Gmail. The run itself stays sandbox: nothing is sent.
+ */
+const ME: Self = { handle: "tester", accounts: [{ kind: "email", label: "Gmail", account: "tester@example.com" }] };
+
+/**
+ * `EVAL_LIVE=1`: every brief runs the way prod runs a fully connected member —
+ * Gmail and Slack live, and YOU WORK FOR knows both accounts. Nothing is sent
+ * either way; the eval only reads what the model writes.
+ */
+const LIVE: Mode | null = process.env.EVAL_LIVE === "1"
+  ? {
+      sendsFrom: ["Gmail", "Slack"],
+      // What interns.start hands a prod run once COMMUNITY_SLACK_TEAM_ID is set.
+      slackChannel: "#all-intern-community",
+      self: {
+        handle: "tester",
+        accounts: [
+          { kind: "email", label: "Gmail", account: "tester@example.com" },
+          { kind: "slack", label: "Slack", account: "@tester in Intern Community" },
+        ],
+      },
+    }
+  : null;
+
+const CASES: [string, Expect, Mode?][] = [
   ["Draft a Slack post introducing Intern to a new teammate", "action"],
   ["Write a follow-up email to someone who asked what Intern does", "action"],
   ["Email a prospect a two-line intro to Intern", "action"],
@@ -33,28 +64,60 @@ const CASES: [string, Expect][] = [
   ["Write an email declining a meeting politely", "action"],
   ["Post a Slack welcome for a new designer", "action"],
   ["Draft an email asking for feedback on Intern", "action"],
-  ["Email Sarah about the thing we discussed", "question"],
-  ["Send the pricing to our biggest customer", "question"],
-  ["Book the usual room for the weekly sync", "question"],
-  ["Tell the new hire who they report to", "question"],
+  ["send a mail to myself explaining what Intern can do", "action", { self: ME }],
+  ["Email me a summary of what Intern can do", "action", { self: ME }],
+  ["Post in #all-intern-community: welcome to the new members", "action"],
+  ["Draft a Slack message to the team about today's progress", "action"],
+  ["Write an email to the team with Intern's features and limits", "action"],
+  // Vague and info briefs: a draft with [placeholders] (a "[recipient]"
+  // included) or a plain answer both pass. This one runs live (Gmail, nobody
+  // named) even without EVAL_LIVE.
+  ["Email the new customer a welcome note", "any", { sendsFrom: ["Gmail"], self: { handle: "tester", accounts: [] } }],
+  ["Email Sarah about the thing we discussed", "any"],
+  ["Send the pricing to our biggest customer", "any"],
+  ["Book the usual room for the weekly sync", "any"],
+  ["Tell the new hire who they report to", "any"],
   ["Summarise what Intern is in three sentences", "any"],
   ["What makes a prospect viable for Intern?", "any"],
   ["List two risks the brain has not solved yet", "any"],
   ["Who is Intern for?", "any"],
+  ["What can Intern do?", "any"],
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const complete = async (prompt: string) => {
+  let text = "";
+  for await (const c of stream(prompt)) text += c.text ?? "";
+  return text;
+};
+const drafted = (report: string) => {
+  const a = parseActionBlock(report);
+  return !!a && !("error" in a);
+};
 
 let attempted = 0;
 let usable = 0;
 let matched = 0;
 let errored = 0;
+let rewritten = 0;
 
-console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs\n`);
-for (const [task, expect] of CASES) {
+console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs · ${LIVE ? "live (EVAL_LIVE=1)" : "sandbox"}\n`);
+for (const [task, expect, mode] of CASES) {
+  const { self, sendsFrom = [], slackChannel } = LIVE ?? mode ?? {};
+  const prompt = brief(task, [], sendsFrom, self, slackChannel);
   let report = "";
+  let missedFirst: "asked" | "no draft" | null = null;
   try {
-    for await (const c of stream(brief(task, []))) report += c.text ?? "";
+    report = await complete(prompt);
+    // Mirrors run.go: a reply that asks without a draft, or answers an
+    // outbound task with no draft, gets one rewrite call, and the second
+    // reply is what's graded.
+    if (!drafted(report) && (parseQuestionBlock(report) || wantsDraft(task))) {
+      missedFirst = parseQuestionBlock(report) ? "asked" : "no draft";
+      rewritten++;
+      await sleep(6000);
+      report = await complete(rewrite(prompt, report, missedFirst === "asked" ? REWRITE : NO_DRAFT));
+    }
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
     errored++;
@@ -68,9 +131,16 @@ for (const [task, expect] of CASES) {
   if (got === "action") usable++;
   const ok = expect === "any" || got === expect;
   if (ok) matched++;
-  console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${action && "error" in action ? `\n     ${action.error}` : ""}`);
+  // A miss says why: the question it asked instead, or what was malformed.
+  const why = [
+    missedFirst ? `${missedFirst}, then ${got === "action" ? "drafted" : "still no draft"}` : null,
+    action && "error" in action ? `action: ${action.error}` : null,
+    !ok && question ? ("error" in question ? `question: ${question.error}` : `asked: ${question.question}`) : null,
+  ].filter(Boolean);
+  console.log(`${ok ? "ok " : "MISS"} ${got.padEnd(16)} ${task}${why.map((w) => `\n     ${w}`).join("")}`);
   await sleep(6000);
 }
+if (rewritten) console.log(`\n${rewritten} brief${rewritten === 1 ? "" : "s"} missed first and got the rewrite call`);
 
 // `attempted` (action blocks seen, malformed or not) is 0 whenever nothing
 // could be rated — either every call errored, or none of the "action"
