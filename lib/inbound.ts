@@ -68,7 +68,7 @@ export async function sign(secret: string, id: string, timestamp: string, body: 
 }
 
 /** Constant-time for equal lengths; the length itself isn't secret. */
-const same = (a: string, b: string) => {
+export const same = (a: string, b: string) => {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);

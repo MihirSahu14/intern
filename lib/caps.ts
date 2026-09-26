@@ -90,6 +90,11 @@ export const SENDS_PER_DAY = 20;
 export const sendBlocked = (sendsToday: number, exempt = false): string | null =>
   !exempt && sendsToday >= SENDS_PER_DAY ? `You've used your ${SENDS_PER_DAY} sends for today. ${RESETS}` : null;
 
+export const SOURCES_PER_DAY = 5;
+
+export const sourceBlocked = (addedToday: number, exempt = false): string | null =>
+  !exempt && addedToday >= SOURCES_PER_DAY ? `You've added ${SOURCES_PER_DAY} sources today. ${RESETS}` : null;
+
 /**
  * Said when the day's window overflows and the counts above stop being
  * trustworthy — a safety guard against miscounting, not a quota, so it's
