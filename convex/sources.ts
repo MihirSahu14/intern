@@ -1,8 +1,8 @@
 import { ConvexError, v } from "convex/values";
 import { passageFact, parseCitations } from "../lib/ingest.ts";
 import type { Doc, Id } from "./_generated/dataModel";
-import { type MutationCtx, mutation } from "./_generated/server";
-import { requireMember, visibleTo } from "./access";
+import { type MutationCtx, internalMutation, mutation } from "./_generated/server";
+import { requireMember, slackMember, visibleTo } from "./access";
 import { factCapBlocked, insertFact } from "./facts";
 
 /**
@@ -140,6 +140,54 @@ export const remove = mutation({
     await clearPassages(ctx, sourceId);
     if (s.storageId) await ctx.storage.delete(s.storageId);
     await ctx.db.patch("sources", sourceId, { status: "removed", storageId: undefined, cursor: undefined });
+    return null;
+  },
+});
+
+export const passageInput = v.object({
+  externalId: v.string(),
+  text: v.string(),
+  author: v.optional(v.string()),
+  /** A Slack author's user id, resolved here to a linked member's @handle. Not stored. */
+  slackUser: v.optional(v.string()),
+  url: v.optional(v.string()),
+  at: v.number(),
+});
+
+/**
+ * The one way passages get in. Upserts by `(sourceId, externalId)`, so a
+ * redelivered event or a re-run sync never duplicates one, and writes nothing
+ * to a source that was removed (or purged) meanwhile. A passage takes its
+ * source's visibility and owner. `label`/`cursor` update the source;
+ * `synced` marks a read finished.
+ */
+export const write = internalMutation({
+  args: {
+    sourceId: v.id("sources"),
+    passages: v.array(passageInput),
+    label: v.optional(v.string()),
+    cursor: v.optional(v.union(v.string(), v.null())),
+    synced: v.optional(v.boolean()),
+  },
+  handler: async (ctx, a) => {
+    const s = await ctx.db.get("sources", a.sourceId);
+    if (!s || s.status === "removed") return null;
+    const handles = new Map<string, string | undefined>();
+    for (const { slackUser, ...row } of a.passages) {
+      if (slackUser && !handles.has(slackUser)) handles.set(slackUser, (await slackMember(ctx, slackUser))?.handle);
+      const authorHandle = slackUser ? handles.get(slackUser) : undefined;
+      const existing = await ctx.db
+        .query("passages")
+        .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", s._id).eq("externalId", row.externalId))
+        .unique();
+      if (existing) await rewritePassage(ctx, existing, row.text, { author: row.author, authorHandle, url: row.url, at: row.at });
+      else await ctx.db.insert("passages", { ...row, authorHandle, sourceId: s._id, visibility: s.visibility, ownerId: s.ownerId });
+    }
+    await ctx.db.patch("sources", s._id, {
+      ...(a.label ? { label: a.label.slice(0, 120) } : {}),
+      ...(a.cursor !== undefined ? { cursor: a.cursor ?? undefined } : {}),
+      ...(a.synced ? { lastSyncedAt: Date.now(), status: "active" as const, error: undefined } : {}),
+    });
     return null;
   },
 });

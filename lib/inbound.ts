@@ -50,8 +50,8 @@ export const GMAIL_TOOLS = {
 };
 
 type Json = Record<string, unknown>;
-const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
-const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+export const obj = (v: unknown): Json => (v && typeof v === "object" && !Array.isArray(v) ? (v as Json) : {});
+export const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
 // --- signature -------------------------------------------------------------
 

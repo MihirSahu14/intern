@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { SLACK_TOLERANCE_S, slackSignature, verifySlack } from "./slack.ts";
+import {
+  SLACK_TOLERANCE_S,
+  SlackError,
+  readChannelName,
+  readSlackEvent,
+  readUserName,
+  slackApi,
+  slackPassage,
+  slackSignature,
+  verifySlack,
+} from "./slack.ts";
 
 // The worked example on docs.slack.dev/authentication/verifying-requests-from-slack.
 const DOC_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
@@ -42,4 +52,113 @@ test("a stale signature fails past five minutes", async () => {
   assert.equal(await verifySlack(SECRET, { timestamp: stale, signature: nodeSign(stale, body) }, body, now), false);
   assert.equal(await verifySlack(SECRET, { timestamp: fresh, signature: nodeSign(fresh, body) }, body, now), true);
   assert.equal(await verifySlack(SECRET, { timestamp: "soon", signature: nodeSign("soon", body) }, body, now), false);
+});
+
+// --- events ------------------------------------------------------------------
+
+// Shapes from docs.slack.dev/apis/events-api and /reference/events/* (Task 4 Step 1).
+const envelope = (event: Record<string, unknown>, team = "T1") => ({
+  token: "x",
+  team_id: team,
+  api_app_id: "A1",
+  type: "event_callback",
+  event_id: "Ev1",
+  event_time: 1758800000,
+  event,
+});
+const said = { type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "We ship on Fridays", ts: "1758800000.000100" };
+
+test("url_verification is answered with its challenge", () => {
+  assert.deepEqual(readSlackEvent({ token: "x", challenge: "abc", type: "url_verification" }), { kind: "challenge", challenge: "abc" });
+});
+
+test("a person's message in a public channel is a message", () => {
+  assert.deepEqual(readSlackEvent(envelope(said)), {
+    kind: "message",
+    teamId: "T1",
+    eventId: "Ev1",
+    channel: "C1",
+    ts: "1758800000.000100",
+    user: "U1",
+    text: "We ship on Fridays",
+  });
+  assert.equal(readSlackEvent(envelope({ ...said, subtype: "thread_broadcast" })).kind, "message");
+});
+
+test("bots, joins, leaves, private channels and DMs are ignored", () => {
+  for (const e of [
+    { ...said, bot_id: "B1", subtype: "bot_message" },
+    { ...said, subtype: "channel_join" },
+    { ...said, subtype: "channel_leave" },
+    { ...said, channel_type: "group" },
+    { ...said, channel_type: "im" },
+    { ...said, channel_type: "mpim" },
+  ]) {
+    assert.equal(readSlackEvent(envelope(e)).kind, "ignore");
+  }
+  assert.equal(readSlackEvent({ type: "event_callback", event: said }).kind, "ignore");
+});
+
+test("edits, deletes and reactions", () => {
+  assert.deepEqual(
+    readSlackEvent(
+      envelope({
+        type: "message",
+        subtype: "message_changed",
+        channel: "C1",
+        message: { type: "message", user: "U1", text: "We ship on Thursdays", ts: said.ts },
+        previous_message: said,
+        ts: "1758800100.000200",
+      }),
+    ),
+    { kind: "edit", teamId: "T1", eventId: "Ev1", channel: "C1", ts: said.ts, text: "We ship on Thursdays" },
+  );
+  assert.deepEqual(
+    readSlackEvent(
+      envelope({ type: "message", subtype: "message_deleted", channel: "C1", hidden: true, deleted_ts: said.ts, previous_message: said, ts: "1758800200.000300" }),
+    ),
+    { kind: "delete", teamId: "T1", eventId: "Ev1", channel: "C1", ts: said.ts },
+  );
+  assert.deepEqual(
+    readSlackEvent(
+      envelope({ type: "reaction_added", user: "U2", reaction: "brain", item: { type: "message", channel: "C1", ts: said.ts }, item_user: "U1", event_ts: "1758800300.000400" }),
+    ),
+    { kind: "reaction", teamId: "T1", eventId: "Ev1", channel: "C1", ts: said.ts, user: "U2", reaction: "brain" },
+  );
+  assert.equal(readSlackEvent(envelope({ type: "reaction_added", user: "U2", reaction: "brain", item: { type: "file", file: "F1" } })).kind, "ignore");
+});
+
+test("a message becomes a passage keyed by channel and ts", () => {
+  assert.deepEqual(slackPassage({ channel: "C1", ts: "1758800000.000100", user: "U1", text: "hi" }, "Ann"), {
+    externalId: "C1:1758800000.000100",
+    text: "hi",
+    author: "Ann",
+    slackUser: "U1",
+    at: 1758800000000,
+  });
+});
+
+test("names: display name first, then real name, then the handle", () => {
+  assert.equal(readUserName({ user: { name: "ann", real_name: "Ann Lee", profile: { display_name: "", real_name: "Ann L." } } }), "Ann L.");
+  assert.equal(readUserName({ user: { name: "ann" } }), "ann");
+  assert.equal(readUserName({}), null);
+  assert.equal(readChannelName({ channel: { id: "C1", name: "general" } }), "general");
+});
+
+test("the Web API helper posts a form with the bot token and names Slack's error", async (t) => {
+  const calls: [string, RequestInit | undefined][] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+    calls.push([url, init]);
+    return Response.json({ ok: false, error: "not_in_channel" });
+  });
+  await assert.rejects(slackApi("xoxb-1", "conversations.history", { channel: "C1", cursor: undefined, limit: 200 }), /conversations\.history: not_in_channel/);
+  assert.equal(calls[0][0], "https://slack.com/api/conversations.history");
+  assert.equal(calls[0][1]?.method, "POST");
+  assert.equal(new Headers(calls[0][1]?.headers).get("authorization"), "Bearer xoxb-1");
+  assert.equal(String(calls[0][1]?.body), "channel=C1&limit=200");
+});
+
+test("a rate-limited call carries Slack's Retry-After", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response("", { status: 429, headers: { "retry-after": "7" } }));
+  await assert.rejects(slackApi("xoxb-1", "users.info", { user: "U1" }), (err) => err instanceof SlackError && err.retryAfterS === 7);
 });

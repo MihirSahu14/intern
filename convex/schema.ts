@@ -151,6 +151,9 @@ export default defineSchema({
     .index("by_sourceId_and_at", ["sourceId", "at"])
     .searchIndex("search_text", { searchField: "text", filterFields: ["visibility", "ownerId"] }),
 
+  /** Slack display names, one row per Slack user, so each is asked for once. */
+  slackUsers: defineTable({ slackUserId: v.string(), name: v.string() }).index("by_slackUserId", ["slackUserId"]),
+
   interns: defineTable({
     ownerId: v.id("users"),
     /** The working prompt this run reads and recalls against — may quote a private Q&A. */
@@ -276,7 +279,8 @@ export default defineSchema({
     .index("by_userId_and_connector", ["userId", "connector"])
     .index("by_userId_and_createdAt", ["userId", "createdAt"])
     .index("by_state", ["state"])
-    .index("by_composioAccountId", ["composioAccountId"]),
+    .index("by_composioAccountId", ["composioAccountId"])
+    .index("by_externalUserId", ["externalUserId"]),
 
   /** One row per UTC hour: how many broadcasts went out. */
   broadcasts: defineTable({

@@ -22,6 +22,7 @@ import type * as questions from "../questions.js";
 import type * as run from "../run.js";
 import type * as seed from "../seed.js";
 import type * as send from "../send.js";
+import type * as slack from "../slack.js";
 import type * as sources from "../sources.js";
 import type * as users from "../users.js";
 
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   run: typeof run;
   seed: typeof seed;
   send: typeof send;
+  slack: typeof slack;
   sources: typeof sources;
   users: typeof users;
 }>;

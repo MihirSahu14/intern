@@ -49,3 +49,21 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
 /** Owner-only rows (facts, passages, sources) reach their owner alone. Absent means public. */
 export const visibleTo = (row: { visibility?: "public" | "owner"; ownerId?: Id<"users"> }, viewer: Id<"users"> | null) =>
   row.visibility !== "owner" || (viewer !== null && row.ownerId === viewer);
+
+/**
+ * The member who connected this Slack user id through Composio and may still
+ * write to the brain, or null. Maps a community-Slack author to an @handle
+ * and a 🧠 to its member.
+ */
+export async function slackMember(ctx: QueryCtx, slackUserId: string): Promise<Doc<"users"> | null> {
+  const rows = await ctx.db
+    .query("connections")
+    .withIndex("by_externalUserId", (q) => q.eq("externalUserId", slackUserId))
+    .take(10);
+  for (const c of rows) {
+    if (c.connector !== "slack" || c.status !== "active") continue;
+    const u = await ctx.db.get("users", c.userId);
+    if (u && !memberProblem(u)) return u;
+  }
+  return null;
+}

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
+import { slackSignature } from "../lib/slack.ts";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
@@ -209,4 +210,247 @@ test("purge removes a member's sources, passages and files, and nobody else's", 
   expect((await allPassages(t)).map((p) => p.text).sort()).toEqual(["B's notes", "said in Slack"]);
   expect(await t.run((ctx) => ctx.db.get("sources", aDoc))).toBeNull();
   expect(await t.run((ctx) => ctx.storage.get(storageId))).toBeNull();
+});
+
+// --- the community Slack -------------------------------------------------------
+
+const SLACK_SECRET = "test-slack-secret";
+const TS = "1758800000.000100";
+
+function slackEnv() {
+  vi.stubEnv("SLACK_BRAIN_SIGNING_SECRET", SLACK_SECRET);
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T1");
+}
+
+/** A request signed the way Slack signs one (lib/slack.ts). `ageS` backdates it. */
+async function slackRequest(payload: unknown, o: { secret?: string; ageS?: number } = {}) {
+  const body = JSON.stringify(payload);
+  const ts = String(Math.floor(Date.now() / 1000) - (o.ageS ?? 0));
+  return {
+    method: "POST",
+    body,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": await slackSignature(o.secret ?? SLACK_SECRET, ts, body),
+    },
+  };
+}
+
+// The Events API envelope and event shapes from docs.slack.dev (Task 4 Step 1).
+const envelope = (event: Record<string, unknown>, team = "T1") => ({
+  token: "x",
+  team_id: team,
+  api_app_id: "A1",
+  type: "event_callback",
+  event_id: "Ev1",
+  event_time: 1758800000,
+  event,
+});
+const message = (o: Record<string, unknown> = {}, team = "T1") =>
+  envelope({ type: "message", channel: "C1", channel_type: "channel", user: "U1", text: "We ship on Fridays\nbecause QA is Thursday", ts: TS, ...o }, team);
+const reaction = (name: string, user: string) =>
+  envelope({ type: "reaction_added", user, reaction: name, item: { type: "message", channel: "C1", ts: TS }, item_user: "U1", event_ts: "1758800300.000400" });
+const edited = (text: string) =>
+  envelope({
+    type: "message",
+    subtype: "message_changed",
+    channel: "C1",
+    channel_type: "channel",
+    message: { type: "message", user: "U1", text, ts: TS },
+    previous_message: { type: "message", user: "U1", text: "old", ts: TS },
+    ts: "1758800100.000200",
+  });
+const deleted = () =>
+  envelope({
+    type: "message",
+    subtype: "message_deleted",
+    channel: "C1",
+    channel_type: "channel",
+    hidden: true,
+    deleted_ts: TS,
+    previous_message: { type: "message", user: "U1", text: "old", ts: TS },
+    ts: "1758800200.000300",
+  });
+
+/** Slack's Web API, answered by method. A method's replies are used in order; the last one repeats. */
+function stubSlackApi(replies: Record<string, unknown[]>) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url) => {
+    const queue = replies[url.split("/api/")[1] ?? ""];
+    const body = queue && queue.length > 1 ? queue.shift() : queue?.[0];
+    return new Response(JSON.stringify(body ?? { ok: false, error: "unknown_method" }));
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+const slackCalls = (f: ReturnType<typeof stubSlackApi>, method: string) =>
+  f.mock.calls.filter(([url]) => url.endsWith(`/api/${method}`)).map(([, init]) => Object.fromEntries(new URLSearchParams(String(init?.body))));
+
+/** A member who connected this Slack account through Composio (connections.externalUserId). */
+const linkSlack = (t: T, userId: Id<"users">, slackUserId: string) =>
+  t.run((ctx) =>
+    ctx.db.insert("connections", {
+      userId,
+      connector: "slack",
+      status: "active",
+      state: "s0",
+      createdAt: Date.now(),
+      composioAccountId: "ca_1",
+      externalUserId: slackUserId,
+    }),
+  );
+const post = async (t: T, payload: unknown) => (await t.fetch("/slack/events", await slackRequest(payload))).status;
+
+test("slack: a bad, stale or missing signature is a 401 before anything is read", async () => {
+  slackEnv();
+  const { t } = setup();
+  const f = stubSlackApi({});
+  expect((await t.fetch("/slack/events", await slackRequest(message(), { secret: "wrong" }))).status).toBe(401);
+  expect((await t.fetch("/slack/events", await slackRequest(message(), { ageS: 600 }))).status).toBe(401);
+  expect((await t.fetch("/slack/events", { method: "POST", body: JSON.stringify(message()) })).status).toBe(401);
+  vi.stubEnv("SLACK_BRAIN_SIGNING_SECRET", "");
+  expect(await post(t, message())).toBe(401);
+  expect(f).not.toHaveBeenCalled();
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("slack: url_verification is answered with its challenge", async () => {
+  slackEnv();
+  const { t } = setup();
+  const res = await t.fetch("/slack/events", await slackRequest({ token: "x", challenge: "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P", type: "url_verification" }));
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P");
+});
+
+test("slack: a public-channel message becomes one public passage, its author and channel named once", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  const f = stubSlackApi({
+    "conversations.info": [{ ok: true, channel: { id: "C1", name: "general", is_private: false } }],
+    "users.info": [{ ok: true, user: { id: "U1", name: "ann", profile: { display_name: "Ann" } } }],
+  });
+  expect(await post(t, message())).toBe(200);
+  expect(await post(t, message())).toBe(200); // Slack redelivers.
+
+  const rows = await allPassages(t);
+  expect(rows).toEqual([
+    expect.objectContaining({
+      externalId: `C1:${TS}`,
+      text: "We ship on Fridays\nbecause QA is Thursday",
+      author: "Ann",
+      visibility: "public",
+      at: 1758800000000,
+    }),
+  ]);
+  expect(rows[0].ownerId).toBeUndefined();
+  expect((await t.run((ctx) => ctx.db.get("sources", rows[0].sourceId)))?.label).toBe("#general");
+  expect(slackCalls(f, "users.info")).toHaveLength(1);
+  expect(slackCalls(f, "conversations.info")).toHaveLength(1);
+});
+
+test("slack: another team, a private channel, a DM, a bot or a join is ignored", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  for (const e of [
+    message({}, "T9"),
+    message({ channel_type: "group" }),
+    message({ channel_type: "im" }),
+    message({ channel_type: "mpim" }),
+    message({ bot_id: "B1", subtype: "bot_message" }),
+    message({ subtype: "channel_join", text: "<@U1> has joined the channel" }),
+  ]) {
+    expect(await post(t, e)).toBe(200);
+  }
+  expect(await allPassages(t)).toHaveLength(0);
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "");
+  expect(await post(t, message())).toBe(200);
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("slack: a linked author shows as their @handle", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await linkSlack(t, a, "U2");
+  await post(t, message({ user: "U2" }));
+  expect((await allPassages(t))[0]?.authorHandle).toBe("a");
+});
+
+test("slack: 🧠 promotes the message to a public fact, attributed to a linked member; other reactions don't", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await linkSlack(t, a, "U2");
+  await post(t, message());
+  await post(t, reaction("thumbsup", "U2"));
+  expect(await allFacts(t)).toHaveLength(0);
+
+  await post(t, reaction("brain", "U2"));
+  await post(t, reaction("brain", "U3"));
+  const facts = await allFacts(t);
+  expect(facts).toEqual([expect.objectContaining({ title: "We ship on Fridays", kind: "note", ownerId: a, source: `slack:C1:${TS}` })]);
+  expect(facts[0].visibility).toBeUndefined();
+  expect((await allPassages(t))[0].promotedFactId).toBe(facts[0]._id);
+});
+
+test("slack: someone who isn't a member can 🧠 too; the fact is nobody's", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, reaction("brain", "U3"));
+  const facts = await allFacts(t);
+  expect(facts).toHaveLength(1);
+  expect(facts[0].ownerId).toBeUndefined();
+});
+
+test("slack: an edit rewrites the passage, and the unchanged fact promoted from it", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, reaction("brain", "U3"));
+  await post(t, edited("We ship on Thursdays"));
+  expect((await allPassages(t))[0].text).toBe("We ship on Thursdays");
+  expect((await allFacts(t))[0]).toMatchObject({ title: "We ship on Thursdays", body: "We ship on Thursdays" });
+});
+
+test("slack: a delete removes the passage and its unchanged fact", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, reaction("brain", "U3"));
+  expect(await allFacts(t)).toHaveLength(1);
+  await post(t, deleted());
+  expect(await allPassages(t)).toHaveLength(0);
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("slack: a member's own Composio capture of the message is adopted, not duplicated, and outlives the delete", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await linkSlack(t, a, "U2");
+  await post(t, message());
+  const captured = await t.run((ctx) =>
+    ctx.db.insert("facts", {
+      title: "We ship on Fridays",
+      body: "because QA is Thursday",
+      kind: "note",
+      ownerId: a,
+      source: `slack:C1:${TS}`,
+      text: "We ship on Fridays\nbecause QA is Thursday",
+    }),
+  );
+  await post(t, reaction("brain", "U2"));
+  expect(await allFacts(t)).toHaveLength(1);
+  expect((await allPassages(t))[0].promotedFactId).toBe(captured);
+  await post(t, deleted());
+  expect(await allFacts(t)).toHaveLength(1);
 });
