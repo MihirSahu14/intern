@@ -6,8 +6,11 @@ import {
   MAX_PASSAGES_PER_DOCUMENT,
   URL_MAX_BYTES,
   chunk,
+  decodeText,
   fetchDocument,
+  hasTextLayer,
   htmlToText,
+  isPdf,
   parseCitations,
   passageFact,
   urlProblem,
@@ -157,4 +160,16 @@ test("a promoted passage's title is its first line, cut to 120", () => {
     body: "We ship on Fridays  \nbecause QA is Thursday",
   });
   assert.equal(passageFact(x(200)).title.length, 120);
+});
+
+// --- uploads -----------------------------------------------------------------
+
+test("uploads: PDFs are sniffed, text must be UTF-8, and a PDF needs a text layer", () => {
+  const bytes = (s: string) => new TextEncoder().encode(s);
+  assert.equal(isPdf(bytes("%PDF-1.7\n%âãÏÓ")), true);
+  assert.equal(isPdf(bytes("# notes")), false);
+  assert.equal(decodeText(bytes("# Notes ✓")), "# Notes ✓");
+  assert.throws(() => decodeText(new Uint8Array([0xff, 0xfe, 0x00, 0x80])), /markdown, text or PDF/);
+  assert.equal(hasTextLayer(" \n\f "), false);
+  assert.equal(hasTextLayer("We ship on Fridays"), true);
 });

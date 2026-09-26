@@ -1,8 +1,10 @@
 import { ConvexError, v } from "convex/values";
-import { passageFact, parseCitations } from "../lib/ingest.ts";
+import { SOURCES_PER_DAY, dayStart, sourceBlocked } from "../lib/caps.ts";
+import { UPLOAD_MAX_BYTES, passageFact, parseCitations, urlProblem } from "../lib/ingest.ts";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, internalQuery, mutation } from "./_generated/server";
-import { requireMember, slackMember, visibleTo } from "./access";
+import { capExempt, requireMember, slackMember, visibleTo } from "./access";
 import { factCapBlocked, insertFact } from "./facts";
 
 /**
@@ -236,5 +238,99 @@ export const fail = internalMutation({
     const s = await ctx.db.get("sources", a.sourceId);
     if (s && s.status !== "removed") await ctx.db.patch("sources", s._id, { status: "failed", error: a.error.slice(0, 200) });
     return null;
+  },
+});
+
+/** An upload's id is accepted only this long after the file landed. */
+const UPLOAD_WINDOW_MS = 60 * 60_000;
+
+/**
+ * SOURCES_PER_DAY, counted from every source this member added today, removed
+ * ones included. Skipped for CAP_EXEMPT_HANDLES, like every per-member cap.
+ */
+async function assertCanAdd(ctx: MutationCtx, ownerId: Id<"users">) {
+  const today = await ctx.db
+    .query("sources")
+    .withIndex("by_ownerId", (q) => q.eq("ownerId", ownerId).gte("_creationTime", dayStart(Date.now())))
+    .take(SOURCES_PER_DAY);
+  const blocked = sourceBlocked(today.length, await capExempt(ctx, ownerId));
+  if (blocked) throw new ConvexError(blocked);
+}
+
+/** A link a member pastes: a web page, plain text or markdown. Read in the background by documents.readUrl. */
+export const addLink = mutation({
+  args: { input: v.string(), private: v.boolean() },
+  handler: async (ctx, a): Promise<Id<"sources">> => {
+    const user = await requireMember(ctx);
+    const problem = urlProblem(a.input);
+    if (problem) throw new ConvexError(problem);
+    const url = new URL(a.input.trim());
+    const externalId = url.toString();
+    // The member's own rows only: a match on someone else's private
+    // document would tell them it exists.
+    const mine = await ctx.db
+      .query("sources")
+      .withIndex("by_kind_and_externalId", (q) => q.eq("kind", "document").eq("externalId", externalId))
+      .take(50);
+    if (mine.some((s) => s.ownerId === user._id && s.status !== "removed")) throw new ConvexError("You've already added that.");
+    await assertCanAdd(ctx, user._id);
+    const sourceId = await ctx.db.insert("sources", {
+      kind: "document",
+      label: `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`.slice(0, 120),
+      url: externalId,
+      externalId,
+      ownerId: user._id,
+      visibility: a.private ? "owner" : "public",
+      status: "active",
+    });
+    await ctx.scheduler.runAfter(0, internal.documents.readUrl, { sourceId });
+    return sourceId;
+  },
+});
+
+/** Where the browser POSTs an upload. The day's cap is checked first, so a full day doesn't waste one. */
+export const uploadUrl = mutation({
+  args: {},
+  handler: async (ctx): Promise<string> => {
+    const user = await requireMember(ctx);
+    await assertCanAdd(ctx, user._id);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * An uploaded markdown, text or PDF file, read in the background by
+ * documents.readUpload. The storage id comes from the browser, so it's
+ * checked, not trusted: the file landed in the last hour, is under 5 MB, and
+ * no source has claimed it.
+ * ponytail: an oversized file from a modified client stays in storage; the
+ * cockpit never uploads one.
+ */
+export const addUpload = mutation({
+  args: { storageId: v.id("_storage"), name: v.string(), private: v.boolean() },
+  handler: async (ctx, a): Promise<Id<"sources">> => {
+    const user = await requireMember(ctx);
+    const externalId = `upload:${a.storageId}`;
+    const file = await ctx.db.system.get("_storage", a.storageId);
+    const claimed = await ctx.db
+      .query("sources")
+      .withIndex("by_kind_and_externalId", (q) => q.eq("kind", "document").eq("externalId", externalId))
+      .first();
+    if (!file || claimed || Date.now() - file._creationTime > UPLOAD_WINDOW_MS) {
+      throw new ConvexError("That upload expired. Upload it again.");
+    }
+    if (file.size > UPLOAD_MAX_BYTES) throw new ConvexError(`Keep uploads under ${UPLOAD_MAX_BYTES / 1024 / 1024} MB.`);
+    await assertCanAdd(ctx, user._id);
+    const sourceId = await ctx.db.insert("sources", {
+      kind: "document",
+      label: a.name.trim().slice(0, 120) || "untitled",
+      externalId,
+      ownerId: user._id,
+      visibility: a.private ? "owner" : "public",
+      status: "active",
+      storageId: a.storageId,
+    });
+    await ctx.scheduler.runAfter(0, internal.documents.readUpload, { sourceId });
+    return sourceId;
   },
 });

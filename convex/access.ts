@@ -29,7 +29,7 @@ export async function requireMember(ctx: QueryCtx): Promise<Doc<"users">> {
  * `CAP_EXEMPT_HANDLES` (comma-separated, case-insensitive — see
  * `lib/caps.ts`'s `isCapExempt`), for the deployment owner's own testing.
  * Skips PER-MEMBER caps only: briefs/day, one-concurrent-intern, facts/day,
- * sends/day, connect-starts/hour. Never the shared $5/day budget, the
+ * sends/day, sources/day, connect-starts/hour. Never the shared $5/day budget, the
  * DAY_WINDOW overflow guard (a safety check against miscounting, not a
  * quota), or the resend-attempts cap (it protects recipients from a
  * duplicate send, not the member from a limit) — every cap site passes this

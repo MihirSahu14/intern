@@ -242,3 +242,22 @@ export function passageFact(text: string): { title: string; body: string } {
   const body = text.trim();
   return { title: (body.split("\n")[0] ?? "").trim().slice(0, 120), body };
 }
+
+// --- uploads -----------------------------------------------------------------
+
+export const NO_TEXT_LAYER = "That PDF has no text in it (it's probably a scan). Upload a version with selectable text.";
+
+/** Sniffed from the bytes, never trusted from the file name or the browser's content type. */
+export const isPdf = (b: Uint8Array) => b.length >= 5 && String.fromCharCode(...b.subarray(0, 5)) === "%PDF-";
+
+/** Markdown and plain text are UTF-8; anything that isn't is refused. */
+export function decodeText(b: Uint8Array): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(b);
+  } catch {
+    throw new IngestError("Upload a markdown, text or PDF file.");
+  }
+}
+
+/** ponytail: a scan's "text" is empty or a few stray marks; under ten letters in the whole file counts as none. */
+export const hasTextLayer = (text: string) => text.replace(/\s+/g, "").length >= 10;

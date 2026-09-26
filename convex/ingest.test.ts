@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
+import { UPLOAD_MAX_BYTES } from "../lib/ingest.ts";
 import { slackSignature } from "../lib/slack.ts";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -604,4 +605,114 @@ test("backfill never resurrects a message deleted in Slack while its page was in
   });
   await t.action(internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest: 0 });
   expect((await allPassages(t)).map((p) => p.text)).toEqual(["still there"]);
+});
+
+// --- documents ---------------------------------------------------------------
+
+const html = (title: string, ...paragraphs: string[]) =>
+  `<html><head><title>${title}</title></head><body>${paragraphs.map((p) => `<p>${p}</p>`).join("")}</body></html>`;
+
+/** A web server that answers every URL with this body. */
+function stubPage(body: string, contentType = "text/html; charset=utf-8", extra: Record<string, string> = {}, status = 200) {
+  const f = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+    async () => new Response(body, { status, headers: { "content-type": contentType, ...extra } }),
+  );
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+/** Runs everything scheduled so far (the readers). */
+const settle = async (t: T) => {
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+};
+
+test("a link is read, reduced to text and chunked into passages under the page's title", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubPage(html("Handbook", "a".repeat(500), "b".repeat(500), "c".repeat(500)));
+  const sourceId = await asUser(a).mutation(api.sources.addLink, { input: "https://example.com/handbook", private: false });
+  await settle(t);
+  const rows = await allPassages(t);
+  expect(rows.map((p) => p.externalId).sort()).toEqual(["0", "1"]);
+  expect(rows.every((p) => p.visibility === "public" && p.ownerId === a && p.url === "https://example.com/handbook")).toBe(true);
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ label: "Handbook", status: "active", visibility: "public" });
+});
+
+test("only https, and never a private address", async () => {
+  const { seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const add = (input: string) => asUser(a).mutation(api.sources.addLink, { input, private: false });
+  await expect(add("http://example.com/")).rejects.toThrow(/https/);
+  await expect(add("https://localhost/admin")).rejects.toThrow(/private/);
+  await expect(add("https://10.0.0.1/")).rejects.toThrow(/private/);
+});
+
+test("a redirect to a private address fails the source, and nothing is read", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubPage("", "text/html", { location: "https://169.254.169.254/latest/meta-data" }, 302);
+  const sourceId = await asUser(a).mutation(api.sources.addLink, { input: "https://example.com/go", private: false });
+  await settle(t);
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "That address is private." });
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("five sources a day, and the same link once", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubPage("hi", "text/plain");
+  const add = (input: string) => asUser(a).mutation(api.sources.addLink, { input, private: false });
+  await add("https://example.com/1");
+  await expect(add("https://example.com/1")).rejects.toThrow(/already added/);
+  for (let i = 2; i <= 5; i++) await add(`https://example.com/${i}`);
+  await expect(add("https://example.com/6")).rejects.toThrow(/5 sources/);
+  // CAP_EXEMPT_HANDLES skips it, like every per-member cap.
+  vi.stubEnv("CAP_EXEMPT_HANDLES", "a");
+  await add("https://example.com/6");
+  await settle(t); // let the six readers finish while fetch is still stubbed
+});
+
+test("a private document is invisible to another member's recall", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  stubPage("Pricing for Acme is 40k a year.", "text/plain");
+  await asUser(a).mutation(api.sources.addLink, { input: "https://example.com/deal.txt", private: true });
+  await settle(t);
+  expect((await allPassages(t))[0]).toMatchObject({ visibility: "owner", ownerId: a });
+  expect(await t.query(internal.facts.archive, { task: "pricing Acme", ownerId: b })).toEqual([]);
+  expect((await t.query(internal.facts.archive, { task: "pricing Acme", ownerId: a })).map((p) => p.visibility)).toEqual(["owner"]);
+});
+
+test("a document stops at 200 passages", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  stubPage(Array(250).fill("x".repeat(900)).join("\n\n"), "text/plain");
+  await asUser(a).mutation(api.sources.addLink, { input: "https://example.com/long.txt", private: false });
+  await settle(t);
+  expect(await allPassages(t)).toHaveLength(200);
+});
+
+test("a markdown upload becomes passages, and its file can't be claimed twice", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["# Notes\n\nWe ship on Fridays."], { type: "text/markdown" })));
+  const sourceId = await asUser(a).mutation(api.sources.addUpload, { storageId, name: "notes.md", private: false });
+  await settle(t);
+  expect((await allPassages(t)).map((p) => p.text)).toEqual(["# Notes\n\nWe ship on Fridays."]);
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ label: "notes.md", status: "active", storageId });
+  await expect(asUser(b).mutation(api.sources.addUpload, { storageId, name: "mine.md", private: false })).rejects.toThrow(/expired/);
+});
+
+test("an upload over 5 MB, or one that isn't text, is refused", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const big = await t.run((ctx) => ctx.storage.store(new Blob([new Uint8Array(UPLOAD_MAX_BYTES + 1)])));
+  await expect(asUser(a).mutation(api.sources.addUpload, { storageId: big, name: "big.txt", private: false })).rejects.toThrow(/under 5 MB/);
+  const binary = await t.run((ctx) => ctx.storage.store(new Blob([new Uint8Array([0xff, 0xfe, 0x00, 0x80])])));
+  const sourceId = await asUser(a).mutation(api.sources.addUpload, { storageId: binary, name: "photo.md", private: false });
+  await settle(t);
+  expect(await t.run((ctx) => ctx.db.get("sources", sourceId))).toMatchObject({ status: "failed", error: "Upload a markdown, text or PDF file." });
 });
