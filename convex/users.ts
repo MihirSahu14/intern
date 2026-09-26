@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { requireMember } from "./access";
 import { broadcast } from "./broadcast";
+import { clearPassages } from "./sources";
 
 export const viewer = query({
   args: {},
@@ -45,6 +46,8 @@ export const deleteMine = mutation({
 });
 
 const BATCH = 100;
+/** Sources per purge batch: each can clear up to PASSAGE_BATCH passages. */
+const SOURCE_BATCH = 4;
 
 /**
  * Deletes one batch per table and reschedules itself until nothing is left.
@@ -89,7 +92,21 @@ export const purge = internalMutation({
       await ctx.db.delete("connections", r._id);
     }
 
-    more = [facts, actions, questions, interns, connections].some((rows) => rows.length === BATCH);
+    // A member's documents and repos, their passages and any uploaded file.
+    // Facts promoted from them that the member owns went with `facts` above;
+    // Slack channels have no owner and stay.
+    const sources = await ctx.db.query("sources").withIndex("by_ownerId", (q) => q.eq("ownerId", userId)).take(SOURCE_BATCH);
+    let sourcesLeft = sources.length === SOURCE_BATCH;
+    for (const s of sources) {
+      if (!(await clearPassages(ctx, s._id))) {
+        sourcesLeft = true;
+        continue;
+      }
+      if (s.storageId) await ctx.storage.delete(s.storageId);
+      await ctx.db.delete("sources", s._id);
+    }
+
+    more = sourcesLeft || [facts, actions, questions, interns, connections].some((rows) => rows.length === BATCH);
     if (more) await ctx.scheduler.runAfter(0, internal.users.purge, { userId });
     return null;
   },

@@ -26,6 +26,8 @@ export async function insertFact(
      * source per owner. `send:<actionId>` marks a send's write-back.
      */
     source?: string;
+    /** The archive passage it was promoted from. */
+    fromPassageId?: Id<"passages">;
   },
 ) {
   return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });

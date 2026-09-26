@@ -20,6 +20,7 @@ import { capExempt, ownerView, requireMember } from "./access";
 import { broadcast } from "./broadcast";
 import { activeConnection } from "./connections";
 import { insertFact } from "./facts";
+import { promoteCited } from "./sources";
 
 type Edits = {
   to?: string[];
@@ -244,6 +245,11 @@ export const decide = mutation({
       ...(live ? { connector: live.key, attempts: 1 } : {}),
       ...acceptedPatch,
     });
+    // The approval vouches for the archive passages the draft cited in its
+    // `sources` (the only place the brief lets an id go): each becomes a
+    // fact, once, owner-only whenever this draft's lesson is.
+    const promoted = await promoteCited(ctx, action.sources, user._id, visibility);
+    if (promoted) await log("ok", `promoted ${promoted} archive passage${promoted === 1 ? "" : "s"} it cited`);
     if (fields.length) {
       const c = lesson(correctionFromEdit(action.kind, action.draft, accepted, fields));
       await insertFact(ctx, { ...c, kind: "preference", visibility, ownerId: user._id, internId: action.internId });

@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 
@@ -101,4 +101,112 @@ test("a run that recalled a private passage is marked private", async () => {
   expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.recalledPrivate).toBe(true);
   await t.mutation(internal.interns.noteRecall, { internId, recalled: [] });
   expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.recalledPrivate).toBe(false);
+});
+
+// --- promotion -----------------------------------------------------------------
+
+test("approving a draft that cited [p:…] promotes the passage exactly once", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const channel = await seedSource({ kind: "slack_channel", label: "#general", externalId: "C1" });
+  const p = await seedPassage(channel, "We ship on Fridays\nbecause QA is Thursday");
+  const actionId = await seedDraft(a, [`[p:${p}]`, `p:${p}`, "[p:notanid]", "[f1]"]);
+
+  expect(await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" })).toBe(null);
+  const facts = await allFacts(t);
+  expect(facts).toEqual([
+    expect.objectContaining({
+      title: "We ship on Fridays",
+      body: "We ship on Fridays\nbecause QA is Thursday",
+      kind: "note",
+      ownerId: a,
+      fromPassageId: p,
+    }),
+  ]);
+  expect(facts[0].visibility).toBeUndefined();
+  expect((await t.run((ctx) => ctx.db.get("passages", p)))?.promotedFactId).toBe(facts[0]._id);
+
+  // Promoting it again by hand changes nothing.
+  expect(await asUser(a).mutation(api.sources.promote, { passageId: p })).toBe(facts[0]._id);
+  expect(await allFacts(t)).toHaveLength(1);
+});
+
+test("only the draft's sources promote: a [p:…] in its body or rationale doesn't", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const p = await seedPassage(await seedSource(), "Pricing is per seat");
+  const actionId = await seedDraft(a, ["[f1]"], {
+    draft: { to: ["#general"], subject: "", body: `Pricing is per seat [p:${p}]` },
+    rationale: `from [p:${p}]`,
+  });
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  expect(await allFacts(t)).toHaveLength(0);
+});
+
+test("a draft that could quote something private promotes what it cited owner-only", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const p = await seedPassage(await seedSource(), "Pricing is per seat");
+  const actionId = await seedDraft(a, [`[p:${p}]`], { recalledPrivate: true });
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  expect(await allFacts(t)).toEqual([expect.objectContaining({ title: "Pricing is per seat", visibility: "owner", ownerId: a })]);
+});
+
+test("nobody promotes a passage they can't see", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage, seedDraft } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const bNotes = await seedSource({ ownerId: b, visibility: "owner" });
+  const p = await seedPassage(bNotes, "B's secret", { ownerId: b, visibility: "owner" });
+  const actionId = await seedDraft(a, [`[p:${p}]`]);
+  await asUser(a).mutation(api.outbox.decide, { actionId, decision: "approve" });
+  expect(await allFacts(t)).toHaveLength(0);
+  await expect(asUser(a).mutation(api.sources.promote, { passageId: p })).rejects.toThrow(/isn't there/);
+  // Its owner can, and it stays theirs.
+  await asUser(b).mutation(api.sources.promote, { passageId: p });
+  expect(await allFacts(t)).toEqual([expect.objectContaining({ title: "B's secret", visibility: "owner", ownerId: b })]);
+});
+
+test("the promote button counts toward the 20 facts a day", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("a");
+  const p = await seedPassage(await seedSource(), "One more");
+  await t.run(async (ctx) => {
+    for (let i = 0; i < 20; i++) await ctx.db.insert("facts", { title: `f${i}`, body: "", kind: "note", ownerId: a, text: `f${i}\n` });
+  });
+  await expect(asUser(a).mutation(api.sources.promote, { passageId: p })).rejects.toThrow(/20 facts/);
+});
+
+test("removing a source deletes its passages and keeps what was promoted from it", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const doc = await seedSource({ ownerId: a });
+  const p = await seedPassage(doc, "We ship on Fridays", { ownerId: a });
+  await seedPassage(doc, "Second chunk", { ownerId: a });
+  await asUser(a).mutation(api.sources.promote, { passageId: p });
+
+  await expect(asUser(b).mutation(api.sources.remove, { sourceId: doc })).rejects.toThrow(/Only whoever added/);
+  await asUser(a).mutation(api.sources.remove, { sourceId: doc });
+  expect(await allPassages(t)).toHaveLength(0);
+  expect(await allFacts(t)).toHaveLength(1);
+  expect((await t.run((ctx) => ctx.db.get("sources", doc)))?.status).toBe("removed");
+});
+
+test("purge removes a member's sources, passages and files, and nobody else's", async () => {
+  const { t, seedUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const storageId = await t.run((ctx) => ctx.storage.store(new Blob(["notes"])));
+  const aDoc = await seedSource({ ownerId: a, storageId, externalId: `upload:${storageId}` });
+  await seedPassage(aDoc, "A's notes", { ownerId: a });
+  const bDoc = await seedSource({ ownerId: b });
+  await seedPassage(bDoc, "B's notes", { ownerId: b });
+  const channel = await seedSource({ kind: "slack_channel", label: "#general", externalId: "C1" });
+  await seedPassage(channel, "said in Slack");
+
+  await t.mutation(internal.users.purge, { userId: a });
+  expect((await allPassages(t)).map((p) => p.text).sort()).toEqual(["B's notes", "said in Slack"]);
+  expect(await t.run((ctx) => ctx.db.get("sources", aDoc))).toBeNull();
+  expect(await t.run((ctx) => ctx.storage.get(storageId))).toBeNull();
 });
