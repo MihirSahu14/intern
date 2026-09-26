@@ -135,3 +135,42 @@ test("resumed answers stay one flat list under the original ask", () => {
   assert.equal(twice.match(/ANSWERS YOU WERE GIVEN/g)?.length, 1);
   assert.ok(!twice.includes("Original task"));
 });
+
+test("archive passages are listed with their citation id, source, author and date, cut to 400 characters", () => {
+  const text = brief("Post about Friday", [], [], undefined, undefined, [
+    { id: "p1", label: "#general", author: "@ann", at: Date.UTC(2026, 8, 18), text: `We ship\non Fridays ${"x".repeat(500)}` },
+    { id: "p2", label: "Handbook", author: null, at: Date.UTC(2026, 8, 1), text: "QA is Thursday" },
+  ]);
+  assert.ok(
+    text.includes(
+      `- [p:p1] #general · @ann · 2026-09-18: We ship on Fridays ${"x".repeat(381)}\n- [p:p2] Handbook · 2026-09-01: QA is Thursday\n`,
+    ),
+  );
+});
+
+test("passage ids, like fact ids, go in sources only, never in prose", () => {
+  const text = brief("x", [], ["Slack"], ME, "#all-intern-community", [{ id: "p1", label: "#general", author: null, at: 0, text: "hi" }]);
+  assert.match(
+    text,
+    /FROM THE ARCHIVE, what the community said in Slack, documents and GitHub \(evidence, not settled facts; cite the \[p:id\]s you use in "sources" only, never in your report prose\):/,
+  );
+  // The one action example names both kinds of id, archive or not.
+  for (const t of [text, brief("x", [])]) assert.ok(t.includes(`"sources":["[id]s and [p:id]s you relied on"]`));
+});
+
+test("no archive passages means no archive section", () => {
+  // ABOUT always mentions "FROM THE ARCHIVE" in prose (see the next test), so
+  // this checks for the passages section's own header, not the bare phrase.
+  assert.ok(!brief("x", []).includes("FROM THE ARCHIVE, what the community said"));
+  assert.ok(!brief("x", [], ["Gmail"], ME, "#all-intern-community", []).includes("FROM THE ARCHIVE, what the community said"));
+});
+
+test("ABOUT says the brain also holds the archive", () => {
+  for (const text of [brief("x", []), brief("x", [], ["Gmail"])]) {
+    assert.ok(
+      text.includes(
+        "- The brain also holds a searchable archive of the community Slack's public channels, documents members share and public GitHub repos; the passages that match a task reach you as FROM THE ARCHIVE.",
+      ),
+    );
+  }
+});

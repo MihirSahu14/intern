@@ -4,11 +4,13 @@ import {
   BRIEFS_PER_DAY,
   FACTS_PER_DAY,
   SENDS_PER_DAY,
+  SOURCES_PER_DAY,
   costUsd,
   dayKey,
   dayStart,
   isCapExempt,
   sendBlocked,
+  sourceBlocked,
   spawnBlocked,
   teachBlocked,
 } from "./caps.ts";
@@ -78,4 +80,12 @@ test("CAP_EXEMPT_HANDLES matches case-insensitively, ignoring stray whitespace",
   assert.equal(isCapExempt("carl", " mihir , Ann ,bob"), false);
   assert.equal(isCapExempt("mihir", undefined), false);
   assert.equal(isCapExempt(null, "mihir"), false);
+});
+
+test("sources cap at five a day, except for an exempt member", () => {
+  assert.equal(SOURCES_PER_DAY, 5);
+  assert.equal(sourceBlocked(SOURCES_PER_DAY - 1), null);
+  assert.match(sourceBlocked(SOURCES_PER_DAY) ?? "", /5 sources/);
+  assert.match(sourceBlocked(SOURCES_PER_DAY) ?? "", /00:00 UTC/);
+  assert.equal(sourceBlocked(SOURCES_PER_DAY, true), null);
 });

@@ -34,14 +34,17 @@ export const go = internalAction({
       if (!started) return null;
 
       const recalled = await ctx.runQuery(internal.facts.recall, { task: started.task, ownerId: started.ownerId });
+      const archive = await ctx.runQuery(internal.facts.archive, { task: started.task, ownerId: started.ownerId });
       await ctx.runMutation(internal.interns.noteRecall, {
         internId,
         recalled: recalled.map((f) => ({ id: f.id, kind: f.kind, visibility: f.visibility })),
+        privateArchive: archive.some((p) => p.visibility === "owner"),
       });
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
+      if (archive.length) await say("sys", `read ${archive.length} passages from the archive`);
       await say("sys", `thinking · ${describe()}`);
 
-      const prompt = brief(started.task, recalled, started.sendsFrom, started.self, started.slackChannel);
+      const prompt = brief(started.task, recalled, started.sendsFrom, started.self, started.slackChannel, archive);
 
       /**
        * One streamed model call, written to the log as it arrives. `usage`

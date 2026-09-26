@@ -15,12 +15,36 @@ export const run = internalMutation({
   },
 });
 
+/**
+ * Run any time `SEED` changes after a deployment was already seeded:
+ * `npx convex run seed:refresh` (add --prod for prod). Finds each ownerless
+ * seed fact by title and patches `body`/`text` to the current `SEED` values
+ * when they differ. Idempotent: a second run updates 0.
+ */
+export const refresh = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let updated = 0;
+    for (const f of SEED) {
+      const row = await ctx.db
+        .query("facts")
+        .withIndex("by_ownerId", (q) => q.eq("ownerId", undefined))
+        .filter((q) => q.eq(q.field("title"), f.title))
+        .first();
+      if (!row || row.body === f.body) continue;
+      await ctx.db.patch(row._id, { body: f.body, text: `${f.title}\n${f.body}` });
+      updated++;
+    }
+    return { updated };
+  },
+});
+
 const SEED = [
   {
     title: "What Intern is",
     body: `We build Intern. Two halves that need each other.
 
-The brain: one shared set of facts about how the community works — people, decisions, conventions, what was sent — drawn as a live graph. Everyone who signs in with GitHub reads the same brain and adds to it: by teaching a fact directly, or through what their interns file back. Feeding it continuously from Slack and documents is the next step, not something it does today.
+The brain: one shared set of facts about how the community works — people, decisions, conventions, what was sent — drawn as a live graph. Everyone who signs in with GitHub reads the same brain and adds to it: by teaching a fact directly, or through what their interns file back. It also reads the community Slack's public channels, documents members add and public GitHub repos into a searchable archive interns recall from; a person promotes a passage into a fact.
 
 The interns: agents anyone signed in can brief in one sentence of text. An intern reads the brain first — the facts that bear on the task, including past corrections — then drafts. Where a detail is missing it writes a [placeholder] for the person to fill in rather than guessing or stalling. A draft goes out through the requester's own connected Gmail or Slack, so it can only ever reach what that person could reach.
 

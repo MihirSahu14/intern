@@ -101,11 +101,12 @@ export function collapseBlocks(lines: LogLine[]): LogLine[] {
 }
 
 /**
- * Brain fact ids the model cited inline, e.g. `[k97cqmxm3y4dykfba1x47t8n018f2h4e]` or a
- * comma list of them. ponytail: an id that a 160-char flush split across two log lines
- * slips through; the prompt asking for ids in "sources" only is the real fix.
+ * Brain ids the model cited inline: a fact's `[k97cqmxm3y4dykfba1x47t8n018f2h4e]`, an
+ * archive passage's `[p:k97…]`, or a comma list of either. ponytail: an id that a
+ * 160-char flush split across two log lines slips through; the prompt asking for ids
+ * in "sources" only is the real fix.
  */
-const CITE = /\s?\[[a-z0-9]{20,}(?:,\s*[a-z0-9]{20,})*\]/g;
+const CITE = /\s?\[(?:p:)?[a-z0-9]{20,}(?:,\s*(?:p:)?[a-z0-9]{20,})*\]/g;
 
 /** Inline fact-id citations are for the outbox's sources, not for reading. */
 export const stripCites = (text: string) => text.replace(CITE, "");

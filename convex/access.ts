@@ -29,7 +29,7 @@ export async function requireMember(ctx: QueryCtx): Promise<Doc<"users">> {
  * `CAP_EXEMPT_HANDLES` (comma-separated, case-insensitive — see
  * `lib/caps.ts`'s `isCapExempt`), for the deployment owner's own testing.
  * Skips PER-MEMBER caps only: briefs/day, one-concurrent-intern, facts/day,
- * sends/day, connect-starts/hour. Never the shared $5/day budget, the
+ * sends/day, sources/day, connect-starts/hour. Never the shared $5/day budget, the
  * DAY_WINDOW overflow guard (a safety check against miscounting, not a
  * quota), or the resend-attempts cap (it protects recipients from a
  * duplicate send, not the member from a limit) — every cap site passes this
@@ -46,6 +46,38 @@ export async function ownerView(ctx: QueryCtx, id: Id<"users">) {
   return { handle: u?.handle ?? u?.name ?? "someone", image: u?.image ?? null };
 }
 
-/** Owner-only facts reach their owner alone. Absent means public. */
-export const visibleTo = (f: Doc<"facts">, viewer: Id<"users"> | null) =>
-  f.visibility !== "owner" || (viewer !== null && f.ownerId === viewer);
+/** Owner-only rows (facts, passages, sources) reach their owner alone. Absent means public. */
+export const visibleTo = (row: { visibility?: "public" | "owner"; ownerId?: Id<"users"> }, viewer: Id<"users"> | null) =>
+  row.visibility !== "owner" || (viewer !== null && row.ownerId === viewer);
+
+/** A source whose passages still count: there, not removed, not cleared by a failed read. */
+export const live = (s: Doc<"sources"> | null): s is Doc<"sources"> => !!s && s.status !== "removed" && !s.cleared;
+
+async function firstActiveSlackConnection(ctx: QueryCtx, slackUserId: string) {
+  const rows = await ctx.db
+    .query("connections")
+    .withIndex("by_externalUserId", (q) => q.eq("externalUserId", slackUserId))
+    .take(10);
+  return rows.find((c) => c.connector === "slack" && c.status === "active") ?? null;
+}
+
+/**
+ * The member linked to this Slack user id through Composio, regardless of
+ * their standing — even banned or not yet consented. A 🧠 from a linked
+ * account that can't write must promote nothing, never fall through to
+ * anonymous, so callers that decide that check this before `memberProblem`.
+ */
+export async function slackLinkedUser(ctx: QueryCtx, slackUserId: string): Promise<Doc<"users"> | null> {
+  const conn = await firstActiveSlackConnection(ctx, slackUserId);
+  return conn ? await ctx.db.get("users", conn.userId) : null;
+}
+
+/**
+ * The member who connected this Slack user id through Composio and may still
+ * write to the brain, or null. Maps a community-Slack author to an @handle
+ * and a 🧠 to its member.
+ */
+export async function slackMember(ctx: QueryCtx, slackUserId: string): Promise<Doc<"users"> | null> {
+  const u = await slackLinkedUser(ctx, slackUserId);
+  return u && !memberProblem(u) ? u : null;
+}

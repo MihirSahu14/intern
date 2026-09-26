@@ -59,3 +59,14 @@ test("a link glued directly onto a word character still gets stripped", () => {
     "@ann taught the brain: x[link] now · https://intern-brain.vercel.app/u/ann",
   );
 });
+
+test("adding a public source is one line, its label's links stripped", () => {
+  assert.equal(
+    broadcastText({ type: "added_source", handle: "ann", label: "acme/site" }, SITE),
+    "@ann added a source: acme/site · https://intern-brain.vercel.app/u/ann",
+  );
+  assert.equal(
+    broadcastText({ type: "added_source", handle: "ann", label: "Notes from https://evil.test/x" }, SITE),
+    "@ann added a source: Notes from [link] · https://intern-brain.vercel.app/u/ann",
+  );
+});

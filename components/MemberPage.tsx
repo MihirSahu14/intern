@@ -8,6 +8,8 @@ import ThemeToggle from "./ThemeToggle";
 
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
 
+const KIND_WORD = { slack_channel: "channel", document: "document", github_repo: "repo" } as const;
+
 export default function MemberPage({ handle }: { handle: string }) {
   const m = useQuery(api.community.member, { handle });
 
@@ -60,6 +62,31 @@ export default function MemberPage({ handle }: { handle: string }) {
               </ul>
             ) : (
               <p className="mt-3 text-faint">nothing yet.</p>
+            )}
+
+            <p className="label mt-10">added sources</p>
+            {m.sources.length ? (
+              <ul className="mt-3">
+                {m.sources.map((s) => (
+                  <li key={s._id} className="flex items-start gap-2 border-b border-line/50 py-1.5">
+                    <span className="mt-0.5">
+                      <KindGlyph kind="source" size={11} />
+                    </span>
+                    <span className="min-w-0 text-dim">
+                      <span className="text-faint">{KIND_WORD[s.kind]} · </span>
+                      {s.url ? (
+                        <a href={s.url} target="_blank" rel="nofollow noopener noreferrer" className="hover:underline">
+                          {s.label}
+                        </a>
+                      ) : (
+                        s.label
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-faint">none yet.</p>
             )}
 
             <p className="label mt-10">interns</p>

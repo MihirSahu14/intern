@@ -267,8 +267,10 @@ export const noteRecall = internalMutation({
   args: {
     internId: v.id("interns"),
     recalled: v.array(v.object({ id: v.id("facts"), kind: factKind, visibility: v.optional(visibility) })),
+    /** The run also read an owner-only archive passage. */
+    privateArchive: v.optional(v.boolean()),
   },
-  handler: async (ctx, { internId, recalled }) => {
+  handler: async (ctx, { internId, recalled, privateArchive }) => {
     const intern = await ctx.db.get("interns", internId);
     await ctx.db.patch("interns", internId, {
       recalledFactIds: recalled.map((r) => r.id),
@@ -279,7 +281,8 @@ export const noteRecall = internalMutation({
       // its `task` quotes the answer verbatim whether or not recall's capped
       // search happened to also surface the fact it came from — and this
       // runs on every attempt, including a retry, so that can't go stale.
-      recalledPrivate: !!intern?.displayTask || recalled.some((r) => r.visibility === "owner"),
+      // So is one that read an owner-only archive passage (`privateArchive`).
+      recalledPrivate: !!intern?.displayTask || !!privateArchive || recalled.some((r) => r.visibility === "owner"),
     });
     return null;
   },

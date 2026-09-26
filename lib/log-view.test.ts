@@ -149,6 +149,15 @@ test("a fence that never closes ends at the intern's next non-output line", () =
   }
 });
 
+test("inline passage citations are dropped too, alone or mixed with fact ids", () => {
+  assert.equal(stripCites("as posted [p:k97cqmxm3y4dykfba1x47t8n018f2h4e]."), "as posted.");
+  assert.equal(
+    stripCites("as agreed [k97cqmxm3y4dykfba1x47t8n018f2h4e, p:k97ag0gs7r1jp2sc2fxdavndrn8f2ma1], so"),
+    "as agreed, so",
+  );
+  assert.equal(stripCites("see [p:short] and [p: note]"), "see [p:short] and [p: note]");
+});
+
 test("inline fact-id citations are dropped, ordinary brackets kept", () => {
   assert.equal(
     stripCites("send hi to #all-intern-community [k97cqmxm3y4dykfba1x47t8n018f2h4e]. I have access [k971x6rpvpmeht5k8fvzfj83d18f2sfw], so"),

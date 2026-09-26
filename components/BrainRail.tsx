@@ -4,6 +4,8 @@ import { useState } from "react";
 import { KIND_ORDER } from "./BrainGraph";
 import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
+import { AddSource, SourcePanel } from "./Sources";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { ConnectorKey } from "@/lib/connectors";
 import type { ActionKind, Graph, GraphNode, NodeKind } from "@/lib/types";
 
@@ -129,6 +131,16 @@ export default function BrainRail({
         ))}
       </Section>
 
+      {/* Collapsed by default: the rail's fixed sections stay short enough that the node pane keeps its room at 720px. */}
+      <details className="group shrink-0 border-b border-line">
+        <summary className="label cursor-pointer list-none px-3 pt-2.5 pb-2.5 hover:text-fg group-open:pb-1 [&::-webkit-details-marker]:hidden">
+          <span className="text-k-source">+</span> add a source
+        </summary>
+        <div className="px-3 pb-2.5">
+          <AddSource />
+        </div>
+      </details>
+
       <Section title="layers">
         {KIND_ORDER.filter((k) => counts.get(k)).map((k) => {
           const off = hidden.has(k);
@@ -193,6 +205,9 @@ export default function BrainRail({
                     </Row>
                   ))
                 : null}
+              {selected.kind === "source" && selected.id.startsWith("src:") && selected.id !== "src:seed" ? (
+                <SourcePanel sourceId={selected.id.slice(4) as Id<"sources">} />
+              ) : null}
               {neighbours.length ? (
                 <div className="pt-1">
                   <p className="label mb-1">links · {neighbours.length}</p>
