@@ -252,7 +252,11 @@ export const start = internalMutation({
     // resumes an answered one, or if this very intern already asked — a
     // dismissed or cancelled question followed by a retry.
     const resumed = !!i.resumes || !!(await ctx.db.query("questions").withIndex("by_internId", (q) => q.eq("internId", internId)).first());
-    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed };
+    // Where a Slack post with no channel goes, so an unnamed channel is never a question.
+    // ponytail: "#all-intern-community" is the default channel Slack gave the prod
+    // workspace; set COMMUNITY_SLACK_CHANNEL if it's renamed or another community runs this.
+    const slackChannel = process.env.COMMUNITY_SLACK_CHANNEL || (process.env.COMMUNITY_SLACK_TEAM_ID ? "#all-intern-community" : undefined);
+    return { task: i.task, ownerId: i.ownerId, sendsFrom, self: { handle, accounts }, resumed, slackChannel };
   },
 });
 

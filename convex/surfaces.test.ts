@@ -1134,6 +1134,8 @@ test("the twenty-first send of the day is refused", async () => {
 
 test("an intern whose owner connected Gmail is briefed to send for real", async () => {
   composioEnv();
+  // The community workspace with no channel named: Slack's default for it.
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
   const { t, seedUser, seedActive } = setup();
   const a = await seedUser("a");
   await seedActive(a, "gmail", { accountLabel: "ann@acme.com" });
@@ -1146,6 +1148,7 @@ test("an intern whose owner connected Gmail is briefed to send for real", async 
     sendsFrom: ["Gmail", "Slack"],
     self: { handle: "a", accounts: [{ kind: "email", label: "Gmail", account: "ann@acme.com" }] },
     resumed: false,
+    slackChannel: "#all-intern-community",
   });
 });
 

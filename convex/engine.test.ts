@@ -173,6 +173,67 @@ test("a fresh live run parks on its one question; dismissed and retried, it can'
   expect((await t.run((ctx) => ctx.db.get("interns", internId)))?.status).toBe("done");
 });
 
+test("a draft always wins over a question in the same report", async () => {
+  vi.stubEnv("COMMUNITY_SLACK_TEAM_ID", "T_COMMUNITY");
+  vi.stubEnv("COMMUNITY_SLACK_CHANNEL", "#welcome");
+  const f = stubModel(
+    [
+      "Drafted it.",
+      "```action",
+      '{"kind":"slack","to":["#welcome"],"body":"Welcome, new members!","rationale":"asked to","sources":[]}',
+      "```",
+      "```question",
+      '{"question":"Which channel?","context":"posting"}',
+      "```",
+    ].join("\n"),
+  );
+  const { t, seedUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "slack");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "welcome the new members", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  expect(promptOf(f)).toContain("A Slack post with no channel goes to #welcome.");
+  expect(await t.run((ctx) => ctx.db.query("questions").collect())).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("actions").collect())).toEqual([expect.objectContaining({ kind: "slack", status: "pending" })]);
+  expect(await t.run((ctx) => ctx.db.get("interns", internId))).toMatchObject({ status: "done", parseOutcome: "action" });
+  const logs = await t.run((ctx) => ctx.db.query("logs").collect());
+  expect(logs).toContainEqual(expect.objectContaining({ level: "sys", text: "drafted instead of asking" }));
+});
+
+test("an email with no recipient is drafted to [recipient] and can't send until 'to' is filled in", async () => {
+  stubModel(
+    'Drafted.\n```action\n{"kind":"email","to":["[recipient]"],"subject":"Welcome","body":"Glad to have you.","rationale":"asked to","sources":[]}\n```',
+  );
+  const { t, seedUser, asUser } = setup();
+  const userId = await seedUser("a");
+  await seedLive(t, userId, "gmail");
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: userId, task: "email the new customer a welcome note", status: "queued", countsTowardCap: true }));
+
+  await t.action(internal.run.go, { internId });
+
+  const [action] = await t.run((ctx) => ctx.db.query("actions").collect());
+  expect(action).toMatchObject({ status: "pending", draftedLive: true, draft: { to: ["[recipient]"], subject: "Welcome" } });
+  const as = asUser(userId);
+  await expect(as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve" })).rejects.toThrow(
+    "Fill in the [bracketed] parts before sending.",
+  );
+  await expect(
+    as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve", edits: { body: "Glad to have you, truly." } }),
+  ).rejects.toThrow(/Fill in the \[bracketed\] parts/);
+
+  // Composio: open the send session, then run the send.
+  let call = 0;
+  const bodies = [{ session_id: "trs_1" }, { data: {}, error: null, log_id: "log_1" }];
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(bodies[Math.min(call++, 1)]))));
+  await as.mutation(api.outbox.decide, { actionId: action._id, decision: "approve", edits: { to: ["new@customer.com"] } });
+  vi.useFakeTimers();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  vi.useRealTimers();
+  expect(await t.run((ctx) => ctx.db.get("actions", action._id))).toMatchObject({ status: "sent", accepted: { to: ["new@customer.com"] } });
+});
+
 test("a resumed run never asks again: its question is dropped, the rest still counts", async () => {
   const f = stubModel(ASKING);
   const { t, seedUser } = setup();

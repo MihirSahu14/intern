@@ -23,7 +23,7 @@ const ABOUT = `WHAT INTERN IS AND WHAT YOU CAN DO (true; use it whenever the tas
 - Members brief interns (you) in one sentence. An intern reads the brain first (recalled facts, past corrections included), then works.
 - Per brief you can draft ONE outbound message, ${channels}, and file up to three facts. Connections go through Composio.
 - Nothing goes out until the member approves it in the outbox. They can edit first; their edit is saved as a fact the next intern reads first, which is how the brain learns.
-- You may ask at most one question per brief, and only for a missing recipient.
+- You may ask at most one question per brief, and only when there is nothing you could draft.
 - Limits: no browsing, no tools, no calendar or files, one draft per brief, ${BRIEFS_PER_DAY} briefs a day per member.
 - Briefs and most facts are public; drafts, questions and sends are private to the member.`;
 
@@ -62,25 +62,24 @@ function youWorkFor(self?: Self): string {
 }
 
 /**
- * The ask rule for a first live run: a real send's missing recipient is the
- * one thing worth stopping for, and only when nothing in the prompt names it.
- * The "me" clause only when there's a YOU WORK FOR section to settle it.
+ * The ask rule for a first live run. Drafting is the default: even a missing
+ * recipient is a default channel or a `[recipient]` the outbox makes the
+ * member fill in (outbox.decide). A question is for a task with nothing to draft.
  */
-const ask = (knowsSelf: boolean) => `Ask ONLY when all of these hold: the draft is a real send, the task names no
-recipient (no address, no person, no #channel),${knowsSelf ? ` it is not "me"/"myself" (YOU WORK FOR settles those),` : ""} and the brain gives no
-address or channel for it. A Slack post with a named #channel, or an email whose
-recipient is named or resolvable, must NEVER ask. A Slack post with no channel
-goes to the community's main channel if the brain names one, instead of asking.
-When in doubt, draft. Only then stop and ask, with exactly one fenced block:
+const ask = (slackChannel?: string) => `An unnamed recipient is not a question either.${slackChannel ? ` A Slack post with no channel goes to ${slackChannel}.` : ""}
+An email with no recipient you can name or resolve is drafted with
+"to":["[recipient]"]; the member fills it in before it can send.
+
+Ask only when you cannot write any meaningful draft at all: the task says
+nothing about what to write. Otherwise draft, with [placeholders]. When in
+doubt, draft. Only then ask, with exactly one fenced block:
 
 \`\`\`question
 {"question":"the one thing you need answered","context":"what you were doing"}
 \`\`\`
 
-Never ask anything else: not intent, scope, tone, wording, length, examples or
-who sends it. Anything under ${ANSWERED} is settled; never ask about it again.
-
-At most one question per brief.`;
+Anything under ${ANSWERED} is settled; never ask about it again. At most one
+question per brief.`;
 
 /** The sandbox never sends, so a missing recipient is a placeholder like anything else. */
 const NO_ASK = `Here you never ask a question: every gap, the recipient included, gets a
@@ -90,7 +89,15 @@ placeholder. When in doubt, draft.`;
 const ASKED = `You already asked your one question. Do not ask another: draft now, using
 [placeholders] for anything still missing. Anything under ${ANSWERED} is settled.`;
 
-export function brief(task: string, recalled: Recalled[], sendsFrom: string[] = [], self?: Self, resumed = false): string {
+export function brief(
+  task: string,
+  recalled: Recalled[],
+  sendsFrom: string[] = [],
+  self?: Self,
+  resumed = false,
+  /** Where a live Slack post with no channel goes; see interns.start. */
+  slackChannel?: string,
+): string {
   const learned = recalled.length
     ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${recalled
         .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
@@ -137,7 +144,7 @@ names inside the body: write the best draft you can from the brain and what you
 know, and mark anything you genuinely cannot know as a [bracketed placeholder].
 The person reads and edits every draft before it goes out.
 
-${resumed ? ASKED : sendsFrom.length ? ask(!!youWorkFor(self)) : NO_ASK}`;
+${resumed ? ASKED : sendsFrom.length ? ask(slackChannel) : NO_ASK}`;
 }
 
 /** FNV-1a of the template itself, base36. */
@@ -154,6 +161,6 @@ const SAMPLE_SELF: Self = { handle: "{handle}", accounts: [{ kind: "email", labe
 export const PROMPT_VERSION = fnv(
   brief("{task}", []) +
     brief("{task}", [], ["{label}"]) +
-    brief("{task}", [], ["{label}"], SAMPLE_SELF) +
+    brief("{task}", [], ["{label}"], SAMPLE_SELF, false, "{channel}") +
     brief("{task}", [], [], SAMPLE_SELF, true),
 );

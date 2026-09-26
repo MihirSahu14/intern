@@ -2,8 +2,7 @@
  * Offline eval: 28 fixed briefs through the current prompt, sandbox by
  * default; `EVAL_LIVE=1` runs every brief as a connected member (see LIVE).
  * Checks the one thing that has silently broken before: does a brief that
- * should draft produce a *usable* action block, and does one that should ask
- * produce a question?
+ * should draft produce a *usable* action block instead of a question?
  *
  *   npm run eval
  *
@@ -21,7 +20,7 @@ import { parseQuestionBlock } from "../lib/parse.ts";
 type Expect = "action" | "question" | "any";
 
 /** How a brief is run: who it works for and what it could send from. Unset means sandbox, nobody. */
-type Mode = { self?: Self; sendsFrom?: string[] };
+type Mode = { self?: Self; sendsFrom?: string[]; slackChannel?: string };
 
 /**
  * Who a "me/myself" brief resolves to, the way prod's `interns.start` hands it
@@ -37,6 +36,8 @@ const ME: Self = { handle: "tester", accounts: [{ kind: "email", label: "Gmail",
 const LIVE: Mode | null = process.env.EVAL_LIVE === "1"
   ? {
       sendsFrom: ["Gmail", "Slack"],
+      // What interns.start hands a prod run once COMMUNITY_SLACK_TEAM_ID is set.
+      slackChannel: "#all-intern-community",
       self: {
         handle: "tester",
         accounts: [
@@ -66,11 +67,10 @@ const CASES: [string, Expect, Mode?][] = [
   ["Post in #all-intern-community: welcome to the new members", "action"],
   ["Draft a Slack message to the team about today's progress", "action"],
   ["Write an email to the team with Intern's features and limits", "action"],
-  // The one brief that should ask: a real send (live Gmail) to someone nothing
-  // names — no address in the task, none in YOU WORK FOR, no brain to recall.
-  ["Email the new customer a welcome note", "question", { sendsFrom: ["Gmail"], self: { handle: "tester", accounts: [] } }],
-  // Once "question": now only an unknown recipient on a real send may ask, so
-  // in sandbox these draft with placeholders; live, any of them may ask.
+  // Vague briefs: drafting with [placeholders] (a "[recipient]" included) is
+  // the default now, but asking isn't wrong when there's truly nothing to draft.
+  // This one runs live (Gmail, nobody named) even without EVAL_LIVE.
+  ["Email the new customer a welcome note", "any", { sendsFrom: ["Gmail"], self: { handle: "tester", accounts: [] } }],
   ["Email Sarah about the thing we discussed", "any"],
   ["Send the pricing to our biggest customer", "any"],
   ["Book the usual room for the weekly sync", "any"],
@@ -91,10 +91,10 @@ let errored = 0;
 
 console.log(`prompt ${PROMPT_VERSION} · ${CASES.length} briefs · ${LIVE ? "live (EVAL_LIVE=1)" : "sandbox"}\n`);
 for (const [task, expect, mode] of CASES) {
-  const { self, sendsFrom = [] } = LIVE ?? mode ?? {};
+  const { self, sendsFrom = [], slackChannel } = LIVE ?? mode ?? {};
   let report = "";
   try {
-    for await (const c of stream(brief(task, [], sendsFrom, self))) report += c.text ?? "";
+    for await (const c of stream(brief(task, [], sendsFrom, self, false, slackChannel))) report += c.text ?? "";
   } catch (err) {
     console.log(`ERR  ${task}\n     ${err instanceof Error ? err.message : err}`);
     errored++;

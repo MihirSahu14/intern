@@ -51,31 +51,29 @@ test("the task outranks the brain, and a missing detail is a placeholder, not a 
 test("the sandbox never offers the question block: it can't send, so it drafts", () => {
   const text = brief("x", []);
   assert.ok(!text.includes("```question"));
-  assert.ok(!text.includes("Ask ONLY when"));
+  assert.ok(!text.includes("Ask only when you cannot"));
   assert.match(text, /Here you never ask a question: every gap, the recipient included, gets a\nplaceholder\. When in doubt, draft\./);
 });
 
-test("a fresh live brief offers the question block, only for a recipient nothing names", () => {
-  const text = brief("x", [], ["Gmail"], ME);
+test("a fresh live brief drafts even without a recipient, and asks only when nothing could be drafted", () => {
+  const text = brief("x", [], ["Gmail", "Slack"], ME, false, "#all-intern-community");
+  assert.match(text, /An unnamed recipient is not a question either\. A Slack post with no channel goes to #all-intern-community\./);
+  assert.match(text, /"to":\["\[recipient\]"\]; the member fills it in before it can send\./);
+  assert.match(text, /Ask only when you cannot write any meaningful draft at all: the task says\nnothing about what to write\./);
+  assert.match(text, /When in\ndoubt, draft\./);
   assert.ok(text.includes("```question"));
-  assert.match(text, /Ask ONLY when all of these hold: the draft is a real send, the task names no\nrecipient/);
-  assert.match(text, /it is not "me"\/"myself" \(YOU WORK FOR settles those\)/);
-  assert.match(text, /A Slack post with a named #channel, or an email whose\nrecipient is named or resolvable, must NEVER ask\./);
-  assert.match(text, /goes to the community's main channel if the brain names one/);
-  assert.match(text, /When in doubt, draft\./);
-  assert.match(text, /Never ask anything else: not intent, scope, tone, wording, length, examples or\nwho sends it\./);
-  assert.match(text, /At most one question per brief\./);
+  assert.match(text, /At most one\nquestion per brief\./);
   assert.ok(!text.includes("already asked your one question"));
-  // No YOU WORK FOR section, no reference to one in the ask rule.
-  const anonymous = brief("x", [], ["Gmail"]);
-  assert.ok(anonymous.includes("```question"));
-  assert.ok(!anonymous.includes("YOU WORK FOR settles"));
+  // No community channel configured: no line naming one.
+  const noChannel = brief("x", [], ["Slack"], ME);
+  assert.ok(!noChannel.includes("A Slack post with no channel goes to"));
+  assert.match(noChannel, /An unnamed recipient is not a question either\.\n/);
 });
 
 test("a resumed brief has no question block and says to draft now, live or not", () => {
   for (const text of [brief("x", [], [], undefined, true), brief("x", [], ["Gmail"], ME, true)]) {
     assert.ok(!text.includes("```question"));
-    assert.ok(!text.includes("Ask ONLY when"));
+    assert.ok(!text.includes("Ask only when you cannot"));
     assert.match(text, /You already asked your one question\. Do not ask another: draft now, using\n\[placeholders\] for anything still missing\./);
     // The placeholder rule and the settled answers still hold.
     assert.match(text, /A missing detail is not a question\./);

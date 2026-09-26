@@ -40,7 +40,7 @@ export const go = internalAction({
       if (recalled.length) await say("sys", `recalled ${recalled.length} facts from the brain`);
       await say("sys", `thinking · ${describe()}`);
 
-      const prompt = brief(started.task, recalled, started.sendsFrom, started.self, started.resumed);
+      const prompt = brief(started.task, recalled, started.sendsFrom, started.self, started.resumed, started.slackChannel);
       let report = "";
       let pending = "";
       for await (const chunk of stream(prompt)) {
@@ -68,16 +68,18 @@ export const go = internalAction({
         usage = { in: Math.ceil(prompt.length / 4), out: Math.ceil(report.length / 4) };
       }
 
-      // One question per brief, in code as well as in the prompt: every
-      // answer starts a fresh run, so a prompt-only "at most one per run"
-      // let a brief ask forever. A resumed run drafts with what it has.
-      let asked = parseQuestionBlock(report);
-      if (asked && started.resumed) {
-        asked = null;
-        await say("sys", "didn't ask again — one question per brief");
-      }
       const parsed = parseActionBlock(report);
       const ok = parsed && !("error" in parsed) ? parsed : null;
+      // Drafting is the default, in code as well as in the prompt. A draft
+      // always wins over a question in the same report, so the two never both
+      // come out. And one question per brief: every answer starts a fresh
+      // run, so a prompt-only "at most one per run" let a brief ask forever;
+      // a resumed run drafts with what it has.
+      let asked = parseQuestionBlock(report);
+      if (asked && (ok || started.resumed)) {
+        asked = null;
+        await say("sys", ok ? "drafted instead of asking" : "didn't ask again — one question per brief");
+      }
       await ctx.runMutation(internal.interns.finish, {
         internId,
         report,
