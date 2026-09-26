@@ -3,7 +3,7 @@ import { ConvexError, v } from "convex/values";
 import { SOURCES_PER_DAY, dayStart, sourceBlocked } from "../lib/caps.ts";
 import { type RepoPath, repoPath } from "../lib/github.ts";
 import { PASSAGE_EXCERPT, UPLOAD_MAX_BYTES, passageFact, parseCitations, urlProblem } from "../lib/ingest.ts";
-import { redactEmails } from "../lib/redact.ts";
+import { redactEmails, safeUrl } from "../lib/redact.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, internalMutation, internalQuery, mutation, query } from "./_generated/server";
@@ -412,7 +412,7 @@ export const passages = query({
     return {
       label: redactEmails(s.label),
       kind: s.kind,
-      url: s.url ?? null,
+      url: safeUrl(s.url),
       status: s.status,
       error: s.error ?? null,
       syncedAt: s.lastSyncedAt ?? null,
@@ -423,7 +423,7 @@ export const passages = query({
         text: redactEmails(p.text).slice(0, PASSAGE_EXCERPT),
         author: p.authorHandle ? `@${p.authorHandle}` : (p.author ?? null),
         at: p.at,
-        url: p.url ?? null,
+        url: safeUrl(p.url),
         promoted: !!p.promotedFactId,
       })),
     };

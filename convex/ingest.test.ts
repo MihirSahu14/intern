@@ -920,3 +920,23 @@ test("the first read of a public source is announced once; a private one never",
   await settle(t);
   expect(JSON.parse(String(f.mock.calls[0][1]?.body)).text).toMatch(/^@a added a source: Handbook · /);
 });
+
+test("a URL carrying an address is never shown; a clean one is", async () => {
+  const { t, seedUser, asUser, seedSource, seedPassage } = setup();
+  const a = await seedUser("ann");
+  const leaky = await seedSource({ label: "Leaky", ownerId: a, url: "https://example.com/doc?email=ann@acme.com" });
+  const clean = await seedSource({ label: "Clean", ownerId: a, url: "https://example.com/handbook" });
+  await seedPassage(leaky, "one", { url: "https://example.com/doc?to=bob@acme.com#p1" });
+  await seedPassage(clean, "two", { url: "https://example.com/handbook#p2" });
+
+  const l = await asUser(a).query(api.sources.passages, { sourceId: leaky });
+  expect(l?.url).toBeNull();
+  expect(l?.passages[0].url).toBeNull();
+  const c = await asUser(a).query(api.sources.passages, { sourceId: clean });
+  expect(c?.url).toBe("https://example.com/handbook");
+  expect(c?.passages[0].url).toBe("https://example.com/handbook#p2");
+
+  const m = await t.query(api.community.member, { handle: "ann" });
+  expect(Object.fromEntries(m!.sources.map((s) => [s.label, s.url]))).toEqual({ Leaky: null, Clean: "https://example.com/handbook" });
+  expect(JSON.stringify(m)).not.toMatch(/acme\.com/);
+});

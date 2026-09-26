@@ -1,7 +1,7 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { stripLinks } from "../lib/broadcast.ts";
-import { redactEmails } from "../lib/redact.ts";
+import { redactEmails, safeUrl } from "../lib/redact.ts";
 import { query } from "./_generated/server";
 import { ownerView, visibleTo } from "./access";
 
@@ -154,7 +154,7 @@ export const member = query({
       sent: actions.filter((a) => a.status === "sent").length,
       sources: sources
         .filter((s) => s.visibility === "public" && s.status !== "removed")
-        .map((s) => ({ _id: s._id, label: redactEmails(s.label), kind: s.kind, url: s.url ?? null, at: s._creationTime })),
+        .map((s) => ({ _id: s._id, label: redactEmails(s.label), kind: s.kind, url: safeUrl(s.url), at: s._creationTime })),
     };
   },
 });
