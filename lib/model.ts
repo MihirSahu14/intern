@@ -49,27 +49,33 @@ export const describe = () => modelName();
  */
 export const NOT_CONFIGURED = "MODEL_API_KEY unset";
 
-type Chunk = { text?: string; usage?: { in: number; out: number }; done?: boolean };
-
 /**
- * Stream a completion, yielding text as it arrives.
- *
- * Yields rather than returning a whole string so the terminal fills the way a
- * thought does. The caller decides where to break lines.
+ * A second, free provider tried when the first one refuses a request: out of
+ * credit, rate-limited, down. Off unless `MODEL_FALLBACK_API_KEY` is set;
+ * Groq's free tier by default, so a public demo keeps answering when paid
+ * credit runs dry.
  */
-export async function* stream(
-  prompt: string,
-  opts: { signal?: AbortSignal; temperature?: number } = {},
-): AsyncGenerator<Chunk> {
-  const apiKey = key();
-  if (!apiKey) throw new Error(NOT_CONFIGURED);
+const fallback = () => {
+  const apiKey = process.env.MODEL_FALLBACK_API_KEY;
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: process.env.MODEL_FALLBACK_BASE_URL || DEFAULT_BASE_URL,
+    model: process.env.MODEL_FALLBACK_NAME || DEFAULT_MODEL,
+  };
+};
 
-  const res = await fetch(`${baseUrl()}/chat/completions`, {
+type Chunk = { text?: string; usage?: { in: number; out: number }; done?: boolean };
+type Target = { apiKey: string; baseUrl: string; model: string };
+
+/** Opens the stream, or throws `model <status>: <provider's message>`. */
+async function open(prompt: string, t: Target, opts: { signal?: AbortSignal; temperature?: number }) {
+  const res = await fetch(`${t.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${t.apiKey}` },
     signal: opts.signal,
     body: JSON.stringify({
-      model: modelName(),
+      model: t.model,
       stream: true,
       stream_options: { include_usage: true },
       max_tokens: 4096,
@@ -91,8 +97,40 @@ export async function* stream(
     }
     throw new Error(`model ${res.status}: ${detail}`);
   }
+  return res.body;
+}
 
-  const reader = res.body.getReader();
+/**
+ * Stream a completion, yielding text as it arrives.
+ *
+ * Yields rather than returning a whole string so the terminal fills the way a
+ * thought does. The caller decides where to break lines.
+ *
+ * If the primary provider refuses the request and a fallback is configured,
+ * the same prompt goes to the fallback; `onFallback` lets the caller say so.
+ * Only a refusal before any text falls back — a stream that dies midway
+ * throws as before.
+ */
+export async function* stream(
+  prompt: string,
+  opts: { signal?: AbortSignal; temperature?: number; onFallback?: (model: string, reason: string) => unknown } = {},
+): AsyncGenerator<Chunk> {
+  const apiKey = key();
+  if (!apiKey) throw new Error(NOT_CONFIGURED);
+
+  let body: ReadableStream<Uint8Array>;
+  try {
+    body = await open(prompt, { apiKey, baseUrl: baseUrl(), model: modelName() }, opts);
+  } catch (err) {
+    const next = fallback();
+    if (!next || opts.signal?.aborted) throw err;
+    await opts.onFallback?.(next.model, err instanceof Error ? err.message : String(err));
+    // ponytail: the fallback's tokens are billed at the primary's prices
+    // (lib/caps.ts), which overstates a free fallback — the budget errs safe.
+    body = await open(prompt, next, opts);
+  }
+
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 

@@ -50,6 +50,9 @@ the deployment's env (see `.env.local.example`).
 | `MODEL_BASE_URL` | `https://api.groq.com/openai/v1` | provider's OpenAI-compatible base URL |
 | `MODEL_NAME` | `openai/gpt-oss-20b` | model id, as that provider names it |
 | `MODEL_API_KEY` | none — required | provider API key; unset fails the run with the same busy-style copy, no brief charged |
+| `MODEL_FALLBACK_API_KEY` | unset — no fallback | a second provider's key, tried when the first refuses a request (out of credit, rate-limited, down). Prod: a free Groq key behind paid Claude, so the demo keeps answering when credit runs out |
+| `MODEL_FALLBACK_BASE_URL` | `https://api.groq.com/openai/v1` | the fallback's base URL |
+| `MODEL_FALLBACK_NAME` | `openai/gpt-oss-20b` | the fallback's model id. Its tokens are billed at the primary's prices, so the $5/day budget errs safe |
 
 **Default: Groq, `openai/gpt-oss-20b`.** No card to sign up (console.groq.com),
 30 req/min · 1,000 req/day · 8,000 tokens/min per model — official docs,
