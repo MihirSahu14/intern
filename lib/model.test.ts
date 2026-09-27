@@ -19,7 +19,7 @@ const realEnv = { ...process.env };
 
 afterEach(() => {
   globalThis.fetch = realFetch;
-  for (const k of ["MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY"]) {
+  for (const k of ["MODEL_BASE_URL", "MODEL_NAME", "MODEL_API_KEY", "MODEL_FALLBACK_API_KEY", "MODEL_FALLBACK_BASE_URL", "MODEL_FALLBACK_NAME"]) {
     if (realEnv[k] === undefined) delete process.env[k];
     else process.env[k] = realEnv[k];
   }
@@ -199,4 +199,55 @@ test("available() and describe() reflect the current env", async () => {
   assert.equal(available(), true);
   process.env.MODEL_NAME = "openai/gpt-oss-20b";
   assert.equal(describe(), "openai/gpt-oss-20b");
+});
+
+/** First call refuses with `status`; every later call streams `sse`. Records each request. */
+function stubRefuseThenStream(status: number, sse: string) {
+  const calls: { url: string; auth: string; model: string }[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    calls.push({
+      url,
+      auth: String((init.headers as Record<string, string>).Authorization),
+      model: JSON.parse(String(init.body)).model,
+    });
+    if (calls.length === 1) return new Response(JSON.stringify({ error: { message: "credit balance too low" } }), { status });
+    return new Response(sse, { status: 200 });
+  }) as typeof fetch;
+  return calls;
+}
+
+test("a refused primary falls back to the configured free model, once", async () => {
+  process.env.MODEL_API_KEY = "paid";
+  process.env.MODEL_BASE_URL = "https://paid.example/v1";
+  process.env.MODEL_NAME = "claude-haiku-4-5";
+  process.env.MODEL_FALLBACK_API_KEY = "free";
+  delete process.env.MODEL_FALLBACK_BASE_URL;
+  delete process.env.MODEL_FALLBACK_NAME;
+  const calls = stubRefuseThenStream(400, 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n');
+  const notes: string[] = [];
+  const out = await collect(stream("x", { onFallback: (m) => notes.push(m) }));
+  assert.deepEqual(out.map((c) => c.text).filter(Boolean), ["hi"]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, "https://paid.example/v1/chat/completions");
+  assert.equal(calls[1].url, "https://api.groq.com/openai/v1/chat/completions");
+  assert.equal(calls[1].auth, "Bearer free");
+  assert.equal(calls[1].model, "openai/gpt-oss-20b");
+  assert.deepEqual(notes, ["openai/gpt-oss-20b"]);
+});
+
+test("with no fallback configured a refused primary throws as before", async () => {
+  process.env.MODEL_API_KEY = "paid";
+  delete process.env.MODEL_FALLBACK_API_KEY;
+  const calls = stubRefuseThenStream(429, "");
+  await assert.rejects(() => collect(stream("x")), /model 429: credit balance too low/);
+  assert.equal(calls.length, 1);
+});
+
+test("a healthy primary never touches the fallback", async () => {
+  process.env.MODEL_API_KEY = "paid";
+  process.env.MODEL_FALLBACK_API_KEY = "free";
+  const calls = stubStream('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n');
+  const out = await collect(stream("x", { onFallback: () => assert.fail("fell back") }));
+  assert.deepEqual(out.map((c) => c.text).filter(Boolean), ["ok"]);
+  assert.equal(calls.length, 1);
 });

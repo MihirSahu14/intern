@@ -56,7 +56,9 @@ export const go = internalAction({
         let text = "";
         let pending = "";
         let framed = false;
-        for await (const chunk of stream(input)) {
+        // A sys line is public, so it names the models, never the provider's error text.
+        const onFallback = (model: string) => say("sys", `${describe()} unavailable · falling back to ${model}`);
+        for await (const chunk of stream(input, { onFallback })) {
           if (chunk.usage) {
             usage = { in: before.in + chunk.usage.in, out: before.out + chunk.usage.out };
             framed = chunk.usage.out > 0;
