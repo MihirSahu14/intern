@@ -885,7 +885,7 @@ test("slack: anonymous 🧠s stop at ANON_PROMOTES_PER_DAY a day; a linked membe
   expect((await allFacts(t)).filter((f) => f.ownerId === a)).toHaveLength(1);
 });
 
-/** Five channels with a passage each, then the daily sweep, with conversations.info answering per channel. */
+/** Channels with a passage each, then the daily sweep, with conversations.info answering per channel. */
 async function sweepWith(info: Record<string, () => Response>) {
   vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
   const { t, seedSource, seedPassage } = setup();
@@ -907,18 +907,41 @@ async function sweepWith(info: Record<string, () => Response>) {
 }
 const infoOk = (channel: Record<string, unknown>) => () => new Response(JSON.stringify({ ok: true, channel: { id: "C", name: "general", ...channel } }));
 
+const noScope = () => new Response(JSON.stringify({ ok: false, error: "missing_scope" }));
+const open = infoOk({ is_private: false, is_archived: false });
+
 test("the daily sweep removes a channel gone private, archived or not found; keeps a public one and relabels it", async () => {
   const { t, status, texts, ids } = await sweepWith({
     CPRIV: infoOk({ is_private: true, is_archived: false }),
     CARCH: infoOk({ is_private: false, is_archived: true }),
     CGONE: () => new Response(JSON.stringify({ ok: false, error: "channel_not_found" })),
-    CSCOPE: () => new Response(JSON.stringify({ ok: false, error: "missing_scope" })),
+    CSCOPE: noScope,
     CPUB: infoOk({ name: "renamed", is_private: false, is_archived: false }),
+    CPUB2: open,
+    CPUB3: open,
+    CPUB4: open,
   });
   for (const c of ["CPRIV", "CARCH", "CGONE", "CSCOPE"]) expect(await status(c)).toBe("removed");
   expect(await status("CPUB")).toBe("active");
-  expect(texts).toEqual(["said in CPUB"]);
+  expect(texts).toEqual(["said in CPUB", "said in CPUB2", "said in CPUB3", "said in CPUB4"]);
   expect((await t.run((ctx) => ctx.db.get("sources", ids.CPUB)))?.label).toBe("#renamed");
+});
+
+test("the daily sweep: missing_scope everywhere is the token, not the channels, and removes nothing", async () => {
+  const { status } = await sweepWith({ CA: noScope, CB: noScope, CC: noScope });
+  for (const c of ["CA", "CB", "CC"]) expect(await status(c)).toBe("active");
+});
+
+test("the daily sweep: missing_scope beside a channel that read back fine removes only that one", async () => {
+  const { status } = await sweepWith({ CA: open, CB: noScope });
+  expect(await status("CA")).toBe("active");
+  expect(await status("CB")).toBe("removed");
+});
+
+test("the daily sweep removes at most half its channels in one run", async () => {
+  const priv = infoOk({ is_private: true });
+  const { texts } = await sweepWith({ CA: priv, CB: priv, CC: priv, CD: priv });
+  expect(texts).toHaveLength(2);
 });
 
 test("the daily sweep removes nothing on a 429, a 5xx, a network error or another Slack error", async () => {

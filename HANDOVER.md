@@ -557,7 +557,10 @@ backfill.
    cron asks `conversations.info` about every channel, 1.5 s apart, and
    removes any that is archived, private or not found exactly like an
    archive. A rate limit or Slack outage removes nothing; it asks again the
-   next day.
+   next day. Two breakers stop a token problem emptying the brain:
+   `missing_scope` removes a channel only if another channel read back fine
+   in the same run, and no run removes more than half the channels (the
+   logs say `slack: sweep …` when either trips).
 4. **Tell the workspace.** Set `#all-intern-community`'s description (or
    `COMMUNITY_SLACK_CHANNEL`'s, if renamed), and pin a message there:
    "Public channels are read into the Intern brain

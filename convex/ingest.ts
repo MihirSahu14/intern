@@ -77,46 +77,82 @@ export const joinChannel = internalAction({
 
 /**
  * Daily, from crons.ts: every channel asked about once, HISTORY_DELAY_MS
- * apart (conversations.info is Tier 3). The net under the lifecycle events:
- * a channel made private sends this app nothing it's subscribed to.
+ * apart (conversations.info is Tier 3), by one `checkChannels` chain. The net
+ * under the lifecycle events: a channel made private sends this app nothing
+ * it's subscribed to.
  */
 export const sweepChannels = internalAction({
   args: {},
   handler: async (ctx) => {
     if (!process.env.SLACK_BRAIN_BOT_TOKEN) return null;
     const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.readable, { kind: "slack_channel" });
-    for (const [i, sourceId] of ids.entries()) await ctx.scheduler.runAfter(i * HISTORY_DELAY_MS, internal.ingest.checkChannel, { sourceId });
+    if (ids.length) {
+      await ctx.scheduler.runAfter(0, internal.ingest.checkChannels, { sourceIds: ids, total: ids.length, removed: 0, readOk: false, noScope: [] });
+    }
     return null;
   },
 });
 
-/** Slack's answers for a channel this bot can't see as public: gone from the brain, as if archived. */
-const GONE_ERRORS = new Set(["channel_not_found", "missing_scope"]);
-
 /**
- * One channel, still public and open? Archived, private or not found is
- * removed like `channel_archive`; anything else Slack says (a 429, a 5xx, the
- * network) removes nothing and tomorrow asks again. A missed rename catches up.
+ * The first channel in `sourceIds`, then itself again with the rest. Still
+ * public and open? Private, archived or `channel_not_found` is removed like
+ * `channel_archive`; anything else (a 429, a 5xx, the network, a bad token)
+ * removes nothing and tomorrow asks again. A missed rename catches up.
+ *
+ * Two breakers, so a token problem can't empty the brain: `missing_scope`
+ * (a now-private channel, or a token that lost `channels:read`) counts as
+ * gone only once another channel this run read back fine (`readOk`), so
+ * those wait for the run's end (`noScope`); and no run removes more than
+ * half its channels.
  */
-export const checkChannel = internalAction({
-  args: { sourceId: v.id("sources") },
-  handler: async (ctx, { sourceId }) => {
+export const checkChannels = internalAction({
+  args: {
+    sourceIds: v.array(v.id("sources")),
+    total: v.number(),
+    removed: v.number(),
+    readOk: v.boolean(),
+    noScope: v.array(v.string()),
+  },
+  handler: async (ctx, a) => {
     const token = process.env.SLACK_BRAIN_BOT_TOKEN;
+    const [sourceId, ...rest] = a.sourceIds;
+    if (!token || !sourceId) return null;
+    let { removed, readOk } = a;
+    const noScope = [...a.noScope];
+    const maxRemoved = Math.ceil(a.total / 2);
+    const remove = async (channel: string) => {
+      if (removed >= maxRemoved) {
+        console.log(`slack: sweep kept ${channel}: ${maxRemoved} of ${a.total} channels already removed this run`);
+        return;
+      }
+      removed++;
+      await ctx.runMutation(internal.slack.channelGone, { channel });
+    };
+
     const src: Doc<"sources"> | null = await ctx.runQuery(internal.sources.get, { sourceId });
-    if (!token || !src || src.kind !== "slack_channel" || src.status === "removed") return null;
-    const channel = src.externalId;
-    let gone: boolean;
-    try {
-      const info = await slackApi(token, "conversations.info", { channel });
-      const c = obj(info.channel);
-      gone = c.is_private === true || c.is_archived === true;
-      const name = readChannelName(info);
-      if (!gone && name) await ctx.runMutation(internal.slack.renameChannel, { channel, name });
-    } catch (err) {
-      gone = err instanceof SlackError && !!err.code && GONE_ERRORS.has(err.code);
-      if (!gone) console.log(`slack: checking ${channel} failed: ${errText(err)}`);
+    if (src && src.kind === "slack_channel" && src.status !== "removed") {
+      const channel = src.externalId;
+      try {
+        const info = await slackApi(token, "conversations.info", { channel });
+        readOk = true;
+        const c = obj(info.channel);
+        const name = readChannelName(info);
+        if (c.is_private === true || c.is_archived === true) await remove(channel);
+        else if (name) await ctx.runMutation(internal.slack.renameChannel, { channel, name });
+      } catch (err) {
+        const code = err instanceof SlackError ? err.code : null;
+        if (code === "channel_not_found") await remove(channel);
+        else if (code === "missing_scope") noScope.push(channel);
+        else console.log(`slack: checking ${channel} failed: ${errText(err)}`);
+      }
     }
-    if (gone) await ctx.runMutation(internal.slack.channelGone, { channel });
+
+    if (rest.length) {
+      await ctx.scheduler.runAfter(HISTORY_DELAY_MS, internal.ingest.checkChannels, { sourceIds: rest, total: a.total, removed, readOk, noScope });
+      return null;
+    }
+    if (!readOk && noScope.length) console.log(`slack: sweep removed nothing for missing_scope: no channel read back this run (${noScope.length} kept)`);
+    else for (const channel of noScope) await remove(channel);
     return null;
   },
 });
