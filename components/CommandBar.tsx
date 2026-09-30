@@ -9,7 +9,6 @@ export const HELP = [
   "",
   "approve <id>            approve your draft as written (sandbox: nothing is sent)",
   "reject <id> <why>       reject it; the reason becomes a correction fact",
-  "answer <id> <answer>    unblock your intern; the answer becomes a fact",
   "",
   "focus <id|all>          filter the stream",
   "clear                   clear your local lines",

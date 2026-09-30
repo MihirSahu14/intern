@@ -885,6 +885,26 @@ test("slack: anonymous 🧠s stop at ANON_PROMOTES_PER_DAY a day; a linked membe
   expect((await allFacts(t)).filter((f) => f.ownerId === a)).toHaveLength(1);
 });
 
+test("slack: yesterday's anonymous 🧠s don't count toward today's cap", async () => {
+  slackEnv();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.UTC(2026, 8, 29, 12));
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  const [p] = await allPassages(t);
+  await t.run(async (ctx) => {
+    for (let i = 0; i < ANON_PROMOTES_PER_DAY; i++) {
+      await ctx.db.insert("facts", { title: `f${i}`, body: "b", kind: "note", text: `f${i}`, fromPassageId: p._id });
+    }
+  });
+  vi.setSystemTime(Date.UTC(2026, 8, 30, 12));
+  const next = "1758800001.000100";
+  await post(t, message({ ts: next, text: "Demos are on Mondays" }));
+  await post(t, envelope({ type: "reaction_added", user: "U3", reaction: "brain", item: { type: "message", channel: "C1", ts: next }, item_user: "U1", event_ts: "1758800300.000400" }));
+  expect(await allFacts(t)).toHaveLength(ANON_PROMOTES_PER_DAY + 1);
+});
+
 /** Channels with a passage each, then the daily sweep, with conversations.info answering per channel. */
 async function sweepWith(info: Record<string, () => Response>) {
   vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
@@ -927,9 +947,12 @@ test("the daily sweep removes a channel gone private, archived or not found; kee
   expect((await t.run((ctx) => ctx.db.get("sources", ids.CPUB)))?.label).toBe("#renamed");
 });
 
-test("the daily sweep: missing_scope everywhere is the token, not the channels, and removes nothing", async () => {
-  const { status } = await sweepWith({ CA: noScope, CB: noScope, CC: noScope });
-  for (const c of ["CA", "CB", "CC"]) expect(await status(c)).toBe("active");
+test("the daily sweep: missing_scope or channel_not_found everywhere is the token, not the channels, and removes nothing", async () => {
+  const notFound = () => new Response(JSON.stringify({ ok: false, error: "channel_not_found" }));
+  for (const answer of [noScope, notFound]) {
+    const { status } = await sweepWith({ CA: answer, CB: answer, CC: answer });
+    for (const c of ["CA", "CB", "CC"]) expect(await status(c)).toBe("active");
+  }
 });
 
 test("the daily sweep: missing_scope beside a channel that read back fine removes only that one", async () => {

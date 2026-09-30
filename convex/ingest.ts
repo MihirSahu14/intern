@@ -95,15 +95,15 @@ export const sweepChannels = internalAction({
 
 /**
  * The first channel in `sourceIds`, then itself again with the rest. Still
- * public and open? Private, archived or `channel_not_found` is removed like
- * `channel_archive`; anything else (a 429, a 5xx, the network, a bad token)
- * removes nothing and tomorrow asks again. A missed rename catches up.
+ * public and open? Private or archived is removed like `channel_archive`;
+ * anything else (a 429, a 5xx, the network, a bad token) removes nothing and
+ * tomorrow asks again. A missed rename catches up.
  *
- * Two breakers, so a token problem can't empty the brain: `missing_scope`
- * (a now-private channel, or a token that lost `channels:read`) counts as
- * gone only once another channel this run read back fine (`readOk`), so
- * those wait for the run's end (`noScope`); and no run removes more than
- * half its channels.
+ * Two breakers, so a token problem can't empty the brain: `missing_scope` or
+ * `channel_not_found` (a now-private channel — or a token that lost
+ * `channels:read`, or belongs to another workspace) counts as gone only once
+ * another channel this run read back fine (`readOk`), so those wait for the
+ * run's end (`noScope`); and no run removes more than half its channels.
  */
 export const checkChannels = internalAction({
   args: {
@@ -141,8 +141,7 @@ export const checkChannels = internalAction({
         else if (name) await ctx.runMutation(internal.slack.renameChannel, { channel, name });
       } catch (err) {
         const code = err instanceof SlackError ? err.code : null;
-        if (code === "channel_not_found") await remove(channel);
-        else if (code === "missing_scope") noScope.push(channel);
+        if (code === "missing_scope" || code === "channel_not_found") noScope.push(channel);
         else console.log(`slack: checking ${channel} failed: ${errText(err)}`);
       }
     }
@@ -151,7 +150,7 @@ export const checkChannels = internalAction({
       await ctx.scheduler.runAfter(HISTORY_DELAY_MS, internal.ingest.checkChannels, { sourceIds: rest, total: a.total, removed, readOk, noScope });
       return null;
     }
-    if (!readOk && noScope.length) console.log(`slack: sweep removed nothing for missing_scope: no channel read back this run (${noScope.length} kept)`);
+    if (!readOk && noScope.length) console.log(`slack: sweep removed nothing for missing_scope/channel_not_found: no channel read back this run (${noScope.length} kept)`);
     else for (const channel of noScope) await remove(channel);
     return null;
   },
