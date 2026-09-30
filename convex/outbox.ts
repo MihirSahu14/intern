@@ -62,9 +62,7 @@ async function briefTextFor(ctx: QueryCtx | MutationCtx, internId: Id<"interns">
  * The global window alone is a trap: the cockpit filters this to the viewer,
  * so once 30 other people's drafts land after yours, your own *pending* one
  * falls out of the only UI that can approve or reject it — permanently.
- * Signed-out callers just get the global window. `questions.list` does the
- * same, inlined rather than shared: one helper over both tables doesn't
- * survive Convex's generated index types.
+ * Signed-out callers just get the global window.
  *
  * Other people's rows carry no draft, subject or recipient.
  */

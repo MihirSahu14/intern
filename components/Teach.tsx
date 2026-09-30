@@ -9,18 +9,15 @@ import type { FactKind } from "@/lib/types";
  * The rest of the cockpit fills the graph from work: facts interns file and
  * edits people make to drafts. That only ever covers what some brief happened
  * to touch, so everything a person already knows stays outside the brain. This
- * is the other direction — unprompted, and the same landing path as an
- * answered question (interns no longer ask, but older open questions can
- * still be answered), so a fact typed here is indistinguishable from one an
- * answer produced.
+ * is the other direction — unprompted.
  *
  * Text and kind, and nothing else: that is exactly what `facts.teach` stores.
  * Tags, a subject and an "attach to the selected node" toggle used to be
  * collected here and silently dropped on the way to the mutation.
  *
  * Collapsed to a single line at rest, at the foot of the right rail: the
- * questions and drafts above it are what stops interns, and those have to stay
- * the loudest things in the column.
+ * drafts above it are what stops interns, and those have to stay the loudest
+ * things in the column.
  */
 
 const KINDS: FactKind[] = [

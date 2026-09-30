@@ -48,19 +48,6 @@ const live = (labels: string[]) =>
   `Drafts go out for real from ${labels.join(" and ")} once the person approves, from their own
 connected account. The sender is settled; never ask about it. Use real recipients only if the task names them or YOU WORK FOR resolves them; never invent an address.`;
 
-/** Heads the answers a resumed run was given, so the prompt can call them settled. */
-const ANSWERED = "ANSWERS YOU WERE GIVEN";
-
-/**
- * The task a question resumes with: the original ask, then every answer so far
- * as one flat list. Nesting each resume inside the last ("You asked … Original
- * task: You asked …") read to the model as a pile of open questions.
- */
-export function resumeTask(prior: string, question: string, answer: string): string {
-  const head = prior.includes(ANSWERED) ? prior : `${prior}\n\n${ANSWERED} (settled, do not ask again):`;
-  return `${head}\n- ${question.trim()} → ${answer.trim()}`;
-}
-
 /** Who the intern works for: the owner's handle and the accounts they connected, each with who they are there. */
 export type Self = { handle?: string; accounts: { kind: ActionKind; label: string; account: string }[] };
 

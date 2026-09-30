@@ -19,12 +19,9 @@ turns it into a fact.
 Started at a hackathon on 9 Aug 2026 as a two-person team: Andrew Wang
 ([AndrxwWxng/intern](https://github.com/AndrxwWxng/intern), the upstream this
 repo forked from) and Mihir Sahu. Mihir has continued it solo since. The
-hackathon build ran on a separate Python agent engine called Scout, built on
-[Agno](https://github.com/agno-agi); that engine, VoiceOS and the original MCP
-server are gone from this codebase, but the `scout/` directory itself — Agno's
-own `agno-agi/scout` example, Apache-2.0 licensed — is still vendored in the
-repo and unused by the current app. It's Agno's code, not Mihir's; see
-`scout/LICENSE` and `scout/README.md`.
+hackathon build ran on a separate Python agent engine, built on Agno's
+Apache-2.0 [`agno-agi/scout`](https://github.com/agno-agi/scout) example; that
+engine, VoiceOS and the original MCP server are gone from this codebase.
 
 ## What it does today
 
@@ -119,7 +116,7 @@ added per person per day, and a $5/day model-spend budget shared by everyone.
 the per-member caps for the deployment owner's own testing; it never skips the
 shared budget.
 
-**Visibility.** Drafts, questions and sends are owner-only. Public briefs and
+**Visibility.** Drafts and sends are owner-only. Public briefs and
 facts have email addresses redacted (`lib/redact.ts`) before anyone else sees
 them. Private documents stay out of the graph, the feed and other members'
 recall.

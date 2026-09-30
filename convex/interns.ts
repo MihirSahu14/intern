@@ -44,17 +44,12 @@ async function assertWithinCaps(ctx: MutationCtx, ownerId: Id<"users">) {
 }
 
 /**
- * Caps, then insert, then schedule. Shared by spawn and by answering a
- * question. `displayTask` is the safe-to-show version of `task` — set when
- * `task` was assembled from a question and its answer, which can quote the
- * owner's private facts; a fresh brief has nothing to hide behind it.
+ * Caps, then insert, then schedule.
  */
 export async function dispatch(
   ctx: MutationCtx,
   ownerId: Id<"users">,
   task: string,
-  resumes?: Id<"interns">,
-  displayTask?: string,
 ): Promise<Id<"interns">> {
   if (!task) throw new ConvexError("Give the intern a task.");
   // A stray keystroke ("/", "ok") is not a brief, and would spend one of the day's five.
@@ -67,9 +62,7 @@ export async function dispatch(
   const internId = await ctx.db.insert("interns", {
     ownerId,
     task,
-    displayTask,
     status: "queued",
-    resumes,
     countsTowardCap: true,
   });
   await ctx.scheduler.runAfter(0, internal.run.go, { internId });
@@ -135,20 +128,11 @@ export const cancel = mutation({
         status: "cancelled",
         // A queued/running intern's action is still in flight and reports its
         // own end via start/finish/fail (see dispatch's active check above); a
-        // waiting intern has nothing left running, so it ends right here.
+        // `waiting` one (a legacy row: nothing parks any more) has nothing
+        // left running, so it ends right here.
         ...(i.status === "waiting" ? { endedAt: Date.now() } : {}),
       });
       await ctx.db.insert("logs", { internId, level: "warn", text: "cancelled" });
-      if (i.status === "waiting") {
-        // Otherwise answering the open question later would file a fact and
-        // dispatch a fresh intern for a run the owner already cancelled.
-        const q = await ctx.db
-          .query("questions")
-          .withIndex("by_ownerId", (q) => q.eq("ownerId", user._id))
-          .filter((q) => q.and(q.eq(q.field("internId"), internId), q.eq(q.field("status"), "open")))
-          .first();
-        if (q) await ctx.db.patch("questions", q._id, { status: "dismissed" });
-      }
     }
     return null;
   },

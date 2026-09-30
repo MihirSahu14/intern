@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BRIEFS_PER_DAY } from "./caps.ts";
 import { CONNECTORS } from "./connectors.ts";
-import { NO_DRAFT, PROMPT_VERSION, REWRITE, type Self, brief, resumeTask, rewrite, wantsDraft } from "./brief.ts";
+import { NO_DRAFT, PROMPT_VERSION, REWRITE, type Self, brief, rewrite, wantsDraft } from "./brief.ts";
 
 const ME: Self = {
   handle: "ann",
@@ -125,15 +125,6 @@ test("every brief, sandbox or live, knows what Intern is, from the code's own co
     assert.match(about, /Nothing goes out until the member approves it in the outbox/);
     assert.match(about, /Briefs and most facts are public/);
   }
-});
-
-test("resumed answers stay one flat list under the original ask", () => {
-  const once = resumeTask("Post in #general: hi", "Which channel?", " #all-intern ");
-  assert.equal(once, "Post in #general: hi\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- Which channel? → #all-intern");
-  const twice = resumeTask(once, "Which account?", "mine");
-  assert.equal(twice, `${once}\n- Which account? → mine`);
-  assert.equal(twice.match(/ANSWERS YOU WERE GIVEN/g)?.length, 1);
-  assert.ok(!twice.includes("Original task"));
 });
 
 test("archive passages are listed with their citation id, source, author and date, cut to 400 characters", () => {

@@ -1,6 +1,0 @@
-chat:
-  quick_prompts:
-    scout:
-      - "Which tools do you have access to?"
-      - "Which contexts are you connected to?"
-      - "Walk me through the Scout codebase"
