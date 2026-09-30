@@ -1,6 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError } from "convex/values";
-import { isCapExempt } from "../lib/caps.ts";
+import { isAdmin, isCapExempt } from "../lib/caps.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 
@@ -39,6 +39,9 @@ export async function capExempt(ctx: QueryCtx, userId: Id<"users">): Promise<boo
   const user = await ctx.db.get("users", userId);
   return isCapExempt(user?.handle, process.env.CAP_EXEMPT_HANDLES);
 }
+
+/** `ADMIN_HANDLES` (see `lib/caps.ts`'s `isAdmin`): may delete any fact they can see. */
+export const adminUser = (user: Doc<"users"> | null) => isAdmin(user?.handle, process.env.ADMIN_HANDLES);
 
 /** What other visitors may see about a person: GitHub handle and avatar. */
 export async function ownerView(ctx: QueryCtx, id: Id<"users">) {

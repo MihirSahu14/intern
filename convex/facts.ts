@@ -6,7 +6,7 @@ import { PASSAGES_RECALLED } from "../lib/ingest.ts";
 import { redactEmails } from "../lib/redact.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { type MutationCtx, type QueryCtx, internalQuery, mutation, query } from "./_generated/server";
-import { capExempt, live, requireMember, visibleTo } from "./access";
+import { adminUser, capExempt, live, requireMember, visibleTo } from "./access";
 import { broadcast } from "./broadcast";
 import { factKind } from "./schema";
 
@@ -66,6 +66,26 @@ export const teach = mutation({
     const id = await insertFact(ctx, { title, body, kind: args.kind, ownerId: user._id });
     await broadcast(ctx, { type: "taught", handle: user.handle ?? user.name ?? "someone", title });
     return id;
+  },
+});
+
+/**
+ * Delete one fact: whoever added it, or an `ADMIN_HANDLES` admin (for seed and
+ * ownerless facts). A fact the caller can't see gets the same refusal as a
+ * missing one, so an owner-only fact's existence doesn't leak. The passage it
+ * was promoted from stays, free to be promoted again.
+ */
+export const remove = mutation({
+  args: { factId: v.id("facts") },
+  handler: async (ctx, { factId }) => {
+    const user = await requireMember(ctx);
+    const fact = await ctx.db.get("facts", factId);
+    if (!fact || !visibleTo(fact, user._id) || !(fact.ownerId === user._id || adminUser(user))) {
+      throw new ConvexError("Only whoever added this fact can delete it.");
+    }
+    const passage = fact.fromPassageId ? await ctx.db.get("passages", fact.fromPassageId) : null;
+    if (passage?.promotedFactId === factId) await ctx.db.patch("passages", passage._id, { promotedFactId: undefined });
+    await ctx.db.delete("facts", factId);
   },
 });
 
@@ -169,12 +189,13 @@ export const graph = query({
   args: {},
   handler: async (ctx) => {
     const viewer = await getAuthUserId(ctx);
+    const admin = adminUser(viewer ? await ctx.db.get("users", viewer) : null);
     const facts = (await ctx.db.query("facts").order("desc").take(400)).filter((f) => visibleTo(f, viewer));
     const interns = await ctx.db.query("interns").order("desc").take(60);
     const actions = await ctx.db.query("actions").order("desc").take(60);
     const sources = (await ctx.db.query("sources").order("desc").take(60)).filter((s) => s.status !== "removed" && visibleTo(s, viewer));
 
-    type Node = { id: string; label: string; kind: "fact" | "intern" | "action" | "contact" | "source"; weight: number; detail?: string; meta?: Record<string, string | number | null> };
+    type Node = { id: string; label: string; kind: "fact" | "intern" | "action" | "contact" | "source"; weight: number; detail?: string; meta?: Record<string, string | number | boolean | null> };
     const nodes = new Map<string, Node>();
     const edges: { source: string; target: string; rel: string }[] = [];
 
@@ -233,7 +254,7 @@ export const graph = query({
     for (const f of facts) {
       // Answers to an intern's questions stay in recall, not on the map.
       if (f.kind === "answer") continue;
-      nodes.set(f._id, { id: f._id, label: redactEmails(f.title).slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind } });
+      nodes.set(f._id, { id: f._id, label: redactEmails(f.title).slice(0, 56), kind: "fact", weight: 3, detail: f.kind, meta: { kind: f.kind, canDelete: admin || (viewer !== null && f.ownerId === viewer) } });
       // A promoted fact hangs off its source while that's on the map, else
       // off whoever promoted it. Only a fact nobody filed, taught or promoted
       // is a starter fact: an ownerless 🧠 fact whose passage is gone floats.

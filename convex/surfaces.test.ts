@@ -2288,3 +2288,74 @@ test("the seed source label is 'starter facts'", async () => {
   const { nodes } = await asUser(a).query(api.facts.graph, {});
   expect(nodes.find((n) => n.id === "src:seed")?.label).toBe("starter facts");
 });
+
+const NOT_YOURS = "Only whoever added this fact can delete it.";
+
+test("a member deletes their own fact; nobody else can, and a hidden one looks missing", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const mine = await t.run((ctx) => ctx.db.insert("facts", { title: "mine", body: "", kind: "note", ownerId: a, text: "mine\n" }));
+  const hidden = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "hidden", body: "", kind: "note", ownerId: a, visibility: "owner", text: "hidden\n" }),
+  );
+  const gone = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("facts", { title: "gone", body: "", kind: "note", ownerId: a, text: "gone\n" });
+    await ctx.db.delete("facts", id);
+    return id;
+  });
+
+  await expect(asUser(b).mutation(api.facts.remove, { factId: mine })).rejects.toThrow(NOT_YOURS);
+  await expect(asUser(b).mutation(api.facts.remove, { factId: hidden })).rejects.toThrow(NOT_YOURS);
+  await expect(asUser(b).mutation(api.facts.remove, { factId: gone })).rejects.toThrow(NOT_YOURS);
+  await expect(t.mutation(api.facts.remove, { factId: mine })).rejects.toThrow("Sign in first.");
+
+  await asUser(a).mutation(api.facts.remove, { factId: mine });
+  await asUser(a).mutation(api.facts.remove, { factId: hidden });
+  expect(await t.run((ctx) => ctx.db.query("facts").collect())).toEqual([]);
+});
+
+test("ADMIN_HANDLES lets an admin delete an ownerless fact; a non-admin can't", async () => {
+  vi.stubEnv("ADMIN_HANDLES", "x, Boss");
+  const { t, seedUser, asUser } = setup();
+  const boss = await seedUser("boss");
+  const b = await seedUser("b");
+  const seeded = await t.run((ctx) => ctx.db.insert("facts", { title: "seed", body: "", kind: "note", text: "seed\n" }));
+
+  await expect(asUser(b).mutation(api.facts.remove, { factId: seeded })).rejects.toThrow(NOT_YOURS);
+  await asUser(boss).mutation(api.facts.remove, { factId: seeded });
+  expect(await t.run((ctx) => ctx.db.get("facts", seeded))).toBeNull();
+});
+
+test("deleting a promoted fact frees its passage to be promoted again", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const { passageId, factId } = await t.run(async (ctx) => {
+    const sourceId = await ctx.db.insert("sources", { kind: "document", label: "Doc", externalId: "x", visibility: "public", status: "active" });
+    const passageId = await ctx.db.insert("passages", { sourceId, externalId: "0", text: "p", at: 1, visibility: "public" });
+    const factId = await ctx.db.insert("facts", { title: "p", body: "", kind: "note", ownerId: a, fromPassageId: passageId, text: "p\n" });
+    await ctx.db.patch("passages", passageId, { promotedFactId: factId });
+    return { passageId, factId };
+  });
+
+  await asUser(a).mutation(api.facts.remove, { factId });
+  const passage = await t.run((ctx) => ctx.db.get("passages", passageId));
+  expect(passage).not.toBeNull();
+  expect(passage?.promotedFactId).toBeUndefined();
+});
+
+test("the graph says per viewer who can delete a fact", async () => {
+  vi.stubEnv("ADMIN_HANDLES", "boss");
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const boss = await seedUser("boss");
+  await t.run((ctx) => ctx.db.insert("facts", { title: "mine", body: "", kind: "note", ownerId: a, text: "mine\n" }));
+  const canDelete = async (t2: ReturnType<typeof asUser> | typeof t) =>
+    (await t2.query(api.facts.graph, {})).nodes.find((n) => n.label === "mine")?.meta?.canDelete;
+
+  expect(await canDelete(asUser(a))).toBe(true);
+  expect(await canDelete(asUser(boss))).toBe(true);
+  expect(await canDelete(asUser(b))).toBe(false);
+  expect(await canDelete(t)).toBe(false);
+});

@@ -14,7 +14,7 @@ import { UPLOAD_MAX_BYTES } from "@/lib/ingest";
  */
 
 /** A ConvexError's message is the reason to show; anything else is a bug. Same rule as the cockpit's `why`. */
-const why = (err: unknown) =>
+export const why = (err: unknown) =>
   err instanceof ConvexError ? String(err.data) : err instanceof Error ? err.message : String(err);
 
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);

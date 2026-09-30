@@ -8,6 +8,7 @@ import {
   costUsd,
   dayKey,
   dayStart,
+  isAdmin,
   isCapExempt,
   sendBlocked,
   sourceBlocked,
@@ -80,6 +81,8 @@ test("CAP_EXEMPT_HANDLES matches case-insensitively, ignoring stray whitespace",
   assert.equal(isCapExempt("carl", " mihir , Ann ,bob"), false);
   assert.equal(isCapExempt("mihir", undefined), false);
   assert.equal(isCapExempt(null, "mihir"), false);
+  assert.equal(isAdmin("ann", "mihir ann,bob"), true);
+  assert.equal(isAdmin("carl", "mihir ann,bob"), false);
 });
 
 test("sources cap at five a day, except for an exempt member", () => {
