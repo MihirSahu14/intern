@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { ISSUE_PAGES, ISSUE_PAGE_SIZE, githubHeaders, issuesUrl, readIssues, readRepo, readmePassages, readmeUrl, repoPath, repoUrl } from "../lib/github.ts";
 import { BACKFILL_DAYS } from "../lib/ingest.ts";
-import { HISTORY_DELAY_MS, HISTORY_PAGE, SlackError, readChannels, readHistory, slackApi, slackPassage } from "../lib/slack.ts";
+import { obj } from "../lib/inbound.ts";
+import { HISTORY_DELAY_MS, HISTORY_PAGE, SlackError, readChannelName, readChannels, readHistory, slackApi, slackPassage } from "../lib/slack.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
@@ -19,7 +20,8 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
  * Lists the community workspace's public channels and reads each one's last
  * 90 days, one channel after another. Safe to re-run: passages upsert, a
  * channel part-way through resumes from its source's cursor, and a channel
- * created since is joined.
+ * created since is joined. New and unarchived channels join themselves
+ * (`joinChannel`); this is the catch-up for any event that went missing.
  */
 export const backfillSlack = internalAction({
   args: {},
@@ -36,11 +38,40 @@ export const backfillSlack = internalAction({
       const page = readChannels(
         await slackApi(token, "conversations.list", { types: "public_channel", exclude_archived: true, limit: 200, cursor }),
       );
-      for (const c of page.channels) sourceIds.push(await ctx.runMutation(internal.slack.ensureChannel, { channel: c.id, name: c.name }));
+      for (const c of page.channels) {
+        sourceIds.push(await ctx.runMutation(internal.slack.ensureChannel, { channel: c.id, name: c.name, revive: true }));
+      }
       cursor = page.next ?? undefined;
     } while (cursor);
     await ctx.scheduler.runAfter(0, internal.ingest.backfillChannel, { sourceIds, oldest });
     return { channels: sourceIds.length };
+  },
+});
+
+/**
+ * A channel just created or unarchived (slack.events): joined, so its new
+ * messages arrive, then read back 90 days. Only a channel Slack's join calls
+ * public gets a source; a failed join (archived again, private) adds nothing.
+ */
+export const joinChannel = internalAction({
+  args: { channel: v.string() },
+  handler: async (ctx, { channel }) => {
+    const token = process.env.SLACK_BRAIN_BOT_TOKEN;
+    if (!token) return null;
+    try {
+      const joined = await slackApi(token, "conversations.join", { channel });
+      if (obj(joined.channel).is_private !== false) return null;
+      const sourceId: Id<"sources"> = await ctx.runMutation(internal.slack.ensureChannel, {
+        channel,
+        name: readChannelName(joined) ?? undefined,
+        revive: true,
+      });
+      const oldest = Math.floor(Date.now() / 1000) - BACKFILL_DAYS * 86_400;
+      await ctx.scheduler.runAfter(0, internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest });
+    } catch (err) {
+      console.log(`slack: joining ${channel} failed: ${errText(err)}`);
+    }
+    return null;
   },
 });
 

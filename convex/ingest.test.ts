@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
+import { ANON_PROMOTES_PER_DAY } from "../lib/caps.ts";
 import { UPLOAD_MAX_BYTES } from "../lib/ingest.ts";
 import { slackSignature } from "../lib/slack.ts";
 import { api, internal } from "./_generated/api";
@@ -712,6 +713,176 @@ test("backfill never resurrects a message deleted in Slack while its page was in
   });
   await t.action(internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest: 0 });
   expect((await allPassages(t)).map((p) => p.text)).toEqual(["still there"]);
+});
+
+// --- channel lifecycle ---------------------------------------------------------
+
+// Shapes from docs.slack.dev/reference/events/{channel_created, channel_archive,
+// channel_unarchive, channel_deleted, channel_rename, message/channel_convert_to_private}.
+const created = (id: string, name: string, team = "T1") =>
+  envelope({ type: "channel_created", channel: { id, name, created: 1758800000, creator: "U1" } }, team);
+const archived = (channel = "C1", team = "T1") => envelope({ type: "channel_archive", channel, user: "U1" }, team);
+const unarchived = (channel = "C1", team = "T1") => envelope({ type: "channel_unarchive", channel, user: "U1" }, team);
+const channelDeleted = (channel = "C1", team = "T1") => envelope({ type: "channel_deleted", channel }, team);
+const renamed = (id: string, name: string, team = "T1") => envelope({ type: "channel_rename", channel: { id, name, created: 1758800000 } }, team);
+const madePrivate = (channel = "C1", team = "T1") =>
+  envelope(
+    {
+      type: "message",
+      subtype: "channel_convert_to_private",
+      user: "U1",
+      text: "made this channel *private*.",
+      ts: "1758800400.000500",
+      channel,
+      event_ts: "1758800400.000500",
+      channel_type: "group",
+    },
+    team,
+  );
+const channelSources = (t: T) => t.run((ctx) => ctx.db.query("sources").collect());
+
+test("slack: a new public channel is joined and read, and its next message is archived without a backfill", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  const f = stubSlackApi({
+    "conversations.join": [{ ok: true, channel: { id: "C2", name: "fresh", is_private: false } }],
+    "conversations.history": [{ ok: true, messages: [person("first!", "1758799999.000100")], has_more: false }],
+  });
+  expect(await post(t, created("C2", "fresh"))).toBe(200);
+  await settle(t);
+
+  expect(slackCalls(f, "conversations.join")[0]).toEqual({ channel: "C2" });
+  const [src] = await channelSources(t);
+  expect(src).toMatchObject({ kind: "slack_channel", label: "#fresh", externalId: "C2", status: "active", visibility: "public" });
+  expect(src.lastSyncedAt).toBeTypeOf("number");
+
+  await post(t, message({ channel: "C2" }));
+  expect((await allPassages(t)).map((p) => p.externalId).sort()).toEqual(["C2:1758799999.000100", `C2:${TS}`]);
+  expect(slackCalls(f, "conversations.info")).toHaveLength(0);
+});
+
+test("slack: a channel Slack's join says is private gets no source", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  stubSlackApi({ "conversations.join": [{ ok: true, channel: { id: "C2", name: "secret", is_private: true } }] });
+  await post(t, created("C2", "secret"));
+  await settle(t);
+  expect(await channelSources(t)).toHaveLength(0);
+});
+
+test("slack: an archived channel's passages go, it leaves recall and the rail, and its promoted fact stays", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await post(t, message());
+  await post(t, message({ ts: "1758800001.000100", text: "Fridays are for demos" }));
+  await post(t, reaction("brain", "U3"));
+  const [src] = await channelSources(t);
+  expect(await t.query(internal.facts.archive, { task: "Fridays", ownerId: a })).toHaveLength(2);
+
+  expect(await post(t, archived())).toBe(200);
+  await settle(t);
+  expect(await allPassages(t)).toHaveLength(0);
+  expect((await t.run((ctx) => ctx.db.get("sources", src._id)))?.status).toBe("removed");
+  expect(await t.query(internal.facts.archive, { task: "Fridays", ownerId: a })).toEqual([]);
+  expect(await t.query(api.sources.passages, { sourceId: src._id })).toBeNull();
+  expect(JSON.stringify(await t.query(api.facts.graph, {}))).not.toMatch(/#C1/);
+  expect(await allFacts(t)).toEqual([expect.objectContaining({ title: "We ship on Fridays" })]);
+
+  // Nothing more is read from it.
+  await post(t, message({ ts: "1758800002.000100" }));
+  expect(await allPassages(t)).toHaveLength(0);
+});
+
+test("slack: a deleted channel, or one made private, is read no more", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, message({ channel: "C2" }));
+  await post(t, channelDeleted("C1"));
+  await post(t, madePrivate("C2"));
+  expect(await allPassages(t)).toHaveLength(0);
+  expect((await channelSources(t)).map((s) => s.status)).toEqual(["removed", "removed"]);
+});
+
+test("slack: an unarchived channel is joined and read again", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  const f = stubSlackApi({
+    "conversations.info": [{ ok: true, channel: { id: "C1", name: "general", is_private: false } }],
+    "conversations.join": [{ ok: true, channel: { id: "C1", name: "general", is_private: false } }],
+    "conversations.history": [{ ok: true, messages: [person("still here", TS)], has_more: false }],
+  });
+  await post(t, message());
+  await post(t, archived());
+  await settle(t);
+  expect(await allPassages(t)).toHaveLength(0);
+
+  await post(t, unarchived());
+  await settle(t);
+  expect(slackCalls(f, "conversations.join").map((c) => c.channel)).toContain("C1");
+  const [src] = await channelSources(t);
+  expect(src).toMatchObject({ status: "active", label: "#general" });
+  expect((await allPassages(t)).map((p) => p.text)).toEqual(["still here"]);
+});
+
+test("slack: a rename relabels a known channel and adds no unknown one", async () => {
+  slackEnv();
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  await post(t, renamed("C1", "shipping"));
+  await post(t, renamed("C9", "elsewhere"));
+  expect((await channelSources(t)).map((s) => s.label)).toEqual(["#shipping"]);
+});
+
+test("slack: channel events from another team are ignored", async () => {
+  slackEnv();
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t } = setup();
+  stubSlackApi({});
+  await post(t, message());
+  const f = stubSlackApi({ "conversations.join": [{ ok: true, channel: { id: "C2", name: "fresh", is_private: false } }] });
+  for (const e of [created("C2", "fresh", "T9"), unarchived("C2", "T9"), archived("C1", "T9"), channelDeleted("C1", "T9"), madePrivate("C1", "T9"), renamed("C1", "x", "T9")]) {
+    expect(await post(t, e)).toBe(200);
+  }
+  await settle(t);
+  expect(f).not.toHaveBeenCalled();
+  expect((await channelSources(t)).map((s) => `${s.label}:${s.status}`)).toEqual(["#C1:active"]);
+  expect(await allPassages(t)).toHaveLength(1);
+});
+
+test("slack: anonymous 🧠s stop at ANON_PROMOTES_PER_DAY a day; a linked member's still promote", async () => {
+  slackEnv();
+  const { t, seedUser } = setup();
+  stubSlackApi({});
+  const a = await seedUser("a");
+  await linkSlack(t, a, "U2");
+  await post(t, message());
+  const [p] = await allPassages(t);
+  await t.run(async (ctx) => {
+    // A seed fact is ownerless too, but no promotion: it doesn't count.
+    await ctx.db.insert("facts", { title: "seed", body: "seed", kind: "note", text: "seed" });
+    for (let i = 0; i < ANON_PROMOTES_PER_DAY - 1; i++) {
+      await ctx.db.insert("facts", { title: `f${i}`, body: "b", kind: "note", text: `f${i}`, fromPassageId: p._id });
+    }
+  });
+  await post(t, reaction("brain", "U3"));
+  expect(await allFacts(t)).toHaveLength(ANON_PROMOTES_PER_DAY + 1);
+
+  const next = "1758800001.000100";
+  const brainOn = (user: string) =>
+    envelope({ type: "reaction_added", user, reaction: "brain", item: { type: "message", channel: "C1", ts: next }, item_user: "U1", event_ts: "1758800300.000400" });
+  await post(t, message({ ts: next, text: "Demos are on Mondays" }));
+  await post(t, brainOn("U3"));
+  expect(await allFacts(t)).toHaveLength(ANON_PROMOTES_PER_DAY + 1);
+  await post(t, brainOn("U2"));
+  expect((await allFacts(t)).filter((f) => f.ownerId === a)).toHaveLength(1);
 });
 
 // --- documents ---------------------------------------------------------------

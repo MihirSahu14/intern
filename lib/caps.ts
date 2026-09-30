@@ -101,6 +101,13 @@ export const sendBlocked = (sendsToday: number, exempt = false): string | null =
 
 export const SOURCES_PER_DAY = 5;
 
+/**
+ * 🧠s in the community Slack from someone not linked to any member: each
+ * files a public fact nobody owns. One cap for all of them together, since
+ * there's no member to count against; past it, a 🧠 promotes nothing.
+ */
+export const ANON_PROMOTES_PER_DAY = 50;
+
 export const sourceBlocked = (addedToday: number, exempt = false): string | null =>
   !exempt && addedToday >= SOURCES_PER_DAY ? `You've added ${SOURCES_PER_DAY} sources today. ${RESETS}` : null;
 

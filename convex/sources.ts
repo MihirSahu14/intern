@@ -183,12 +183,17 @@ export const remove = mutation({
     if (!s || s.ownerId !== user._id || s.status === "removed") {
       throw new ConvexError("Only whoever added a source can remove it.");
     }
-    await clearAll(ctx, sourceId);
-    if (s.storageId) await ctx.storage.delete(s.storageId);
-    await ctx.db.patch("sources", sourceId, { status: "removed", storageId: undefined, cursor: undefined });
+    await removeSource(ctx, s);
     return null;
   },
 });
+
+/** A source's passages and file go; facts promoted from it stay, and so does the row, as `removed`. */
+export async function removeSource(ctx: MutationCtx, s: Doc<"sources">) {
+  await clearAll(ctx, s._id);
+  if (s.storageId) await ctx.storage.delete(s.storageId);
+  await ctx.db.patch("sources", s._id, { status: "removed", storageId: undefined, cursor: undefined });
+}
 
 export const passageInput = v.object({
   externalId: v.string(),
