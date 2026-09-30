@@ -338,11 +338,11 @@ export const stale = internalMutation({
 /** Every new document or repo, as its read is scheduled. */
 const watch = (ctx: MutationCtx, sourceId: Id<"sources">) => ctx.scheduler.runAfter(STALE_AFTER_MS, internal.sources.stale, { sourceId });
 
-/** Every repo the daily refresh reads again: active or failed, never removed. ponytail: first 500. */
-export const repos = internalQuery({
-  args: {},
-  handler: async (ctx): Promise<Id<"sources">[]> =>
-    (await ctx.db.query("sources").withIndex("by_kind_and_externalId", (q) => q.eq("kind", "github_repo")).take(500))
+/** Every repo or channel a daily cron reads again: active or failed, never removed. ponytail: first 500. */
+export const readable = internalQuery({
+  args: { kind: v.union(v.literal("github_repo"), v.literal("slack_channel")) },
+  handler: async (ctx, { kind }): Promise<Id<"sources">[]> =>
+    (await ctx.db.query("sources").withIndex("by_kind_and_externalId", (q) => q.eq("kind", kind)).take(500))
       .filter((s) => s.status !== "removed")
       .map((s) => s._id),
 });

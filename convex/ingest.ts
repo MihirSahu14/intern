@@ -76,6 +76,52 @@ export const joinChannel = internalAction({
 });
 
 /**
+ * Daily, from crons.ts: every channel asked about once, HISTORY_DELAY_MS
+ * apart (conversations.info is Tier 3). The net under the lifecycle events:
+ * a channel made private sends this app nothing it's subscribed to.
+ */
+export const sweepChannels = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    if (!process.env.SLACK_BRAIN_BOT_TOKEN) return null;
+    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.readable, { kind: "slack_channel" });
+    for (const [i, sourceId] of ids.entries()) await ctx.scheduler.runAfter(i * HISTORY_DELAY_MS, internal.ingest.checkChannel, { sourceId });
+    return null;
+  },
+});
+
+/** Slack's answers for a channel this bot can't see as public: gone from the brain, as if archived. */
+const GONE_ERRORS = new Set(["channel_not_found", "missing_scope"]);
+
+/**
+ * One channel, still public and open? Archived, private or not found is
+ * removed like `channel_archive`; anything else Slack says (a 429, a 5xx, the
+ * network) removes nothing and tomorrow asks again. A missed rename catches up.
+ */
+export const checkChannel = internalAction({
+  args: { sourceId: v.id("sources") },
+  handler: async (ctx, { sourceId }) => {
+    const token = process.env.SLACK_BRAIN_BOT_TOKEN;
+    const src: Doc<"sources"> | null = await ctx.runQuery(internal.sources.get, { sourceId });
+    if (!token || !src || src.kind !== "slack_channel" || src.status === "removed") return null;
+    const channel = src.externalId;
+    let gone: boolean;
+    try {
+      const info = await slackApi(token, "conversations.info", { channel });
+      const c = obj(info.channel);
+      gone = c.is_private === true || c.is_archived === true;
+      const name = readChannelName(info);
+      if (!gone && name) await ctx.runMutation(internal.slack.renameChannel, { channel, name });
+    } catch (err) {
+      gone = err instanceof SlackError && !!err.code && GONE_ERRORS.has(err.code);
+      if (!gone) console.log(`slack: checking ${channel} failed: ${errText(err)}`);
+    }
+    if (gone) await ctx.runMutation(internal.slack.channelGone, { channel });
+    return null;
+  },
+});
+
+/**
  * One page of the first channel in `sourceIds`, then itself again: the same
  * channel while there's more, else the next one. One Slack history call per
  * HISTORY_DELAY_MS whatever the workspace's size; a 429 waits Slack's
@@ -190,7 +236,7 @@ export const refreshRepos = internalAction({
   args: {},
   handler: async (ctx) => {
     if (!process.env.GITHUB_TOKEN) return null;
-    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.repos, {});
+    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.readable, { kind: "github_repo" });
     for (const [i, sourceId] of ids.entries()) await ctx.scheduler.runAfter(i * 10_000, internal.ingest.syncRepo, { sourceId });
     return null;
   },

@@ -24,6 +24,10 @@ import { obj, same, str } from "./inbound.ts";
  * channel_archive/_unarchive need no scope. A channel made private posts a
  * `channel_convert_to_private` message (its example has `channel_type:
  * "group"`). conversations.join answers with `channel.is_private`.
+ * conversations.info (Tier 3) needs `channels:read` for a public channel,
+ * `groups:read` for a private one; it answers `is_private`/`is_archived`, or
+ * errors `channel_not_found`, `missing_scope`, `no_permission`. A 429 carries
+ * Retry-After (docs.slack.dev/apis/web-api/rate-limits).
  */
 
 export const SLACK_TOLERANCE_S = 300;
@@ -134,12 +138,14 @@ export const slackPassage = (m: SlackMessage, author: string | undefined) => ({
   at: Math.round(Number(m.ts) * 1000),
 });
 
-/** A Web API refusal: the method and Slack's error code, never a message's text. */
+/** A Web API refusal: the method and Slack's error code (`code`, when Slack gave one), never a message's text. */
 export class SlackError extends Error {
   retryAfterS: number | null;
-  constructor(message: string, retryAfterS: number | null = null) {
+  code: string | null;
+  constructor(message: string, retryAfterS: number | null = null, code: string | null = null) {
     super(message);
     this.retryAfterS = retryAfterS;
+    this.code = code;
   }
 }
 
@@ -162,7 +168,10 @@ export async function slackApi(
   });
   if (res.status === 429) throw new SlackError(`${method}: rate limited`, Number(res.headers.get("retry-after")) || 30);
   const json = obj(await res.json().catch(() => null));
-  if (json.ok !== true) throw new SlackError(`${method}: ${str(json.error) ?? `http ${res.status}`}`);
+  if (json.ok !== true) {
+    const code = str(json.error) ?? null;
+    throw new SlackError(`${method}: ${code ?? `http ${res.status}`}`, null, code);
+  }
   return json;
 }
 

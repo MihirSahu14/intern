@@ -551,12 +551,13 @@ backfill.
    its own (no backfill re-run); an archived or deleted one stops being read
    and its passages clear (facts promoted from it stay); an unarchived one is
    joined and read again; a rename relabels its node. A channel **made
-   private** is caught only if Slack's `channel_convert_to_private` message
-   reaches the app: Slack's example of it carries `channel_type: "group"`,
-   i.e. a private-channel message, which `message.channels` may not deliver
-   without `groups:history` (never add it). If you make a channel private,
-   check its node left the graph; if it didn't, its old passages stay public
-   until they're dropped by hand (new messages there are never read).
+   private disappears within a day even if Slack sends no event** (its
+   `channel_convert_to_private` message may only reach apps with
+   `groups:history`, which is never added): the daily `check slack channels`
+   cron asks `conversations.info` about every channel, 1.5 s apart, and
+   removes any that is archived, private or not found exactly like an
+   archive. A rate limit or Slack outage removes nothing; it asks again the
+   next day.
 4. **Tell the workspace.** Set `#all-intern-community`'s description (or
    `COMMUNITY_SLACK_CHANNEL`'s, if renamed), and pin a message there:
    "Public channels are read into the Intern brain

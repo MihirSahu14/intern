@@ -885,6 +885,55 @@ test("slack: anonymous 🧠s stop at ANON_PROMOTES_PER_DAY a day; a linked membe
   expect((await allFacts(t)).filter((f) => f.ownerId === a)).toHaveLength(1);
 });
 
+/** Five channels with a passage each, then the daily sweep, with conversations.info answering per channel. */
+async function sweepWith(info: Record<string, () => Response>) {
+  vi.stubEnv("SLACK_BRAIN_BOT_TOKEN", "xoxb-test");
+  const { t, seedSource, seedPassage } = setup();
+  const ids: Record<string, Id<"sources">> = {};
+  for (const c of Object.keys(info)) {
+    ids[c] = await seedSource({ kind: "slack_channel", label: `#${c}`, externalId: c });
+    await seedPassage(ids[c], `said in ${c}`);
+  }
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init?: RequestInit) => info[new URLSearchParams(String(init?.body)).get("channel") ?? ""]()),
+  );
+  vi.useFakeTimers(); // before the sweep: it spaces its checks out with the scheduler
+  await t.action(internal.ingest.sweepChannels, {});
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  const status = async (c: string) => (await t.run((ctx) => ctx.db.get("sources", ids[c])))?.status;
+  const texts = (await allPassages(t)).map((p) => p.text).sort();
+  return { t, status, texts, ids };
+}
+const infoOk = (channel: Record<string, unknown>) => () => new Response(JSON.stringify({ ok: true, channel: { id: "C", name: "general", ...channel } }));
+
+test("the daily sweep removes a channel gone private, archived or not found; keeps a public one and relabels it", async () => {
+  const { t, status, texts, ids } = await sweepWith({
+    CPRIV: infoOk({ is_private: true, is_archived: false }),
+    CARCH: infoOk({ is_private: false, is_archived: true }),
+    CGONE: () => new Response(JSON.stringify({ ok: false, error: "channel_not_found" })),
+    CSCOPE: () => new Response(JSON.stringify({ ok: false, error: "missing_scope" })),
+    CPUB: infoOk({ name: "renamed", is_private: false, is_archived: false }),
+  });
+  for (const c of ["CPRIV", "CARCH", "CGONE", "CSCOPE"]) expect(await status(c)).toBe("removed");
+  expect(await status("CPUB")).toBe("active");
+  expect(texts).toEqual(["said in CPUB"]);
+  expect((await t.run((ctx) => ctx.db.get("sources", ids.CPUB)))?.label).toBe("#renamed");
+});
+
+test("the daily sweep removes nothing on a 429, a 5xx, a network error or another Slack error", async () => {
+  const { status, texts } = await sweepWith({
+    CRATE: () => new Response("", { status: 429, headers: { "retry-after": "30" } }),
+    C5XX: () => new Response("<html>bad gateway</html>", { status: 502 }),
+    CNET: () => {
+      throw new TypeError("fetch failed");
+    },
+    CAUTH: () => new Response(JSON.stringify({ ok: false, error: "invalid_auth" })),
+  });
+  for (const c of ["CRATE", "C5XX", "CNET", "CAUTH"]) expect(await status(c)).toBe("active");
+  expect(texts).toHaveLength(4);
+});
+
 // --- documents ---------------------------------------------------------------
 
 const html = (title: string, ...paragraphs: string[]) =>
