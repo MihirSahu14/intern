@@ -32,7 +32,7 @@ export type GraphNode = {
   /** Rough importance — drives node radius. */
   weight?: number;
   detail?: string;
-  meta?: Record<string, string | number | null>;
+  meta?: Record<string, string | number | boolean | null>;
 };
 
 export type GraphEdge = {

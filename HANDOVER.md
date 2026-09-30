@@ -36,6 +36,8 @@ skips the shared $5/day budget, the DAY_WINDOW overflow safety guard, or the
 resend-attempts cap. One helper, `access.ts`'s `capExempt` (built on
 `lib/caps.ts`'s pure `isCapExempt`), backs every one of those cap sites.
 
+**`ADMIN_HANDLES`** (Convex env var, same format: comma/space-separated GitHub handles, case-insensitive, optional) lets those members delete any fact they can see, e.g. seed or ownerless ones; everyone else deletes only their own (`facts.remove`).
+
 ### Model provider
 
 `lib/model.ts` speaks the OpenAI-compatible `/chat/completions` streaming API

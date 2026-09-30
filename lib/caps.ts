@@ -55,12 +55,21 @@ export const costUsd = (tokensIn: number, tokensOut: number, usdPerMIn = USD_PER
  * one. Exemption is per-member caps only — see each `*Blocked` function's own
  * note for what it never skips.
  */
-export function isCapExempt(handle: string | null | undefined, env: string | undefined): boolean {
+export const isCapExempt = (handle: string | null | undefined, env: string | undefined): boolean => inHandleList(handle, env);
+
+/**
+ * `ADMIN_HANDLES`: same format as `CAP_EXEMPT_HANDLES`, for the deployment
+ * owner — may delete any fact they can see, not just their own.
+ */
+export const isAdmin = (handle: string | null | undefined, env: string | undefined): boolean => inHandleList(handle, env);
+
+/** The one parser for the handle-list env vars: commas or whitespace between handles. */
+function inHandleList(handle: string | null | undefined, env: string | undefined): boolean {
   if (!handle) return false;
   const h = handle.trim().toLowerCase();
   return (env ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
+    .split(/[,\s]+/)
+    .map((s) => s.toLowerCase())
     .includes(h);
 }
 

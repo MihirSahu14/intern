@@ -1,10 +1,12 @@
 "use client";
 
+import { useMutation } from "convex/react";
 import { useState } from "react";
 import { KIND_ORDER } from "./BrainGraph";
 import KindGlyph from "./KindGlyph";
 import { KIND_GLOSS, KIND_LABEL } from "./Legend";
-import { AddSource, SourcePanel } from "./Sources";
+import { AddSource, SourcePanel, why } from "./Sources";
+import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { ConnectorKey } from "@/lib/connectors";
 import type { ActionKind, Graph, GraphNode, NodeKind } from "@/lib/types";
@@ -199,12 +201,17 @@ export default function BrainRail({
                 <p className="text-dim leading-relaxed">{selected.detail}</p>
               ) : null}
               {selected.meta
-                ? Object.entries(selected.meta).map(([k, v]) => (
-                    <Row key={k} k={k}>
-                      <span className="truncate text-dim">{String(v)}</span>
-                    </Row>
-                  ))
+                ? Object.entries(selected.meta)
+                    .filter(([k]) => k !== "canDelete")
+                    .map(([k, v]) => (
+                      <Row key={k} k={k}>
+                        <span className="truncate text-dim">{String(v)}</span>
+                      </Row>
+                    ))
                 : null}
+              {selected.kind === "fact" && selected.meta?.canDelete ? (
+                <DeleteFact key={selected.id} factId={selected.id as Id<"facts">} onDone={() => onSelect(null)} />
+              ) : null}
               {selected.kind === "source" && selected.id.startsWith("src:") && selected.id !== "src:seed" ? (
                 <SourcePanel sourceId={selected.id.slice(4) as Id<"sources">} />
               ) : null}
@@ -259,6 +266,33 @@ function Row({ k, children }: { k: string; children: React.ReactNode }) {
     <div className="flex items-baseline gap-2 py-0.5">
       <span className="w-14 shrink-0 text-faint">{k}</span>
       <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
+/** Deletes the selected fact; the server decides who may (`facts.remove`), `canDelete` only hides the button. */
+function DeleteFact({ factId, onDone }: { factId: Id<"facts">; onDone: () => void }) {
+  const remove = useMutation(api.facts.remove);
+  const [error, setError] = useState<string | null>(null);
+  const onClick = () => {
+    if (!window.confirm("Delete this fact? This can't be undone.")) return;
+    setError(null);
+    remove({ factId }).then(onDone, (err) => setError(why(err)));
+  };
+  return (
+    <div className="space-y-1 pt-1">
+      <button
+        type="button"
+        onClick={onClick}
+        className="border border-line px-1.5 py-0.5 text-faint transition-colors hover:border-err/50 hover:text-err"
+      >
+        delete
+      </button>
+      {error ? (
+        <p role="status" className="leading-snug text-err">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }
