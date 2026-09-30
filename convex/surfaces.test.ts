@@ -98,22 +98,6 @@ test("other people's drafts come back as a bare status, never the draft", async 
   });
 });
 
-test("other people's questions come back without the question", async () => {
-  const { t, seedUser, asUser } = setup();
-  const owner = await seedUser("owner");
-  const other = await seedUser("other");
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: owner, task: "t", status: "waiting", countsTowardCap: true }),
-  );
-  const questionId = await t.run((ctx) =>
-    ctx.db.insert("questions", { ownerId: owner, internId, question: "Ann's number?", context: "private", status: "open" }),
-  );
-  const theirs = (await asUser(other).query(api.questions.list, {})).find((q) => q._id === questionId);
-  expect(theirs).toEqual({ _id: questionId, _creationTime: expect.any(Number), ownerId: owner, internId, status: "open" });
-  const mine = (await asUser(owner).query(api.questions.list, {})).find((q) => q._id === questionId);
-  expect(mine && "question" in mine ? mine.question : null).toBe("Ann's number?");
-});
-
 test("recall includes the owner's private facts and nobody else's", async () => {
   const { t, seedUser } = setup();
   const a = await seedUser("a");
@@ -191,48 +175,25 @@ test("other people's interns: addresses redacted, report and streamed output wit
   expect((await t.query(api.interns.logs, {})).map((l) => l.text)).toEqual(["something went wrong"]);
 });
 
-test("answering a question files the answer owner-only and a resumed intern's task shows only the original ask", async () => {
+test("a question-resumed intern's task shows only the original ask, in the list, graph and feed", async () => {
   const { t, seedUser, asUser } = setup();
   const a = await seedUser("a");
   const b = await seedUser("b");
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "waiting", countsTowardCap: true }),
+  // A legacy row: nothing resumes from a question any more, but old ones exist.
+  await t.run((ctx) =>
+    ctx.db.insert("interns", {
+      ownerId: a,
+      task: "email ann@acme.com\n\nANSWERS YOU WERE GIVEN (settled, do not ask again):\n- What is Ann's phone number? → 555-0100",
+      displayTask: "email ann@acme.com",
+      status: "done",
+      countsTowardCap: true,
+    }),
   );
-  const questionId = await t.run((ctx) =>
-    ctx.db.insert("questions", { ownerId: a, internId, question: "What is Ann's phone number?", context: "c", status: "open" }),
-  );
-
-  const { resumed } = await asUser(a).mutation(api.questions.answer, { questionId, answer: "555-0100" });
-  expect(resumed).toBe(true);
-
-  // The answer became a fact titled with the question — owner-only, like the
-  // question itself.
-  const forB = await t.query(internal.facts.recall, { task: "phone number", ownerId: b });
-  expect(forB.map((f) => f.title)).not.toContain("What is Ann's phone number?");
-  const forA = await t.query(internal.facts.recall, { task: "phone number", ownerId: a });
-  expect(forA.map((f) => f.title)).toContain("What is Ann's phone number?");
-
-  const resumedId = (
-    await t.run((ctx) => ctx.db.query("interns").withIndex("by_ownerId", (q) => q.eq("ownerId", a)).collect())
-  ).find((i) => i.resumes === internId)!._id;
-  const theirs = (await asUser(b).query(api.interns.list, {})).find((i) => i._id === resumedId);
-  expect(theirs?.task).toBe("email [email]");
-  expect(theirs?.task).not.toMatch(/phone number|555-0100/);
-});
-
-test("a resumed run's question and answer never show up in the graph or the feed", async () => {
-  const { t, seedUser, asUser } = setup();
-  const a = await seedUser("a");
-  const b = await seedUser("b");
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: a, task: "email ann@acme.com", status: "waiting", countsTowardCap: true }),
-  );
-  const questionId = await t.run((ctx) =>
-    ctx.db.insert("questions", { ownerId: a, internId, question: "What is Ann's phone number?", context: "c", status: "open" }),
-  );
-  await asUser(a).mutation(api.questions.answer, { questionId, answer: "555-0100" });
 
   const leak = /phone number|555-0100/;
+  const theirs = (await asUser(b).query(api.interns.list, {}))[0];
+  expect(theirs?.task).toBe("email [email]");
+  expect(theirs?.task).not.toMatch(leak);
   const graphForB = (await asUser(b).query(api.facts.graph, {})).nodes.map((n) => n.label).join("\n");
   expect(graphForB).not.toMatch(leak);
   const graphSignedOut = (await t.query(api.facts.graph, {})).nodes.map((n) => n.label).join("\n");
@@ -342,16 +303,10 @@ test("other people's interns show no error text, no recalledFactIds and no recal
   expect(theirs?.recalledPrivate).toBeUndefined();
 });
 
-test("signed-out visitors get only the reduced outbox and questions rows", async () => {
+test("signed-out visitors get only the reduced outbox rows", async () => {
   const { t, seedUser, seedDraft } = setup();
   const owner = await seedUser("owner");
   const { actionId } = await seedDraft(owner);
-  const internId = await t.run((ctx) =>
-    ctx.db.insert("interns", { ownerId: owner, task: "t", status: "waiting", countsTowardCap: true }),
-  );
-  const questionId = await t.run((ctx) =>
-    ctx.db.insert("questions", { ownerId: owner, internId, question: "secret?", context: "c", status: "open" }),
-  );
 
   const action = (await t.query(api.outbox.list, {})).find((r) => r._id === actionId);
   expect(action).toEqual({
@@ -362,9 +317,6 @@ test("signed-out visitors get only the reduced outbox and questions rows", async
     ownerId: owner,
     handle: "owner",
   });
-
-  const question = (await t.query(api.questions.list, {})).find((q) => q._id === questionId);
-  expect(question).toEqual({ _id: questionId, _creationTime: expect.any(Number), ownerId: owner, internId, status: "open" });
 });
 
 const linked = { redirect_url: "https://connect.composio.dev/link/ln_1", connected_account_id: "ca_1" };

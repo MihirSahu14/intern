@@ -530,7 +530,7 @@ test("only the owner can decide on a draft", async () => {
   expect(action?.status).toBe("approved");
 });
 
-test("only the owner can cancel an intern or answer its question", async () => {
+test("only the owner can cancel an intern, and a legacy waiting one ends on the spot", async () => {
   const { t, seedUser, asUser } = setup();
   const owner = await seedUser("owner");
   const other = await seedUser("other");
@@ -545,14 +545,10 @@ test("only the owner can cancel an intern or answer its question", async () => {
   const parkedId = await t.run((ctx) =>
     ctx.db.insert("interns", { ownerId: owner, task: "parked", status: "waiting", countsTowardCap: true }),
   );
-  const questionId = await t.run((ctx) =>
-    ctx.db.insert("questions", { ownerId: owner, internId: parkedId, question: "Which repo?", context: "", status: "open" }),
-  );
-  await expect(
-    asUser(other).mutation(api.questions.answer, { questionId, answer: "repo-a" }),
-  ).rejects.toThrow(/isn't open for you/);
-  await asUser(owner).mutation(api.questions.answer, { questionId, answer: "repo-a" });
-  expect((await t.run((ctx) => ctx.db.get("questions", questionId)))?.status).toBe("answered");
+  await asUser(owner).mutation(api.interns.cancel, { internId: parkedId });
+  const parked = await t.run((ctx) => ctx.db.get("interns", parkedId));
+  expect(parked?.status).toBe("cancelled");
+  expect(parked?.endedAt).toBeDefined();
 });
 
 test("a banned or unconsented user cannot write", async () => {

@@ -21,7 +21,6 @@ import type * as inbound from "../inbound.js";
 import type * as ingest from "../ingest.js";
 import type * as interns from "../interns.js";
 import type * as outbox from "../outbox.js";
-import type * as questions from "../questions.js";
 import type * as run from "../run.js";
 import type * as seed from "../seed.js";
 import type * as send from "../send.js";
@@ -49,7 +48,6 @@ declare const fullApi: ApiFromModules<{
   ingest: typeof ingest;
   interns: typeof interns;
   outbox: typeof outbox;
-  questions: typeof questions;
   run: typeof run;
   seed: typeof seed;
   send: typeof send;

@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { CONNECTORS, connectorByKey, type ConnectorKey } from "@/lib/connectors";
-import type { ActionKind, Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction, Question } from "@/lib/types";
+import type { ActionKind, Graph, GraphNode, Intern, LogLevel, LogLine, NodeKind, ProposedAction } from "@/lib/types";
 import BrainGraph from "./BrainGraph";
 import BrainRail from "./BrainRail";
 import CommandBar, { HELP } from "./CommandBar";
@@ -15,7 +15,6 @@ import { NOTICE } from "./Consent";
 import Feed from "./Feed";
 import InternRail from "./InternRail";
 import Outbox, { type Decision } from "./Outbox";
-import Questions from "./Questions";
 import Teach, { type TeachInput } from "./Teach";
 import Terminal from "./Terminal";
 import ThemeToggle from "./ThemeToggle";
@@ -74,7 +73,6 @@ export default function Cockpit({ me }: { me: Me }) {
   const internRows = useQuery(api.interns.list, {});
   const logRows = useQuery(api.interns.logs, {});
   const actionRows = useQuery(api.outbox.list, {});
-  const questionRows = useQuery(api.questions.list, {});
   const graphData = useQuery(api.facts.graph, {});
   const connectorRows = useQuery(api.connections.mine, {});
 
@@ -82,8 +80,6 @@ export default function Cockpit({ me }: { me: Me }) {
   const cancelM = useMutation(api.interns.cancel);
   const retryM = useMutation(api.interns.retry);
   const decideM = useMutation(api.outbox.decide);
-  const answerM = useMutation(api.questions.answer);
-  const dismissM = useMutation(api.questions.dismiss);
   const teachM = useMutation(api.facts.teach);
   const deleteMineM = useMutation(api.users.deleteMine);
   const finishM = useAction(api.connections.finish);
@@ -168,7 +164,7 @@ export default function Cockpit({ me }: { me: Me }) {
     [logRows, local],
   );
 
-  // Your own drafts and questions only: only you can act on them, and only
+  // Your own drafts only: only you can act on them, and only
   // your own rows carry their contents.
   const outbox = useMemo<ProposedAction[]>(
     () =>
@@ -198,26 +194,6 @@ export default function Cockpit({ me }: { me: Me }) {
           : [],
       ),
     [actionRows, me.userId],
-  );
-
-  const questions = useMemo<Question[]>(
-    () =>
-      (questionRows ?? []).flatMap((q) =>
-        "question" in q && q.ownerId === me.userId
-          ? [{
-              id: q._id,
-              internId: q.internId,
-              ownerId: q.ownerId,
-              question: q.question,
-              context: q.context,
-              status: q.status,
-              answer: q.answer,
-              askedAt: q._creationTime,
-              resumedBy: q.resumedBy,
-            }]
-          : [],
-      ),
-    [questionRows, me.userId],
   );
 
   const graph = useMemo<Graph>(
@@ -370,29 +346,6 @@ export default function Cockpit({ me }: { me: Me }) {
     [confirmUnsentM, echo],
   );
 
-  const answer = useCallback(
-    async (id: string, text: string) => {
-      try {
-        const r = await answerM({ questionId: id as Id<"questions">, answer: text });
-        if (!r.resumed && r.reason) echo("warn", `answer saved as a fact, but the intern didn't resume: ${r.reason}`);
-      } catch (err) {
-        echo("err", why(err));
-      }
-    },
-    [answerM, echo],
-  );
-
-  const dismiss = useCallback(
-    async (id: string) => {
-      try {
-        await dismissM({ questionId: id as Id<"questions"> });
-      } catch (err) {
-        echo("err", why(err));
-      }
-    },
-    [dismissM, echo],
-  );
-
   const teach = useCallback(
     async (input: TeachInput) => {
       const [head, ...rest] = input.text.split(/\n|(?<=[.!?])\s+/);
@@ -409,7 +362,7 @@ export default function Cockpit({ me }: { me: Me }) {
   );
 
   const deleteMine = useCallback(async () => {
-    if (!window.confirm("Delete every brief, fact, draft and question you added? This can't be undone.")) return;
+    if (!window.confirm("Delete every brief, fact and draft you added? This can't be undone.")) return;
     try {
       await deleteMineM({});
       echo("ok", "deleting everything you added…");
@@ -447,12 +400,6 @@ export default function Cockpit({ me }: { me: Me }) {
           if (!arg) return echo("err", "usage: approve <draft-id>");
           void decide(arg, { decision: "approve" });
           return;
-        case "answer": {
-          const [target, ...text] = arg.split(/\s+/);
-          if (!target || !text.length) return echo("err", "usage: answer <question-id> <answer>");
-          void answer(target, text.join(" "));
-          return;
-        }
         case "capture":
           if (!arg) return echo("err", "usage: capture <what you know>");
           void teach({ text: arg, kind: "note" });
@@ -465,7 +412,7 @@ export default function Cockpit({ me }: { me: Me }) {
           void spawn(raw);
       }
     },
-    [answer, decide, echo, kill, spawn, teach],
+    [decide, echo, kill, spawn, teach],
   );
 
   const toggleKind = (k: NodeKind) =>
@@ -579,11 +526,6 @@ export default function Cockpit({ me }: { me: Me }) {
         </main>
 
         <aside className="flex min-h-0 w-[268px] shrink-0 flex-col overflow-y-auto border-l border-line">
-          <Questions
-            questions={questions}
-            onAnswer={answer}
-            onDismiss={dismiss}
-          />
           <Outbox
             actions={outbox}
             sendsVia={sendsVia}
