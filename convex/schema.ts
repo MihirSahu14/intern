@@ -163,7 +163,7 @@ export default defineSchema({
   /**
    * A passage deleted in Slack, kept so a retried "message" delivery (the
    * original post, redelivered after the delete already landed) can't bring
-   * it back. Slack channel sources are never removed, so nothing prunes this.
+   * it back. Nothing prunes this: a removed (archived) channel can come back.
    */
   slackTombstones: defineTable({ sourceId: v.id("sources"), externalId: v.string() }).index(
     "by_sourceId_and_externalId",

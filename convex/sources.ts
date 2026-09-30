@@ -183,12 +183,17 @@ export const remove = mutation({
     if (!s || s.ownerId !== user._id || s.status === "removed") {
       throw new ConvexError("Only whoever added a source can remove it.");
     }
-    await clearAll(ctx, sourceId);
-    if (s.storageId) await ctx.storage.delete(s.storageId);
-    await ctx.db.patch("sources", sourceId, { status: "removed", storageId: undefined, cursor: undefined });
+    await removeSource(ctx, s);
     return null;
   },
 });
+
+/** A source's passages and file go; facts promoted from it stay, and so does the row, as `removed`. */
+export async function removeSource(ctx: MutationCtx, s: Doc<"sources">) {
+  await clearAll(ctx, s._id);
+  if (s.storageId) await ctx.storage.delete(s.storageId);
+  await ctx.db.patch("sources", s._id, { status: "removed", storageId: undefined, cursor: undefined });
+}
 
 export const passageInput = v.object({
   externalId: v.string(),
@@ -333,11 +338,11 @@ export const stale = internalMutation({
 /** Every new document or repo, as its read is scheduled. */
 const watch = (ctx: MutationCtx, sourceId: Id<"sources">) => ctx.scheduler.runAfter(STALE_AFTER_MS, internal.sources.stale, { sourceId });
 
-/** Every repo the daily refresh reads again: active or failed, never removed. ponytail: first 500. */
-export const repos = internalQuery({
-  args: {},
-  handler: async (ctx): Promise<Id<"sources">[]> =>
-    (await ctx.db.query("sources").withIndex("by_kind_and_externalId", (q) => q.eq("kind", "github_repo")).take(500))
+/** Every repo or channel a daily cron reads again: active or failed, never removed. ponytail: first 500. */
+export const readable = internalQuery({
+  args: { kind: v.union(v.literal("github_repo"), v.literal("slack_channel")) },
+  handler: async (ctx, { kind }): Promise<Id<"sources">[]> =>
+    (await ctx.db.query("sources").withIndex("by_kind_and_externalId", (q) => q.eq("kind", kind)).take(500))
       .filter((s) => s.status !== "removed")
       .map((s) => s._id),
 });

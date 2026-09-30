@@ -6,7 +6,7 @@ import { useState } from "react";
 import { api } from "@/convex/_generated/api";
 
 export const NOTICE =
-  "Public test brain: briefs, facts, the sources you add and the community Slack's public channels are visible to everyone. Your drafts, questions, sends and private documents are private to you. Don't put anything private in a brief.";
+  "Public test brain: briefs, facts, the sources you add and the community Slack's public channels are visible to everyone. Your drafts, sends and private documents are private to you. Don't put anything private in a brief.";
 
 export default function Consent() {
   const accept = useMutation(api.users.accept);

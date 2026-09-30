@@ -2279,6 +2279,18 @@ test("ADMIN_HANDLES lets an admin delete an ownerless fact; a non-admin can't", 
   expect(await t.run((ctx) => ctx.db.get("facts", seeded))).toBeNull();
 });
 
+test("an admin can't delete another member's owner-only fact: the same refusal as a missing one", async () => {
+  vi.stubEnv("ADMIN_HANDLES", "boss");
+  const { t, seedUser, asUser } = setup();
+  const boss = await seedUser("boss");
+  const a = await seedUser("a");
+  const hidden = await t.run((ctx) =>
+    ctx.db.insert("facts", { title: "hidden", body: "", kind: "note", ownerId: a, visibility: "owner", text: "hidden\n" }),
+  );
+  await expect(asUser(boss).mutation(api.facts.remove, { factId: hidden })).rejects.toThrow(NOT_YOURS);
+  expect(await t.run((ctx) => ctx.db.get("facts", hidden))).not.toBeNull();
+});
+
 test("deleting a promoted fact frees its passage to be promoted again", async () => {
   const { t, seedUser, asUser } = setup();
   const a = await seedUser("a");

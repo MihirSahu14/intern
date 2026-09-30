@@ -53,3 +53,6 @@ session.md
 
 # convex snapshots — contain user data
 /backups/
+
+# local Scout checkout — its .env holds a key
+scout/

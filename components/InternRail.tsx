@@ -83,7 +83,7 @@ export default function InternRail({
                 <span className="ml-auto shrink-0 whitespace-nowrap tabular-nums text-faint">
                   {secs ? `${secs.toFixed(1)}s` : "—"}
                 </span>
-                {i.status === "running" || i.status === "queued" ? (
+                {i.status === "running" || i.status === "queued" || i.status === "waiting" ? (
                   <button
                     type="button"
                     onClick={(e) => {

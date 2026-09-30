@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { ISSUE_PAGES, ISSUE_PAGE_SIZE, githubHeaders, issuesUrl, readIssues, readRepo, readmePassages, readmeUrl, repoPath, repoUrl } from "../lib/github.ts";
 import { BACKFILL_DAYS } from "../lib/ingest.ts";
-import { HISTORY_DELAY_MS, HISTORY_PAGE, SlackError, readChannels, readHistory, slackApi, slackPassage } from "../lib/slack.ts";
+import { obj } from "../lib/inbound.ts";
+import { HISTORY_DELAY_MS, HISTORY_PAGE, SlackError, readChannelName, readChannels, readHistory, slackApi, slackPassage } from "../lib/slack.ts";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
@@ -19,7 +20,8 @@ const errText = (err: unknown) => (err instanceof Error ? err.message : String(e
  * Lists the community workspace's public channels and reads each one's last
  * 90 days, one channel after another. Safe to re-run: passages upsert, a
  * channel part-way through resumes from its source's cursor, and a channel
- * created since is joined.
+ * created since is joined. New and unarchived channels join themselves
+ * (`joinChannel`); this is the catch-up for any event that went missing.
  */
 export const backfillSlack = internalAction({
   args: {},
@@ -36,11 +38,121 @@ export const backfillSlack = internalAction({
       const page = readChannels(
         await slackApi(token, "conversations.list", { types: "public_channel", exclude_archived: true, limit: 200, cursor }),
       );
-      for (const c of page.channels) sourceIds.push(await ctx.runMutation(internal.slack.ensureChannel, { channel: c.id, name: c.name }));
+      for (const c of page.channels) {
+        sourceIds.push(await ctx.runMutation(internal.slack.ensureChannel, { channel: c.id, name: c.name, revive: true }));
+      }
       cursor = page.next ?? undefined;
     } while (cursor);
     await ctx.scheduler.runAfter(0, internal.ingest.backfillChannel, { sourceIds, oldest });
     return { channels: sourceIds.length };
+  },
+});
+
+/**
+ * A channel just created or unarchived (slack.events): joined, so its new
+ * messages arrive, then read back 90 days. Only a channel Slack's join calls
+ * public gets a source; a failed join (archived again, private) adds nothing.
+ */
+export const joinChannel = internalAction({
+  args: { channel: v.string() },
+  handler: async (ctx, { channel }) => {
+    const token = process.env.SLACK_BRAIN_BOT_TOKEN;
+    if (!token) return null;
+    try {
+      const joined = await slackApi(token, "conversations.join", { channel });
+      if (obj(joined.channel).is_private !== false) return null;
+      const sourceId: Id<"sources"> = await ctx.runMutation(internal.slack.ensureChannel, {
+        channel,
+        name: readChannelName(joined) ?? undefined,
+        revive: true,
+      });
+      const oldest = Math.floor(Date.now() / 1000) - BACKFILL_DAYS * 86_400;
+      await ctx.scheduler.runAfter(0, internal.ingest.backfillChannel, { sourceIds: [sourceId], oldest });
+    } catch (err) {
+      console.log(`slack: joining ${channel} failed: ${errText(err)}`);
+    }
+    return null;
+  },
+});
+
+/**
+ * Daily, from crons.ts: every channel asked about once, HISTORY_DELAY_MS
+ * apart (conversations.info is Tier 3), by one `checkChannels` chain. The net
+ * under the lifecycle events: a channel made private sends this app nothing
+ * it's subscribed to.
+ */
+export const sweepChannels = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    if (!process.env.SLACK_BRAIN_BOT_TOKEN) return null;
+    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.readable, { kind: "slack_channel" });
+    if (ids.length) {
+      await ctx.scheduler.runAfter(0, internal.ingest.checkChannels, { sourceIds: ids, total: ids.length, removed: 0, readOk: false, noScope: [] });
+    }
+    return null;
+  },
+});
+
+/**
+ * The first channel in `sourceIds`, then itself again with the rest. Still
+ * public and open? Private or archived is removed like `channel_archive`;
+ * anything else (a 429, a 5xx, the network, a bad token) removes nothing and
+ * tomorrow asks again. A missed rename catches up.
+ *
+ * Two breakers, so a token problem can't empty the brain: `missing_scope` or
+ * `channel_not_found` (a now-private channel — or a token that lost
+ * `channels:read`, or belongs to another workspace) counts as gone only once
+ * another channel this run read back fine (`readOk`), so those wait for the
+ * run's end (`noScope`); and no run removes more than half its channels.
+ */
+export const checkChannels = internalAction({
+  args: {
+    sourceIds: v.array(v.id("sources")),
+    total: v.number(),
+    removed: v.number(),
+    readOk: v.boolean(),
+    noScope: v.array(v.string()),
+  },
+  handler: async (ctx, a) => {
+    const token = process.env.SLACK_BRAIN_BOT_TOKEN;
+    const [sourceId, ...rest] = a.sourceIds;
+    if (!token || !sourceId) return null;
+    let { removed, readOk } = a;
+    const noScope = [...a.noScope];
+    const maxRemoved = Math.ceil(a.total / 2);
+    const remove = async (channel: string) => {
+      if (removed >= maxRemoved) {
+        console.log(`slack: sweep kept ${channel}: ${maxRemoved} of ${a.total} channels already removed this run`);
+        return;
+      }
+      removed++;
+      await ctx.runMutation(internal.slack.channelGone, { channel });
+    };
+
+    const src: Doc<"sources"> | null = await ctx.runQuery(internal.sources.get, { sourceId });
+    if (src && src.kind === "slack_channel" && src.status !== "removed") {
+      const channel = src.externalId;
+      try {
+        const info = await slackApi(token, "conversations.info", { channel });
+        readOk = true;
+        const c = obj(info.channel);
+        const name = readChannelName(info);
+        if (c.is_private === true || c.is_archived === true) await remove(channel);
+        else if (name) await ctx.runMutation(internal.slack.renameChannel, { channel, name });
+      } catch (err) {
+        const code = err instanceof SlackError ? err.code : null;
+        if (code === "missing_scope" || code === "channel_not_found") noScope.push(channel);
+        else console.log(`slack: checking ${channel} failed: ${errText(err)}`);
+      }
+    }
+
+    if (rest.length) {
+      await ctx.scheduler.runAfter(HISTORY_DELAY_MS, internal.ingest.checkChannels, { sourceIds: rest, total: a.total, removed, readOk, noScope });
+      return null;
+    }
+    if (!readOk && noScope.length) console.log(`slack: sweep removed nothing for missing_scope/channel_not_found: no channel read back this run (${noScope.length} kept)`);
+    else for (const channel of noScope) await remove(channel);
+    return null;
   },
 });
 
@@ -159,7 +271,7 @@ export const refreshRepos = internalAction({
   args: {},
   handler: async (ctx) => {
     if (!process.env.GITHUB_TOKEN) return null;
-    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.repos, {});
+    const ids: Id<"sources">[] = await ctx.runQuery(internal.sources.readable, { kind: "github_repo" });
     for (const [i, sourceId] of ids.entries()) await ctx.scheduler.runAfter(i * 10_000, internal.ingest.syncRepo, { sourceId });
     return null;
   },

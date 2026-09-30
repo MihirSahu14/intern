@@ -528,16 +528,39 @@ backfill.
    your own terminal (below), not into chat.
 3. After the deploy and env below: Features → Event Subscriptions → on →
    Request URL `https://neighborly-peacock-427.convex.site/slack/events` (it
-   should say Verified) → Subscribe to bot events: `message.channels`,
-   `reaction_added` → Save, and reinstall if Slack asks. Equivalent manifest
-   addition under `settings`:
+   should say Verified) → Subscribe to bot events — exactly these seven:
+   `message.channels`, `reaction_added`, `channel_created`,
+   `channel_archive`, `channel_unarchive`, `channel_deleted`,
+   `channel_rename` → Save, and reinstall if Slack asks. All seven need only
+   the scopes above (`channels:history`, `reactions:read`, `channels:read`;
+   archive/unarchive need none). Equivalent manifest addition under
+   `settings`:
    ```yaml
      event_subscriptions:
        request_url: https://neighborly-peacock-427.convex.site/slack/events
        bot_events:
          - message.channels
          - reaction_added
+         - channel_created
+         - channel_archive
+         - channel_unarchive
+         - channel_deleted
+         - channel_rename
    ```
+   What they do: a new public channel is joined and read back 90 days on
+   its own (no backfill re-run); an archived or deleted one stops being read
+   and its passages clear (facts promoted from it stay); an unarchived one is
+   joined and read again; a rename relabels its node. A channel **made
+   private disappears within a day even if Slack sends no event** (its
+   `channel_convert_to_private` message may only reach apps with
+   `groups:history`, which is never added): the daily `check slack channels`
+   cron asks `conversations.info` about every channel, 1.5 s apart, and
+   removes any that is archived, private or not found exactly like an
+   archive. A rate limit or Slack outage removes nothing; it asks again the
+   next day. Two breakers stop a token problem emptying the brain:
+   `missing_scope` removes a channel only if another channel read back fine
+   in the same run, and no run removes more than half the channels (the
+   logs say `slack: sweep …` when either trips).
 4. **Tell the workspace.** Set `#all-intern-community`'s description (or
    `COMMUNITY_SLACK_CHANNEL`'s, if renamed), and pin a message there:
    "Public channels are read into the Intern brain
@@ -597,9 +620,11 @@ repo from GitHub." until it's replaced.
 It returns `{ channels: N }`, joins each public channel, and reads its last
 90 days one page every 1.5 s, one channel after another; the logs show
 `backfill:` only on failure. Safe to re-run at any time: passages upsert and
-a channel part-way through resumes from its source's `cursor`. **Re-run it
-after creating a public channel**, so the bot joins it; until then that
-channel isn't read.
+a channel part-way through resumes from its source's `cursor`. New and
+unarchived public channels join themselves through `channel_created` /
+`channel_unarchive` (section 1, step 3), so **re-running it for a new channel
+is no longer needed**; re-run it only if an event may have been missed (it
+also brings back any listed channel that was marked removed).
 
 ### 5. First-live checklist
 
@@ -610,6 +635,9 @@ channel isn't read.
       channel node, once, even though your own Composio 🧠 also fired.
       Delete the message: passage and fact both go.
 - [ ] Post in a private channel and DM the bot: nothing appears.
+- [ ] Create a public channel and post in it: its node appears without a
+      backfill. Rename it: the node's label follows. Archive it: its
+      passages go (a 🧠'd fact stays). Unarchive it: it's read again.
 - [ ] Brief an intern about something said in Slack: its log says `read N
       passages from the archive`, and no `[p:…]` id shows in its prose;
       approve a draft whose sources cite `[p:…]`: the passage becomes a

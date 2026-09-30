@@ -16,6 +16,18 @@ import { obj, same, str } from "./inbound.ts";
  * message/message_changed, message/message_deleted, message/bot_message,
  * reaction_added}, /reference/methods/{users.info, conversations.info},
  * /apis/web-api.
+ *
+ * Channel lifecycle confirmed against docs.slack.dev/reference/events on
+ * 2026-09-30: channel_created and channel_rename carry `channel` as an object
+ * ({id, name, created}), channel_archive/channel_unarchive/channel_deleted as
+ * a bare id; channel_created/_rename/_deleted need `channels:read`,
+ * channel_archive/_unarchive need no scope. A channel made private posts a
+ * `channel_convert_to_private` message (its example has `channel_type:
+ * "group"`). conversations.join answers with `channel.is_private`.
+ * conversations.info (Tier 3) needs `channels:read` for a public channel,
+ * `groups:read` for a private one; it answers `is_private`/`is_archived`, or
+ * errors `channel_not_found`, `missing_scope`, `no_permission`. A 429 carries
+ * Retry-After (docs.slack.dev/apis/web-api/rate-limits).
  */
 
 export const SLACK_TOLERANCE_S = 300;
@@ -56,6 +68,8 @@ export type SlackEvent =
   | { kind: "edit"; teamId: string; eventId: string; channel: string; ts: string; text: string }
   | { kind: "delete"; teamId: string; eventId: string; channel: string; ts: string }
   | { kind: "reaction"; teamId: string; eventId: string; channel: string; ts: string; user: string; reaction: string }
+  /** A channel appeared (created/unarchived), went (archived/deleted/made private), or was renamed. */
+  | { kind: "channel"; op: "join" | "gone" | "rename"; teamId: string; eventId: string; channel: string; name?: string }
   | { kind: "ignore"; teamId: string | null; eventId: string | null; type: string };
 
 /**
@@ -85,10 +99,19 @@ export function readSlackEvent(json: unknown): SlackEvent {
     if (item.type !== "message" || !channel || !ts || !user || !reaction) return ignore;
     return { kind: "reaction", teamId, eventId, channel, ts, user, reaction };
   }
+  const ch = obj(e.channel);
+  const lifecycle = (op: "join" | "gone" | "rename", channel: string | undefined, name?: string) =>
+    channel ? { kind: "channel" as const, op, teamId, eventId, channel, ...(name ? { name } : {}) } : ignore;
+  if (type === "channel_created") return lifecycle("join", str(ch.id), str(ch.name));
+  if (type === "channel_unarchive") return lifecycle("join", str(e.channel));
+  if (type === "channel_archive" || type === "channel_deleted") return lifecycle("gone", str(e.channel));
+  if (type === "channel_rename") return str(ch.name) ? lifecycle("rename", str(ch.id), str(ch.name)) : ignore;
   if (type !== "message") return ignore;
   const channel = str(e.channel);
   if (!channel) return ignore;
   const subtype = str(e.subtype);
+  // Whatever its channel_type: by then the channel is a private one.
+  if (subtype === "channel_convert_to_private") return lifecycle("gone", channel);
   if (subtype === "message_deleted") {
     const ts = str(e.deleted_ts) ?? str(obj(e.previous_message).ts);
     return ts ? { kind: "delete", teamId, eventId, channel, ts } : ignore;
@@ -115,12 +138,14 @@ export const slackPassage = (m: SlackMessage, author: string | undefined) => ({
   at: Math.round(Number(m.ts) * 1000),
 });
 
-/** A Web API refusal: the method and Slack's error code, never a message's text. */
+/** A Web API refusal: the method and Slack's error code (`code`, when Slack gave one), never a message's text. */
 export class SlackError extends Error {
   retryAfterS: number | null;
-  constructor(message: string, retryAfterS: number | null = null) {
+  code: string | null;
+  constructor(message: string, retryAfterS: number | null = null, code: string | null = null) {
     super(message);
     this.retryAfterS = retryAfterS;
+    this.code = code;
   }
 }
 
@@ -143,7 +168,10 @@ export async function slackApi(
   });
   if (res.status === 429) throw new SlackError(`${method}: rate limited`, Number(res.headers.get("retry-after")) || 30);
   const json = obj(await res.json().catch(() => null));
-  if (json.ok !== true) throw new SlackError(`${method}: ${str(json.error) ?? `http ${res.status}`}`);
+  if (json.ok !== true) {
+    const code = str(json.error) ?? null;
+    throw new SlackError(`${method}: ${code ?? `http ${res.status}`}`, null, code);
+  }
   return json;
 }
 

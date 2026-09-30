@@ -1,11 +1,12 @@
 import { v } from "convex/values";
+import { ANON_PROMOTES_PER_DAY, dayStart } from "../lib/caps.ts";
 import { BRAIN_REACTION } from "../lib/inbound.ts";
 import { readChannelName, readSlackEvent, readUserName, slackApi, slackPassage, verifySlack } from "../lib/slack.ts";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { type ActionCtx, type QueryCtx, httpAction, internalMutation, internalQuery } from "./_generated/server";
 import { memberProblem, slackLinkedUser } from "./access";
-import { promotePassage, rewritePassage, unchangedFacts } from "./sources";
+import { promotePassage, removeSource, rewritePassage, unchangedFacts } from "./sources";
 
 /**
  * POST /slack/events: the community workspace, read into the brain through
@@ -29,7 +30,8 @@ async function channelSource(ctx: QueryCtx, channelId: string) {
 
 async function passageAt(ctx: QueryCtx, channelId: string, ts: string) {
   const src = await channelSource(ctx, channelId);
-  if (!src) return null;
+  // A removed channel's passages are on their way out: none is edited or promoted meanwhile.
+  if (!src || src.status === "removed") return null;
   return await ctx.db
     .query("passages")
     .withIndex("by_sourceId_and_externalId", (q) => q.eq("sourceId", src._id).eq("externalId", `${channelId}:${ts}`))
@@ -41,17 +43,48 @@ export const knownChannel = internalQuery({
   handler: async (ctx, a): Promise<Id<"sources"> | null> => (await channelSource(ctx, a.channel))?._id ?? null,
 });
 
-/** The channel's source, made on first sight. A known name replaces a bare id. */
+/**
+ * The channel's source, made on first sight. A known name replaces a bare id.
+ * `revive` (Slack just said it's public and open): a removed one is read again.
+ */
 export const ensureChannel = internalMutation({
-  args: { channel: v.string(), name: v.optional(v.string()) },
+  args: { channel: v.string(), name: v.optional(v.string()), revive: v.optional(v.boolean()) },
   handler: async (ctx, a): Promise<Id<"sources">> => {
     const label = `#${a.name ?? a.channel}`;
     const row = await channelSource(ctx, a.channel);
     if (!row) {
       return await ctx.db.insert("sources", { kind: "slack_channel", label, externalId: a.channel, visibility: "public", status: "active" });
     }
-    if (a.name && row.label !== label) await ctx.db.patch("sources", row._id, { label });
+    const revive = a.revive && row.status === "removed";
+    if ((a.name && row.label !== label) || revive) {
+      await ctx.db.patch("sources", row._id, { ...(a.name ? { label } : {}), ...(revive ? { status: "active" as const, cursor: undefined } : {}) });
+    }
     return row._id;
+  },
+});
+
+/**
+ * Archived, deleted or made private: read no more. Its passages go (a batch
+ * at a time) and it leaves recall, the rail and the graph; facts promoted
+ * from it stay, as when a member removes a source.
+ */
+export const channelGone = internalMutation({
+  args: { channel: v.string() },
+  handler: async (ctx, a) => {
+    const src = await channelSource(ctx, a.channel);
+    if (src && src.status !== "removed") await removeSource(ctx, src);
+    return null;
+  },
+});
+
+/** Renamed in Slack. Only a channel already in the brain: a rename never adds one. */
+export const renameChannel = internalMutation({
+  args: { channel: v.string(), name: v.string() },
+  handler: async (ctx, a) => {
+    const src = await channelSource(ctx, a.channel);
+    const label = `#${a.name}`.slice(0, 120);
+    if (src && src.label !== label) await ctx.db.patch("sources", src._id, { label });
+    return null;
   },
 });
 
@@ -149,6 +182,18 @@ export const react = internalMutation({
     if (!p) return null;
     const linked = await slackLinkedUser(ctx, a.user);
     if (linked && memberProblem(linked)) return null;
+    if (!linked) {
+      // ponytail: today's ownerless facts by index; seed facts (ownerless, no passage) are filtered after the scan.
+      const today = await ctx.db
+        .query("facts")
+        .withIndex("by_ownerId", (q) => q.eq("ownerId", undefined).gte("_creationTime", dayStart(Date.now())))
+        .filter((q) => q.neq(q.field("fromPassageId"), undefined))
+        .take(ANON_PROMOTES_PER_DAY);
+      if (today.length >= ANON_PROMOTES_PER_DAY) {
+        console.log(`slack: anonymous promote cap reached, ${p._id} not promoted`);
+        return null;
+      }
+    }
     await promotePassage(
       ctx,
       p,
@@ -176,7 +221,7 @@ export const events = httpAction(async (ctx, req) => {
   const e = readSlackEvent(json);
   if (e.kind === "challenge") return new Response(e.challenge, { status: 200, headers: { "content-type": "text/plain" } });
   const done = (why: string) => new Response(why, { status: 200 });
-  console.log(`slack: ${e.eventId ?? "(no id)"} ${e.kind === "ignore" ? `ignored ${e.type}` : e.kind}`);
+  console.log(`slack: ${e.eventId ?? "(no id)"} ${e.kind === "ignore" ? `ignored ${e.type}` : e.kind === "channel" ? `channel ${e.op}` : e.kind}`);
   // The same var connections.finish enforces on connect: one community workspace.
   const team = process.env.COMMUNITY_SLACK_TEAM_ID;
   if (e.kind === "ignore" || !team || e.teamId !== team) return done("ignored");
@@ -188,6 +233,13 @@ export const events = httpAction(async (ctx, req) => {
   if (e.kind === "edit") {
     await ctx.runMutation(internal.slack.edit, { channel: e.channel, ts: e.ts, text: e.text });
     return done("edited");
+  }
+  if (e.kind === "channel") {
+    if (e.op === "gone") await ctx.runMutation(internal.slack.channelGone, { channel: e.channel });
+    else if (e.op === "rename") await ctx.runMutation(internal.slack.renameChannel, { channel: e.channel, name: e.name ?? e.channel });
+    // Joining calls Slack, so it runs after this 200, not before it.
+    else await ctx.scheduler.runAfter(0, internal.ingest.joinChannel, { channel: e.channel });
+    return done(`channel ${e.op}`);
   }
   if (e.kind === "reaction") {
     if (e.reaction !== BRAIN_REACTION) return done("ignored");
