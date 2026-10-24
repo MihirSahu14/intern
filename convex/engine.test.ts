@@ -600,6 +600,68 @@ test("approving with edits stores the accepted draft and learns a fact", async (
   expect(learned?.body).toContain("Edited body");
 });
 
+/** A public fact owned by `ownerId`, inserted the way `insertFact` does. */
+const addFact = (t: ReturnType<typeof setup>["t"], ownerId: Id<"users">, kind: "note" | "preference" | "correction", title: string, body: string) =>
+  t.run((ctx) => ctx.db.insert("facts", { title, body, kind, ownerId, text: `${title}\n${body}` }));
+
+/** Lessons from someone else, about nothing the briefs below mention. */
+async function addUnrelatedLessons(t: ReturnType<typeof setup>["t"], ownerId: Id<"users">) {
+  for (let i = 0; i < 4; i++) {
+    await addFact(t, ownerId, "preference", `standup notes go in #eng ${i}`, "Post standup notes in #eng, never DMs.");
+    await addFact(t, ownerId, "correction", `do not send: lunch order ${i}`, "Rejected: lunch orders go nowhere.");
+  }
+}
+
+test("an edit reaches the next related brief, even after newer unrelated lessons from other people", async () => {
+  const { t, seedUser, asUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  // Older notes that match the brief, so plain search hits can't carry the lesson in.
+  for (let i = 0; i < 5; i++) await addFact(t, b, "note", `Acme renewal note ${i}`, "Acme renews every March.");
+
+  const internId = await t.run((ctx) => ctx.db.insert("interns", { ownerId: a, task: "t", status: "done", countsTowardCap: true }));
+  const actionId = await t.run((ctx) =>
+    ctx.db.insert("actions", {
+      ownerId: a,
+      internId,
+      kind: "email",
+      status: "pending",
+      title: "Acme renewal",
+      draft: { to: ["ann@acme.test"], subject: "Acme renewal", body: "The renewal is attached.\n\nBest" },
+      rationale: "asked to",
+      sources: [],
+      recalledCorrection: false,
+    }),
+  );
+  await asUser(a).mutation(api.outbox.decide, {
+    actionId,
+    decision: "approve",
+    edits: { body: "The renewal is attached.\n\nCheers,\nMihir" },
+  });
+  const edit = (await t.run((ctx) => ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "preference")).collect()))[0];
+  const theirs = await addFact(t, b, "preference", "Acme renewal subjects", "Renewal emails to Acme use the subject 'Renewal – Acme'.");
+  await addUnrelatedLessons(t, b);
+
+  const recalled = (await t.query(internal.facts.recall, { task: "Email Acme about their renewal", ownerId: a })).map((f) => f.id);
+  expect(recalled).toContain(edit._id);
+  expect(recalled).toContain(theirs);
+  const unrelated = (await t.run((ctx) => ctx.db.query("facts").collect())).filter((f) => /standup|lunch/.test(f.title));
+  for (const f of unrelated) expect(recalled).not.toContain(f._id);
+});
+
+test("your own lessons follow you to an unrelated brief; other people's unrelated ones don't", async () => {
+  const { t, seedUser } = setup();
+  const a = await seedUser("a");
+  const b = await seedUser("b");
+  const mine = await addFact(t, a, "preference", "email: sign-off rewritten before approval", "Sign off as 'Cheers, Mihir'.");
+  await addUnrelatedLessons(t, b);
+
+  const recalled = (await t.query(internal.facts.recall, { task: "Welcome Priya aboard", ownerId: a })).map((f) => f.id);
+  expect(recalled).toContain(mine);
+  const theirs = (await t.run((ctx) => ctx.db.query("facts").collect())).filter((f) => f.ownerId === b);
+  for (const f of theirs) expect(recalled).not.toContain(f._id);
+});
+
 test("the twenty-first fact of the day is refused", async () => {
   const { seedUser, asUser } = setup();
   const as = asUser(await seedUser("a"));

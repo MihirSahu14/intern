@@ -104,7 +104,8 @@ export default defineSchema({
     .index("by_ownerId_and_source", ["ownerId", "source"])
     .index("by_fromPassageId", ["fromPassageId"])
     .index("by_kind", ["kind"])
-    .searchIndex("search_text", { searchField: "text" }),
+    .index("by_ownerId_and_kind", ["ownerId", "kind"])
+    .searchIndex("search_text", { searchField: "text", filterFields: ["kind", "ownerId"] }),
 
   /**
    * Where passages come from: a public channel of the community Slack, a

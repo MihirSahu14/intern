@@ -9,7 +9,8 @@
     "test": "node --experimental-strip-types --test lib/*.test.ts",
     "test:convex": "vitest run",
     "lint": "eslint",
-    "eval": "node --env-file=.env.local --experimental-strip-types scripts/eval.ts"
+    "eval": "node --env-file=.env.local --experimental-strip-types scripts/eval.ts",
+    "eval:learning": "node --env-file=.env.local --experimental-strip-types scripts/eval-learning.ts"
   },
   "dependencies": {
     "@convex-dev/auth": "^0.0.94",

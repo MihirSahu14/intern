@@ -30,17 +30,45 @@ export function editRatio(proposed: Draft, accepted: Draft): number {
     if (a === b) continue;
     const longest = Math.max(a.length, b.length);
     total += longest;
-    let pre = 0;
-    while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
-    let suf = 0;
-    while (
-      suf < a.length - pre &&
-      suf < b.length - pre &&
-      a[a.length - 1 - suf] === b[b.length - 1 - suf]
-    ) suf++;
+    const { pre, suf } = commonEnds(a, b);
     changed += longest - pre - suf;
   }
   return total ? changed / total : 0;
+}
+
+/** How many characters two texts share at the start and at the end, never overlapping. */
+function commonEnds(a: string, b: string) {
+  let pre = 0;
+  while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
+  let suf = 0;
+  while (
+    suf < a.length - pre &&
+    suf < b.length - pre &&
+    a[a.length - 1 - suf] === b[b.length - 1 - suf]
+  ) suf++;
+  return { pre, suf };
+}
+
+/**
+ * The whole lines of one field that changed, and where. A lesson names the
+ * edit itself: quoting both drafts in full put the change past the
+ * RECALLED_BODY_CHARS cut `facts.recall` makes, so the next intern never saw it.
+ */
+function changedLines(a: string, b: string) {
+  const { pre, suf } = commonEnds(a, b);
+  const start = pre ? a.lastIndexOf("\n", pre - 1) + 1 : 0;
+  const nl = a.indexOf("\n", a.length - suf);
+  const endA = nl === -1 ? a.length : nl;
+  // Everything after endA is shared suffix, so it sits the same distance from b's end.
+  const endB = b.length - (a.length - endA);
+  const where = start === 0 && endA === a.length ? "" : start === 0 ? "at the start" : endA === a.length ? "at the end" : "in the middle";
+  const was = a.slice(start, endA).trim();
+  const now = b.slice(start, endB).trim();
+  // Text only added around what was there ("Intern · " before a subject, a
+  // link after the last line) reads as an addition, not as a rewrite of it.
+  if (was && now !== was && now.startsWith(was)) return { was: "", now: now.slice(was.length).trim(), where: where || "at the end" };
+  if (was && now !== was && now.endsWith(was)) return { was: "", now: now.slice(0, -was.length).trim(), where: where || "at the start" };
+  return { was, now, where };
 }
 
 export const correctionFromEdit = (
@@ -53,14 +81,12 @@ export const correctionFromEdit = (
   body: [
     `An intern drafted a ${kind}; a person rewrote it before approving.`,
     "",
-    ...fields.flatMap((f) => [
-      `${f.toUpperCase()}, proposed:`,
-      render(proposed[f]),
-      `${f.toUpperCase()}, accepted:`,
-      render(accepted[f]),
-      "",
-    ]),
-    "Write it the accepted way next time.",
+    ...fields.flatMap((f) => {
+      const c = changedLines(render(proposed[f]), render(accepted[f]));
+      const change = !c.was ? [`added: ${c.now}`] : !c.now ? [`removed: ${c.was}`] : [`was: ${c.was}`, `now: ${c.now}`];
+      return [`${f.toUpperCase()}${c.where ? `, ${c.where}` : ""}:`, ...change, ""];
+    }),
+    "Make the same change in new drafts, whatever they are about.",
   ].join("\n"),
 });
 

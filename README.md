@@ -37,7 +37,13 @@ Python, no queue: it's one Convex action.
 **Recall.** Two things feed the prompt: `facts.recall` (what the community has
 taught the brain, including past corrections) and `facts.archive` (passages
 from Slack, documents and GitHub that match the task). The intern cites both
-kinds by id in its `sources`, never in prose.
+kinds by id in its `sources`, never in prose. Lessons (preferences and
+corrections) are picked for the task, not by age: the member's own that match
+it, then anyone's that match it, then the member's newest, since house style
+carries across topics. Someone else's lesson about another topic never takes a
+slot. The prompt lists lessons in their own section and tells the intern to
+apply them to new drafts, and an edit's lesson states only what changed, so
+it fits in the 400 characters of a fact that reach the prompt.
 
 **Sending.** An approved draft goes through `outbox.decide` to `send.ts`,
 which calls Composio to send from the member's own connected Gmail or Slack.
@@ -97,11 +103,21 @@ questions asked. It exits non-zero if the action-block parse rate drops under
 90% or more than a quarter of the briefs error out, so a model outage can't
 read as a pass.
 
+`npm run eval:learning` checks the learning loop: does an edit change the next
+draft? Each of 5 cases (a sign-off, a greeting, a subject prefix, an added
+link, a Slack channel) drafts a brief, applies the edit, files the lesson the
+way `outbox.decide` does and hands it to a related brief the way
+`facts.recall` does, next to a control run without it. A case passes when only
+the run with the lesson shows the edit. On Claude Haiku 4.5, 2026-10-23, it
+went from 2/5 (lessons quoted both drafts in full, so the cut dropped the
+change) to 5/5 on two runs. Which lessons reach a brief is covered
+deterministically in `convex/engine.test.ts`.
+
 ## Tests
 
 ```bash
-npm test          # unit tests: caps, prompt, parsers, redaction — 143 passing
-npx vitest run     # Convex functions via convex-test — 223 passing
+npm test          # unit tests: caps, prompt, parsers, redaction — 149 passing
+npx vitest run     # Convex functions via convex-test — 242 passing
 ```
 
 (Counts as of this write-up; run them yourself to check current numbers.)
