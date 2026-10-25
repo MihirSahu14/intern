@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RECALLED_BODY_CHARS } from "./brief.ts";
-import { changedFields, correctionFromEdit, editRatio, hasPlaceholder } from "./edits.ts";
+import { changedFields, correctionFromEdit, correctionFromReject, editRatio, hasPlaceholder } from "./edits.ts";
 
 const draft = { to: ["#general"], subject: "", body: "Hello team, meet Intern." };
 
@@ -55,6 +55,40 @@ test("text only added reads as an addition: a subject prefix, a line after the l
   const c = correctionFromEdit("email", proposed, accepted, ["subject", "body"]);
   assert.match(c.body, /SUBJECT, at the start:\nadded: Intern ·\n/);
   assert.match(c.body, /BODY, at the end:\nadded: Try it: https:\/\/intern-brain\.vercel\.app\n/);
+});
+
+test("text only removed reads as a removal, named where it was", () => {
+  const proposed = { ...draft, body: "A\nB\nC" };
+  assert.match(correctionFromEdit("email", proposed, { ...proposed, body: "A\nB" }, ["body"]).body, /BODY, at the end:\nremoved: C\n/);
+  assert.match(correctionFromEdit("email", proposed, { ...proposed, body: "A\nC" }, ["body"]).body, /BODY, in the middle:\nremoved: B\n/);
+  const subject = { ...draft, subject: "Intern · Review your drafts" };
+  assert.match(correctionFromEdit("email", subject, { ...subject, subject: "Review your drafts" }, ["subject"]).body, /SUBJECT, at the start:\nremoved: Intern ·\n/);
+});
+
+test("a one-word edit in a long paragraph is quoted with only the words around it", () => {
+  const para = `${"Intern drafts and you approve every message it writes. ".repeat(4)}Reply by Friday. ${"It learns from each edit you make before approving. ".repeat(4)}`.trim();
+  const c = correctionFromEdit("email", { ...draft, body: para }, { ...draft, body: para.replace("Friday", "Thursday") }, ["body"]);
+  assert.ok(c.body.length < RECALLED_BODY_CHARS, `${c.body.length} chars`);
+  assert.match(c.body, /was: ….*Reply by Friday\..*…\nnow: ….*Reply by Thursday\..*…/);
+});
+
+test("an added recipient, a split address, a whitespace edit", () => {
+  const proposed = { ...draft, to: ["ann@acme.test"], body: "Hi Ann,\nSee you there." };
+  const add = correctionFromEdit("email", proposed, { ...proposed, to: ["ann@acme.test", "bo@acme.test"] }, ["to"]);
+  assert.match(add.body, /TO, at the end:\nadded: bo@acme\.test\n/);
+  const split = correctionFromEdit("email", { ...proposed, to: ["ann"] }, proposed, ["to"]);
+  assert.match(split.body, /was: ann\nnow: ann@acme\.test\n/);
+  const spaced = correctionFromEdit("email", proposed, { ...proposed, body: "Hi Ann,\n\nSee you there." }, ["body"]);
+  assert.match(spaced.body, /BODY, in the middle:\nonly whitespace changed\n/);
+});
+
+test("a lesson is searched by its topic and its change, not its fixed wording or addresses", () => {
+  const proposed = { to: ["ann@acme.test"], subject: "Standup notes", body: "Notes attached.\n\nBest" };
+  const c = correctionFromEdit("email", proposed, { ...proposed, body: "Notes attached.\n\nCheers, bo@corp.test" }, ["body"]);
+  const words = new Set(c.search.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  assert.deepEqual([...words].sort(), ["best", "cheers", "notes", "standup"]);
+  const r = correctionFromReject("email", proposed, "wrong team");
+  assert.ok(!/email|drafted|intern/i.test(r.search) && r.search.includes("wrong team"));
 });
 
 test("a bracketed placeholder is caught in any field; a markdown link is not one", () => {

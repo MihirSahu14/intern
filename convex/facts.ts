@@ -28,9 +28,12 @@ export async function insertFact(
     source?: string;
     /** The archive passage it was promoted from. */
     fromPassageId?: Id<"passages">;
+    /** What full-text search matches instead of title and body: a lesson's topic and changed text, without its fixed wording. */
+    search?: string;
   },
 ) {
-  return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });
+  const { search, ...fact } = f;
+  return await ctx.db.insert("facts", { ...fact, text: search ?? `${f.title}\n${f.body}` });
 }
 
 /** Marks the fact a successful send writes back: the brain noting it, not the person teaching it. */

@@ -1,3 +1,4 @@
+import { redactEmails } from "./redact.ts";
 import type { Draft } from "./types";
 
 /**
@@ -36,8 +37,8 @@ export function editRatio(proposed: Draft, accepted: Draft): number {
   return total ? changed / total : 0;
 }
 
-/** How many characters two texts share at the start and at the end, never overlapping. */
-function commonEnds(a: string, b: string) {
+/** How many items two sequences (strings, or arrays of lines) share at the start and at the end, never overlapping. */
+function commonEnds(a: ArrayLike<unknown>, b: ArrayLike<unknown>) {
   let pre = 0;
   while (pre < a.length && pre < b.length && a[pre] === b[pre]) pre++;
   let suf = 0;
@@ -49,50 +50,87 @@ function commonEnds(a: string, b: string) {
   return { pre, suf };
 }
 
+/** Longer than this, a was/now pair is cut down to the change and some words either side. */
+const LONG = 150;
+const CONTEXT = 30;
+
+/** `was` and `now` cut to the words around where they differ, so a one-word edit in a long paragraph stays short. */
+function around(was: string, now: string) {
+  if (was.length <= LONG && now.length <= LONG) return { was, now };
+  const { pre, suf } = commonEnds(was, now);
+  const cut = (s: string) => {
+    // Out to the whole word either side: an address is never split.
+    const from = pre > CONTEXT ? s.slice(0, pre - CONTEXT).search(/\S*$/) : 0;
+    const end = s.length - suf + CONTEXT;
+    const to = end < s.length ? end + s.slice(end).search(/\s|$/) : s.length;
+    return `${from ? "…" : ""}${s.slice(from, to).trim()}${to < s.length ? "…" : ""}`;
+  };
+  return { was: cut(was), now: cut(now) };
+}
+
+const squash = (s: string) => s.replace(/\s+/g, " ");
+/** A recipient added to a list reads "added: [email]", not "added: , [email]". */
+const trimSeparators = (s: string) => s.replace(/^[\s,;]+|[\s,;]+$/g, "");
+
 /**
  * The whole lines of one field that changed, and where. A lesson names the
  * edit itself: quoting both drafts in full put the change past the
  * RECALLED_BODY_CHARS cut `facts.recall` makes, so the next intern never saw it.
  */
-function changedLines(a: string, b: string) {
-  const { pre, suf } = commonEnds(a, b);
-  const start = pre ? a.lastIndexOf("\n", pre - 1) + 1 : 0;
-  const nl = a.indexOf("\n", a.length - suf);
-  const endA = nl === -1 ? a.length : nl;
-  // Everything after endA is shared suffix, so it sits the same distance from b's end.
-  const endB = b.length - (a.length - endA);
-  const where = start === 0 && endA === a.length ? "" : start === 0 ? "at the start" : endA === a.length ? "at the end" : "in the middle";
-  const was = a.slice(start, endA).trim();
-  const now = b.slice(start, endB).trim();
+function changedLines(a: string, b: string): { where: string; change: [string, string][] } {
+  const A = a.split("\n");
+  const B = b.split("\n");
+  const { pre, suf } = commonEnds(A, B);
+  const where = !pre && !suf ? "" : !pre ? "at the start" : !suf ? "at the end" : "in the middle";
+  const was = A.slice(pre, A.length - suf).join("\n").trim();
+  const now = B.slice(pre, B.length - suf).join("\n").trim();
+  if (squash(was) === squash(now)) return { where, change: [] };
+  if (!was) return { where, change: [["added", now]] };
+  if (!now) return { where, change: [["removed", was]] };
   // Text only added around what was there ("Intern · " before a subject, a
-  // link after the last line) reads as an addition, not as a rewrite of it.
-  if (was && now !== was && now.startsWith(was)) return { was: "", now: now.slice(was.length).trim(), where: where || "at the end" };
-  if (was && now !== was && now.endsWith(was)) return { was: "", now: now.slice(0, -was.length).trim(), where: where || "at the start" };
-  return { was, now, where };
+  // recipient after the others), or only cut from around it, reads as that,
+  // not as a rewrite. Only at a word or list boundary, so "ann" becoming
+  // "ann@acme.com" stays a was/now of whole addresses.
+  for (const [long, short, verb] of [[now, was, "added"], [was, now, "removed"]]) {
+    const after = long.slice(short.length);
+    const before = long.slice(0, long.length - short.length);
+    if (long.startsWith(short) && /^[\s,;]/.test(after)) return { where: where || "at the end", change: [[verb, trimSeparators(after)]] };
+    if (long.endsWith(short) && /[\s,;]$/.test(before)) return { where: where || "at the start", change: [[verb, trimSeparators(before)]] };
+  }
+  const w = around(was, now);
+  return { where, change: [["was", w.was], ["now", w.now]] };
 }
 
-export const correctionFromEdit = (
-  kind: string,
-  proposed: Draft,
-  accepted: Draft,
-  fields: Field[],
-) => ({
-  title: `${kind}: ${fields.join(" and ")} rewritten before approval`,
-  body: [
-    `An intern drafted a ${kind}; a person rewrote it before approving.`,
-    "",
-    ...fields.flatMap((f) => {
-      const c = changedLines(render(proposed[f]), render(accepted[f]));
-      const change = !c.was ? [`added: ${c.now}`] : !c.now ? [`removed: ${c.was}`] : [`was: ${c.was}`, `now: ${c.now}`];
-      return [`${f.toUpperCase()}${c.where ? `, ${c.where}` : ""}:`, ...change, ""];
-    }),
-    "Make the same change in new drafts, whatever they are about.",
-  ].join("\n"),
-});
+/**
+ * What full-text search indexes for a lesson: its topic and the changed text,
+ * not the fixed wording around them. Convex search matches any one term, so
+ * "email", "drafted" or "about" in every lesson made every "Email…" brief
+ * match every lesson. Addresses go entirely; "[email]" would match too.
+ */
+const searchText = (parts: string[]) => redactEmails(parts.filter(Boolean).join("\n")).replaceAll("[email]", " ");
+
+export function correctionFromEdit(kind: string, proposed: Draft, accepted: Draft, fields: Field[]) {
+  const changes = fields.map((f) => ({ f, ...changedLines(render(proposed[f]), render(accepted[f])) }));
+  return {
+    title: `${kind}: ${fields.join(" and ")} rewritten before approval`,
+    body: [
+      `An intern drafted a ${kind}; a person rewrote it before approving.`,
+      "",
+      ...changes.flatMap((c) => [
+        `${c.f.toUpperCase()}${c.where ? `, ${c.where}` : ""}:`,
+        ...(c.change.length ? c.change.map(([label, text]) => `${label}: ${text}`) : ["only whitespace changed"]),
+        "",
+      ]),
+      "Make the same change in new drafts, whatever they are about.",
+    ].join("\n"),
+    search: searchText([proposed.subject, ...changes.flatMap((c) => c.change.map(([, text]) => text))]),
+  };
+}
 
 export const correctionFromReject = (kind: string, draft: Draft, reason: string) => ({
   title: `do not send: ${draft.subject || draft.body.slice(0, 60)}`,
   body: `An intern drafted a ${kind} to ${draft.to.join(", ")} and a person rejected it.\n\nReason: ${reason}\n\nWhat was drafted:\n${draft.body}`,
+  search: searchText([draft.subject, reason, draft.body]),
 });
 
 /**

@@ -41,7 +41,8 @@ kinds by id in its `sources`, never in prose. Lessons (preferences and
 corrections) are picked for the task, not by age: the member's own that match
 it, then anyone's that match it, then the member's newest, since house style
 carries across topics. Someone else's lesson about another topic never takes a
-slot. The prompt lists lessons in their own section and tells the intern to
+slot: search matches a lesson by its draft's subject and the changed text,
+not the fixed wording every lesson shares. The prompt lists lessons in their own section and tells the intern to
 apply them to new drafts, and an edit's lesson states only what changed, so
 it fits in the 400 characters of a fact that reach the prompt.
 
@@ -116,7 +117,7 @@ deterministically in `convex/engine.test.ts`.
 ## Tests
 
 ```bash
-npm test          # unit tests: caps, prompt, parsers, redaction — 149 passing
+npm test          # unit tests: caps, prompt, parsers, redaction — 153 passing
 npx vitest run     # Convex functions via convex-test — 242 passing
 ```
 
