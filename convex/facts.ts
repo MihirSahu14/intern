@@ -1,6 +1,6 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
-import type { Archived } from "../lib/brief.ts";
+import { type Archived, RECALLED_BODY_CHARS } from "../lib/brief.ts";
 import { DAY_WINDOW, MAX_FACT_CHARS, dayStart, teachBlocked, tooManyFacts } from "../lib/caps.ts";
 import { PASSAGES_RECALLED } from "../lib/ingest.ts";
 import { redactEmails } from "../lib/redact.ts";
@@ -28,9 +28,12 @@ export async function insertFact(
     source?: string;
     /** The archive passage it was promoted from. */
     fromPassageId?: Id<"passages">;
+    /** What full-text search matches instead of title and body: a lesson's topic and changed text, without its fixed wording. */
+    search?: string;
   },
 ) {
-  return await ctx.db.insert("facts", { ...f, text: `${f.title}\n${f.body}` });
+  const { search, ...fact } = f;
+  return await ctx.db.insert("facts", { ...fact, text: search ?? `${f.title}\n${f.body}` });
 }
 
 /** Marks the fact a successful send writes back: the brain noting it, not the person teaching it. */
@@ -92,10 +95,17 @@ export const remove = mutation({
 /** Convex search takes at most 16 terms. */
 const searchTerms = (task: string) => task.split(/\s+/).filter(Boolean).slice(0, 16).join(" ");
 
+const LESSONS_PER_KIND = 3;
+
 /**
- * What an intern reads before it starts: the newest house-style lessons
+ * What an intern reads before it starts: up to three lessons of each kind
  * (preferences and corrections, the learning loop), then the best full-text
  * matches for the task. Public facts plus the intern owner's own private ones.
+ *
+ * Lessons are picked for the task, not by age: the owner's own that match it,
+ * then anyone's that match it, then the owner's newest, since house style
+ * (a sign-off, a channel) carries across topics. Someone else's lesson about
+ * another topic never takes a slot, however new.
  *
  * ponytail: over-read, then filter. Other people's private facts take slots
  * in these windows; index by visibility if recall starts coming back thin.
@@ -104,11 +114,21 @@ export const recall = internalQuery({
   args: { task: v.string(), ownerId: v.id("users") },
   handler: async (ctx, { task, ownerId }) => {
     const usable = (rows: Doc<"facts">[], n: number) => rows.filter((f) => visibleTo(f, ownerId)).slice(0, n);
-    const lessons = [
-      ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "preference")).order("desc").take(12), 3),
-      ...usable(await ctx.db.query("facts").withIndex("by_kind", (q) => q.eq("kind", "correction")).order("desc").take(12), 3),
-    ];
     const terms = searchTerms(task);
+    const lessonsOf = async (kind: "preference" | "correction") => {
+      const matching = (owner?: Id<"users">) =>
+        ctx.db.query("facts").withSearchIndex("search_text", (q) => {
+          const s = q.search("text", terms).eq("kind", kind);
+          return owner ? s.eq("ownerId", owner) : s;
+        });
+      const rows = [
+        ...(terms ? await matching(ownerId).take(LESSONS_PER_KIND) : []),
+        ...(terms ? usable(await matching().take(12), 12) : []),
+        ...(await ctx.db.query("facts").withIndex("by_ownerId_and_kind", (q) => q.eq("ownerId", ownerId).eq("kind", kind)).order("desc").take(LESSONS_PER_KIND)),
+      ];
+      return rows.filter((f, i) => rows.findIndex((g) => g._id === f._id) === i).slice(0, LESSONS_PER_KIND);
+    };
+    const lessons = [...(await lessonsOf("preference")), ...(await lessonsOf("correction"))];
     const hits = terms
       ? usable(await ctx.db.query("facts").withSearchIndex("search_text", (q) => q.search("text", terms)).take(15), 5)
       : [];
@@ -120,7 +140,7 @@ export const recall = internalQuery({
     for (const f of [...lessons, ...hits]) {
       if (seen.has(f._id)) continue;
       seen.add(f._id);
-      out.push({ id: f._id, title: f.title, body: f.body.slice(0, 400), kind: f.kind, visibility: f.visibility });
+      out.push({ id: f._id, title: f.title, body: f.body.slice(0, RECALLED_BODY_CHARS), kind: f.kind, visibility: f.visibility });
     }
     return out;
   },

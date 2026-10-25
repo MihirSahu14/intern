@@ -19,6 +19,18 @@ test("the brief carries the task, the recalled facts, and the sandbox rule", () 
   assert.match(text, /public sandbox/);
 });
 
+test("lessons get their own section, told to carry over to a new topic; other facts stay in the memory section", () => {
+  const text = brief("Email the team", [
+    { id: "p1", title: "email: body rewritten before approval", body: "was: Hi team, now: Hey all", kind: "preference" },
+    { id: "n1", title: "Standup is at 10", body: "", kind: "note" },
+  ]);
+  const lessons = text.slice(text.indexOf("LESSONS FROM EARLIER DRAFTS"), text.indexOf("WHAT THE BRAIN ALREADY KNOWS"));
+  assert.match(lessons, /\[p1\] email: body rewritten/);
+  assert.match(lessons, /even if the earlier draft was about something else/);
+  assert.ok(!lessons.includes("[n1]"));
+  assert.match(text.slice(text.indexOf("WHAT THE BRAIN ALREADY KNOWS")), /\[n1\] Standup is at 10/);
+});
+
 test("no recalled facts means no memory section", () => {
   assert.ok(!brief("x", []).includes("WHAT THE BRAIN ALREADY KNOWS"));
 });

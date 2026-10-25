@@ -9,7 +9,11 @@ import { CONNECTORS } from "./connectors.ts";
 import { PASSAGE_EXCERPT } from "./ingest.ts";
 import type { ActionKind } from "./types.ts";
 
-export type Recalled = { id: string; title: string; body: string };
+/** A fact `facts.recall` handed over. `kind` sets preferences and corrections apart as lessons. */
+export type Recalled = { id: string; title: string; body: string; kind?: string };
+
+/** How much of a recalled fact's body reaches the prompt (`facts.recall`). */
+export const RECALLED_BODY_CHARS = 400;
 
 /** An archive passage, as `facts.archive` returns it. */
 export type Archived = { id: string; label: string; author: string | null; at: number; text: string };
@@ -103,10 +107,16 @@ export function brief(
   /** Passages `facts.archive` found for this task. Evidence, cited like facts: in "sources" only. */
   archive: Archived[] = [],
 ): string {
-  const learned = recalled.length
-    ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${recalled
-        .map((f) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`)
-        .join("\n")}\n`
+  const line = (f: Recalled) => `- [${f.id}] ${f.title}${f.body ? `\n    ${f.body.replace(/\n+/g, " ")}` : ""}`;
+  // A lesson listed among facts read as a note about one old draft and was
+  // ignored; set apart and told to carry over, it's followed (npm run eval:learning).
+  const lessons = recalled.filter((f) => f.kind === "preference" || f.kind === "correction");
+  const known = recalled.filter((f) => !lessons.includes(f));
+  const taught = lessons.length
+    ? `\nLESSONS FROM EARLIER DRAFTS, edits people made before approving and drafts they rejected. Apply each one to this draft wherever it fits, even if the earlier draft was about something else: a greeting, sign-off, subject style, channel or link someone changed is how they want it from now on. Cite the [id]s you use in "sources" only:\n${lessons.map(line).join("\n")}\n`
+    : "";
+  const learned = known.length
+    ? `\nWHAT THE BRAIN ALREADY KNOWS, earned from earlier work (follow it, cite the [id]s you use in "sources" only, never in your report prose):\n${known.map(line).join("\n")}\n`
     : "";
   const fromArchive = archive.length
     ? `\nFROM THE ARCHIVE, what the community said in Slack, documents and GitHub (evidence, not settled facts; cite the [p:id]s you use in "sources" only, never in your report prose):\n${archive
@@ -117,7 +127,7 @@ export function brief(
   return `You are an intern working a task for the team.
 
 TASK: ${task}
-${youWorkFor(self)}${learned}${fromArchive}
+${youWorkFor(self)}${taught}${learned}${fromArchive}
 ${sendsFrom.length ? live(sendsFrom) : SANDBOX}
 
 ${ABOUT}
@@ -171,8 +181,13 @@ function fnv(text: string): string {
 
 const SAMPLE_SELF: Self = { handle: "{handle}", accounts: [{ kind: "email", label: "Gmail", account: "{account}" }] };
 const SAMPLE_ARCHIVE: Archived[] = [{ id: "{id}", label: "{label}", author: "{author}", at: 0, text: "{text}" }];
+const SAMPLE_RECALLED: Recalled[] = [
+  { id: "{id}", title: "{title}", body: "{body}", kind: "preference" },
+  { id: "{id}", title: "{title}", body: "{body}", kind: "note" },
+];
 export const PROMPT_VERSION = fnv(
   brief("{task}", []) +
+    brief("{task}", SAMPLE_RECALLED) +
     brief("{task}", [], ["{label}"]) +
     brief("{task}", [], ["{label}"], SAMPLE_SELF, "{channel}") +
     brief("{task}", [], ["{label}"], SAMPLE_SELF, "{channel}", SAMPLE_ARCHIVE),

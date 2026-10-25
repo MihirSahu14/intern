@@ -187,8 +187,9 @@ export const decide = mutation({
     // captured email).
     const visibility = connection || recalledPrivate || action.draftedLive ? ("owner" as const) : undefined;
     // A public lesson still names no address, and its log line quotes nothing.
-    const lesson = (c: { title: string; body: string }) =>
-      visibility ? c : { title: redactEmails(c.title), body: redactEmails(c.body) };
+    // (`search` names no address already: see lib/edits.ts.)
+    const lesson = (c: { title: string; body: string; search: string }) =>
+      visibility ? c : { ...c, title: redactEmails(c.title), body: redactEmails(c.body) };
 
     if (a.decision === "reject") {
       const reason = (a.reason ?? "").trim().slice(0, 500) || "no reason given";
