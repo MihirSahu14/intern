@@ -165,7 +165,7 @@ test("the request shape: OpenAI-compatible POST with the configured model and be
   process.env.MODEL_BASE_URL = "https://example.test/v1";
   process.env.MODEL_NAME = "some/model";
   const calls = stubStream(`data: [DONE]\n\n`);
-  await collect(stream("hello there", { temperature: 0.7 }));
+  await collect(stream("hello there"));
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://example.test/v1/chat/completions");
@@ -177,7 +177,8 @@ test("the request shape: OpenAI-compatible POST with the configured model and be
   assert.equal(body.stream, true);
   assert.deepEqual(body.stream_options, { include_usage: true });
   assert.equal(body.max_tokens, 4096);
-  assert.equal(body.temperature, 0.7);
+  // Claude Sonnet 5.5 and later refuse any non-default sampling setting with a 400.
+  assert.equal("temperature" in body, false);
   assert.deepEqual(body.messages, [{ role: "user", content: "hello there" }]);
 });
 

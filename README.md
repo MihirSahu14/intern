@@ -77,7 +77,7 @@ flowchart LR
 
     Facts -->|"recall"| Run
     Passages -->|"archive"| Run
-    Run --> Model["OpenAI-compatible model\n(Claude Haiku 4.5 on prod; Groq default)"]
+    Run --> Model["OpenAI-compatible model\n(Claude Sonnet 5.5 on prod; Groq default)"]
     Model --> Run
     Run --> Finish --> Outbox
     Outbox -->|"approve"| Composio
