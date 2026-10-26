@@ -69,7 +69,7 @@ type Chunk = { text?: string; usage?: { in: number; out: number }; done?: boolea
 type Target = { apiKey: string; baseUrl: string; model: string };
 
 /** Opens the stream, or throws `model <status>: <provider's message>`. */
-async function open(prompt: string, t: Target, opts: { signal?: AbortSignal; temperature?: number }) {
+async function open(prompt: string, t: Target, opts: { signal?: AbortSignal }) {
   const res = await fetch(`${t.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${t.apiKey}` },
@@ -79,7 +79,8 @@ async function open(prompt: string, t: Target, opts: { signal?: AbortSignal; tem
       stream: true,
       stream_options: { include_usage: true },
       max_tokens: 4096,
-      temperature: opts.temperature ?? 0.4,
+      // No `temperature`: Claude Sonnet 5.5 and later refuse any non-default
+      // sampling setting with a 400, which would push every run to the fallback.
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -113,7 +114,7 @@ async function open(prompt: string, t: Target, opts: { signal?: AbortSignal; tem
  */
 export async function* stream(
   prompt: string,
-  opts: { signal?: AbortSignal; temperature?: number; onFallback?: (model: string, reason: string) => unknown } = {},
+  opts: { signal?: AbortSignal; onFallback?: (model: string, reason: string) => unknown } = {},
 ): AsyncGenerator<Chunk> {
   const apiKey = key();
   if (!apiKey) throw new Error(NOT_CONFIGURED);
